@@ -242,6 +242,9 @@ discover() -> DeviceInfo[]
 Enumerates all connected Pochi-DIO devices. Filters USB serial ports by
 VID (`0x2E8A`), PID (`0x000A`), and product string prefix (`"Pochi"`).
 Sends `info` and `version` to each matching port to populate `DeviceInfo`.
+Results are sorted by port path in every SDK: the OS enumeration order is
+unspecified, and callers (and the hardware smoke tests) rely on a
+deterministic device order when several devices are connected.
 
 **Rust:**
 ```rust
