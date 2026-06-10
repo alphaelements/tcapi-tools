@@ -1,0 +1,141 @@
+using Xunit;
+
+namespace Pochi.Sdk.Tests;
+
+public class MatchesPochiTests
+{
+    [Theory]
+    [InlineData(0x2E8A, 0x000A, "Pochi-DIO", true)]
+    [InlineData(0x2E8A, 0x000A, "Tachyon-DIO", true)] // legacy pre-rename FW
+    [InlineData(0x2E8A, 0x000A, "Picotool", false)]
+    [InlineData(0x2E8A, 0x000C, "Pochi-DIO", false)] // Debugprobe PID
+    [InlineData(0x1234, 0x000A, "Pochi-DIO", false)]
+    [InlineData(0x2E8A, 0x000A, null, false)]
+    public void Filter(int? vid, int? pid, string? product, bool expected) =>
+        Assert.Equal(expected, Discovery.MatchesPochi(vid, pid, product));
+}
+
+public class SysfsEnumerationTests : IDisposable
+{
+    private readonly string _root;
+
+    public SysfsEnumerationTests()
+    {
+        _root = Path.Combine(Path.GetTempPath(), $"pochi-sysfs-{Guid.NewGuid():N}");
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root))
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    private void AddTty(string name, string? vid, string? pid, string? product)
+    {
+        // Layout mirrors sysfs: tty/<name>/device -> usb interface dir whose
+        // parent holds idVendor / idProduct / product.
+        var usbDevice = Path.Combine(_root, "usb", name);
+        var usbInterface = Path.Combine(usbDevice, $"{name}:1.0");
+        Directory.CreateDirectory(usbInterface);
+        if (vid is not null)
+        {
+            File.WriteAllText(Path.Combine(usbDevice, "idVendor"), vid + "\n");
+        }
+
+        if (pid is not null)
+        {
+            File.WriteAllText(Path.Combine(usbDevice, "idProduct"), pid + "\n");
+        }
+
+        if (product is not null)
+        {
+            File.WriteAllText(Path.Combine(usbDevice, "product"), product + "\n");
+        }
+
+        var ttyDir = Path.Combine(_root, "tty", name);
+        Directory.CreateDirectory(ttyDir);
+        Directory.CreateSymbolicLink(Path.Combine(ttyDir, "device"), usbInterface);
+    }
+
+    private void AddBareTty(string name) =>
+        Directory.CreateDirectory(Path.Combine(_root, "tty", name));
+
+    [Fact]
+    public void FindsPochiAndIgnoresOthers()
+    {
+        AddTty("ttyACM0", "2e8a", "000a", "Pochi-DIO");
+        AddTty("ttyACM1", "2e8a", "000a", "Tachyon-DIO");
+        AddTty("ttyACM2", "2e8a", "000c", "Debugprobe (CMSIS-DAP)");
+        AddTty("ttyUSB0", "0403", "6001", "FT232R USB UART");
+        AddBareTty("ttyS0"); // non-USB tty: no device link
+        AddTty("ttyACM3", "2e8a", "000a", null); // no product string
+
+        var ports = Discovery.EnumeratePorts(Path.Combine(_root, "tty"));
+        Assert.Equal(["/dev/ttyACM0", "/dev/ttyACM1"], ports);
+    }
+
+    [Fact]
+    public void MissingRootYieldsEmpty() =>
+        Assert.Empty(Discovery.EnumeratePorts(Path.Combine(_root, "missing")));
+}
+
+public class SelectionTests
+{
+    private static DeviceInfo Dev(string uid, byte? number, string port) =>
+        new(Uid: uid, DeviceNumber: number, Port: port, Version: "v0.1.0");
+
+    [Fact]
+    public void FindByUidIsCaseInsensitive()
+    {
+        var devices = new[] { Dev("AABBCC", 1, "/dev/ttyACM0") };
+        Assert.Equal(devices[0], Discovery.FindByUid(devices, "aabbcc"));
+        TestHelpers.AssertSdkThrows(ErrorCode.NoDevice,
+            () => Discovery.FindByUid(devices, "FFFFFF"));
+    }
+
+    [Fact]
+    public void FindByDeviceNumber()
+    {
+        var devices = new[]
+        {
+            Dev("A", 1, "/dev/ttyACM0"),
+            Dev("B", 2, "/dev/ttyACM1"),
+            Dev("C", 2, "/dev/ttyACM2"),
+            Dev("D", null, "/dev/ttyACM3"),
+        };
+        Assert.Equal(devices[0], Discovery.FindByDeviceNumber(devices, 1));
+        TestHelpers.AssertSdkThrows(ErrorCode.NoDevice,
+            () => Discovery.FindByDeviceNumber(devices, 9));
+        TestHelpers.AssertSdkThrows(ErrorCode.MultipleDevices,
+            () => Discovery.FindByDeviceNumber(devices, 2));
+    }
+
+    [Fact]
+    public void SelectSoleDevice()
+    {
+        var sole = new[] { Dev("A", 1, "/dev/ttyACM0") };
+        Assert.Equal(sole[0], Discovery.SelectSoleDevice(sole));
+        TestHelpers.AssertSdkThrows(ErrorCode.NoDevice,
+            () => Discovery.SelectSoleDevice([]));
+        TestHelpers.AssertSdkThrows(ErrorCode.MultipleDevices,
+            () => Discovery.SelectSoleDevice(
+                [Dev("A", 1, "/dev/ttyACM0"), Dev("B", 2, "/dev/ttyACM1")]));
+    }
+
+    [Fact]
+    public void FindDuplicateNumbers()
+    {
+        var devices = new[]
+        {
+            Dev("A", 1, "p0"),
+            Dev("B", 2, "p1"),
+            Dev("C", 2, "p2"),
+            Dev("D", null, "p3"),
+            Dev("E", null, "p4"),
+            Dev("F", 2, "p5"),
+        };
+        Assert.Equal([(byte)2], Discovery.FindDuplicateNumbers(devices));
+    }
+}
