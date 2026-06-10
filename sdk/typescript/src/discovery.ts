@@ -50,11 +50,16 @@ export function matchesPochi(info: UsbPortInfo): boolean {
 /**
  * List serial port paths whose USB descriptors match a Pochi-DIO
  * (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy "Tachyon*").
- * No ports are opened.
+ * No ports are opened. Results are sorted by port path: the OS
+ * enumeration order is unspecified, and callers rely on a deterministic
+ * device order.
  */
 export async function enumeratePorts(): Promise<string[]> {
   const ports = await SerialPort.list();
-  return ports.filter((p) => matchesPochi(p)).map((p) => p.path);
+  return ports
+    .filter((p) => matchesPochi(p))
+    .map((p) => p.path)
+    .sort();
 }
 
 /** Probe one port: open it and query `info` (and best-effort `version`). */

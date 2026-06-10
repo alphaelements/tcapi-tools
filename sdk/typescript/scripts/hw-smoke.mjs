@@ -4,6 +4,7 @@
  * Run after `npm run build`:  node scripts/hw-smoke.mjs
  * Mirrors `sdk/rust/tests/hw_smoke.rs`; restores device state on exit.
  */
+import { SerialPort } from "serialport";
 import {
   Connection,
   discoverDetailed,
@@ -19,8 +20,20 @@ assert(detailed.failures.length === 0, `probe failures: ${JSON.stringify(detaile
 const devices = detailed.devices;
 assert(devices.length > 0, "no Pochi-DIO found");
 console.log("discovered:", devices);
+
+// A Debugprobe (2e8a:000c) on the same host must NOT be detected. Its tty
+// number depends on plug order, so locate it by USB descriptor instead of
+// hard-coding a port name.
+const debugprobePorts = (await SerialPort.list())
+  .filter(
+    (p) =>
+      p.vendorId?.toLowerCase() === "2e8a" &&
+      p.productId?.toLowerCase() === "000c",
+  )
+  .map((p) => p.path);
+console.log("debugprobe ports:", debugprobePorts);
 assert(
-  devices.every((d) => !d.port.includes("ttyACM2")),
+  devices.every((d) => !debugprobePorts.includes(d.port)),
   "Debugprobe misdetected as Pochi-DIO",
 );
 
