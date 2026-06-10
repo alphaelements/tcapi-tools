@@ -27,8 +27,8 @@ need to:
 | Frontend framework | React | 19 |
 | Frontend language | TypeScript | 5.6+ |
 | Build tool | Vite | 6 |
-| Charting | uPlot | latest |
-| State management | Zustand | latest |
+| Charting | custom Canvas 2D renderer (from the design prototype) | -- |
+| State management | version-key store + `useSyncExternalStore` (from the design prototype) | -- |
 | Serial communication | pochi-sdk (Rust crate) | 0.1.0 |
 | IPC | Tauri command/event system | -- |
 
@@ -138,7 +138,7 @@ The features needed for the first usable release.
 | Feature | Component | Description |
 |---|---|---|
 | Real-time monitoring | GpioMonitor | Subscribe to input changes, live update |
-| Waveform display | WaveformViewer | Plot input state over time (uPlot) |
+| Waveform display | WaveformViewer | Plot input state over time (Canvas 2D) |
 | Pin map editing | PinMapEditor | Visual editor for pin assignment |
 | Pin map save/load | PinMapEditor | Save to device flash, load from TOML file |
 | Pattern loading | PatternEditor | Load patterns from TOML, send to device |
@@ -362,7 +362,7 @@ interface PatternEditorState {
 waveform.
 
 **Visual Design**:
-- uPlot chart with one trace per monitored input channel.
+- Canvas 2D chart with one lane per monitored channel.
 - Time axis in microseconds (or milliseconds for long captures).
 - Digital waveform rendering: horizontal lines at HIGH/LOW levels with
   vertical transitions.
@@ -464,7 +464,7 @@ interface TimestampViewerState {
 6. Device responds: "OK 0x000005\r\n"
 7. pochi-sdk parses response -> IoState { inputs: 5, ... }
 8. Tauri serializes IoState to JSON and returns to frontend
-9. React component updates state via Zustand store
+9. React component updates state via the global store
 10. GpioMonitor re-renders with new pin values
 ```
 
@@ -477,13 +477,14 @@ interface TimestampViewerState {
 4. Rust backend parses the push event
 5. Backend calls: app.emit("input-change", payload)
 6. Frontend listener receives the event
-7. Zustand store is updated
+7. The global store is updated
 8. GpioMonitor + WaveformViewer re-render
 ```
 
 ### State Synchronization
 
-The Zustand store is the single source of truth for the frontend. All
+The global store (version-key + `useSyncExternalStore`) is the single
+source of truth for the frontend. All
 Tauri command results and events update the store. Components subscribe
 to specific store slices to minimize re-renders.
 
@@ -615,8 +616,11 @@ fn map_load_toml(path: String) -> Result<PinMap, String>
 #[tauri::command]
 fn pattern_load(steps: Vec<PatternStep>) -> Result<u16, String>
 
+/// Returns the parsed steps alongside the accepted count so the editor
+/// can display what was uploaded.
 #[tauri::command]
-fn pattern_load_toml(path: String) -> Result<u16, String>
+fn pattern_load_toml(path: String) -> Result<PatternTomlPayload, String>
+// struct PatternTomlPayload { steps: Vec<PatternStep>, accepted: u16 }
 
 #[tauri::command]
 fn pattern_run(mode: PatternMode, repeat: u16) -> Result<(), String>
@@ -634,11 +638,17 @@ fn pattern_status() -> Result<PatternStatus, String>
 #[tauri::command]
 fn ts_arm(mask: u32, mode: EdgeMode) -> Result<(), String>
 
+/// Rows carry a per-event `reconciled` flag (false for plain ts_get).
 #[tauri::command]
-fn ts_get(max_events: u16) -> Result<TimestampResult, String>
+fn ts_get(max_events: u16) -> Result<TsResultPayload, String>
 
+/// ts get + host-side straddle reconciliation (pochi-sdk reconcile);
+/// adjusted rows are flagged `reconciled: true`.
 #[tauri::command]
-fn ts_get_reconciled(max_events: u16) -> Result<TimestampResult, String>
+fn ts_get_reconciled(max_events: u16) -> Result<TsResultPayload, String>
+// struct TsRow { inputs, raw_count, raw_phase, sync_active,
+//                timestamp_ns, reconciled }
+// struct TsResultPayload { events: Vec<TsRow>, reconciled: bool }
 
 #[tauri::command]
 fn ts_disarm() -> Result<(), String>
@@ -671,7 +681,22 @@ fn sync_disarm() -> Result<(), String>
 ```rust
 #[tauri::command]
 fn raw_command(text: String) -> Result<String, String>
+
+/// Write export payloads (CSV/JSON built by the frontend) to a path
+/// chosen via the save dialog.
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String>
 ```
+
+### Backend → Frontend Events
+
+| Event | Payload | Source |
+|---|---|---|
+| `pochi://log` | `{ direction: "sent"\|"received"\|"event"\|"error", line }` | SDK traffic hook (every wire line) + scan probe failures |
+| `pochi://input` | `{ inputs, timestampUs }` | `! INPUT` push |
+| `pochi://pattern-done` | `{ loops }` | `! PATTERN_DONE` push |
+| `pochi://sync-done` | `{ status, devnum, timestamp }` | `! SYNC_DONE` push |
+| `pochi://unknown-event` | `{ raw }` | unrecognized push lines |
 
 ## 10. Backend State Management
 

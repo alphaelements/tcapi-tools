@@ -29,6 +29,7 @@ pub mod types;
 pub use connection::Connection;
 pub use discovery::{discover, discover_detailed, enumerate_ports, Discovery, ProbeFailure};
 pub use error::{Result, SdkError};
+pub use transport::{TrafficDirection, TrafficHook};
 pub use types::{
     Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternState, PatternStatus,
     PatternStep, PinMap, PullMode, PushEvent, SyncRole, SyncState, TimestampEvent, TimestampResult,

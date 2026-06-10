@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::discovery;
 use crate::error::Result;
 use crate::protocol;
-use crate::transport::Transport;
+use crate::transport::{TrafficHook, Transport};
 use crate::types::{
     Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus, PatternStep, PinMap,
     PushEvent, TimestampResult, VersionInfo,
@@ -64,6 +64,13 @@ impl Connection {
     /// Set the command response timeout (default 2 s).
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.transport.set_timeout(timeout);
+    }
+
+    /// Install an observer for every line exchanged with the device
+    /// (command-log UIs, debug tracing). A second call replaces the first;
+    /// `None` removes it. See [`TrafficHook`] for threading caveats.
+    pub fn set_traffic_hook(&mut self, hook: Option<TrafficHook>) {
+        self.transport.set_traffic_hook(hook);
     }
 
     // --- device information ---
