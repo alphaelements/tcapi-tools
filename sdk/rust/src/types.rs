@@ -111,6 +111,30 @@ pub struct TimestampResult {
     pub reconciled: bool,
 }
 
+/// Asynchronous push event from the device (`! ...` lines).
+///
+/// `Unknown` preserves unrecognized event types from newer firmware so they
+/// are observable instead of silently dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PushEvent {
+    InputChange {
+        inputs: u32,
+        timestamp_us: u64,
+    },
+    PatternDone {
+        loops: u16,
+    },
+    SyncDone {
+        status: String,
+        devnum: u8,
+        timestamp: u64,
+    },
+    Unknown {
+        raw: String,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SyncRole {
