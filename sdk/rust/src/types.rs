@@ -84,6 +84,8 @@ pub struct PatternStatus {
 #[serde(rename_all = "lowercase")]
 pub enum PatternState {
     Idle,
+    /// Pattern data loaded but not started (FW state 1).
+    Loaded,
     Running,
     Done,
 }

@@ -366,6 +366,7 @@ pub fn parse_pattern_status(data: &str) -> Result<PatternStatus> {
             "state" => {
                 state = Some(match val {
                     "idle" => PatternState::Idle,
+                    "loaded" => PatternState::Loaded,
                     "running" => PatternState::Running,
                     "done" => PatternState::Done,
                     other => {
@@ -881,6 +882,12 @@ mod tests {
                 .unwrap()
                 .state,
             PatternState::Done
+        );
+        assert_eq!(
+            parse_pattern_status("state=loaded step=0 loops=0")
+                .unwrap()
+                .state,
+            PatternState::Loaded
         );
     }
 

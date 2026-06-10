@@ -138,6 +138,7 @@ impl MockFw {
                         return vec!["ERR TOO_LONG".into()];
                     }
                     self.pattern_loaded = count;
+                    self.pattern_state = "loaded";
                     vec![format!("OK accepted={count}")]
                 }
                 _ => vec!["ERR BAD_PARAM".into()],
@@ -153,7 +154,9 @@ impl MockFw {
                 }
             }
             ["pattern", "stop"] => {
-                self.pattern_state = "idle";
+                if self.pattern_loaded > 0 {
+                    self.pattern_state = "loaded";
+                }
                 vec!["OK".into()]
             }
             ["pattern", "status"] => {
@@ -360,7 +363,7 @@ fn full_command_sweep() {
     conn.pattern_run(PatternMode::Loop, 10).unwrap();
     assert_eq!(conn.pattern_status().unwrap().state, PatternState::Running);
     conn.pattern_stop().unwrap();
-    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Idle);
+    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Loaded);
 
     // Timestamp (counted read)
     conn.ts_arm(0x07FF, EdgeMode::Both).unwrap();
