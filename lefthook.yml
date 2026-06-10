@@ -52,7 +52,8 @@ pre-commit:
           --include='*.py' --include='*.cs' --include='*.md' \
           --include='*.toml' --include='*.json' --include='*.yml' --include='*.yaml' \
           . 2>/dev/null \
-          | grep -v '\.gitignore' | grep -v 'CLAUDE\.md' | grep -v '\.claude/' | grep -v '/tmp/' | grep -v 'node_modules/' | grep -v '/target/' || true)
+          | grep -v '\.gitignore' | grep -v 'CLAUDE\.md' | grep -v '\.claude/' | grep -v '/tmp/' | grep -v 'node_modules/' | grep -v '/target/' \
+          | grep -v '\.venv/' | grep -v '/dist/' || true)
         if [ -n "$MATCHES" ]; then
           echo "$MATCHES"
           echo "ERROR: Internal URL found in committed files. This is a public repo."
@@ -70,7 +71,8 @@ pre-commit:
             --include='*.toml' --include='*.json' --include='*.yml' --include='*.yaml' \
             . 2>/dev/null \
             | grep -v '\.gitignore' | grep -v 'CLAUDE\.md' | grep -v '\.claude/' | grep -v '/tmp/' \
-            | grep -v '\.public-repo-deny-patterns' | grep -v 'node_modules/' | grep -v '/target/' || true)
+            | grep -v '\.public-repo-deny-patterns' | grep -v 'node_modules/' | grep -v '/target/' \
+            | grep -v '\.venv/' | grep -v '/dist/' || true)
           if [ -n "$MATCHES" ]; then
             echo "$MATCHES"
             echo "ERROR: Denied pattern found in committed files. This is a public repo."
