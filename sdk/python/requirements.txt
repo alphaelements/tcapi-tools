@@ -1,0 +1,2 @@
+# Production dependencies (pinned). Dev tools live in pyproject [dev].
+pyserial==3.5
