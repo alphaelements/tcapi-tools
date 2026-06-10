@@ -10,7 +10,13 @@ Check(detailed.Failures.Count == 0,
 var devices = detailed.Devices;
 Check(devices.Count > 0, "no Pochi-DIO found");
 Console.WriteLine("discovered: " + string.Join(", ", devices.Select(WireJson.Serialize)));
-Check(devices.All(d => !d.Port.Contains("ttyACM2")), "Debugprobe misdetected");
+
+// A Debugprobe (2e8a:000c) on the same host must NOT be detected. Its tty
+// number depends on plug order, so locate it via sysfs instead of
+// hard-coding a port name.
+var debugprobePorts = DebugprobePorts();
+Console.WriteLine("debugprobe ports: " + string.Join(", ", debugprobePorts));
+Check(devices.All(d => !debugprobePorts.Contains(d.Port)), "Debugprobe misdetected");
 
 var device = devices[0];
 using (var conn = Connection.Open(device.Port))
@@ -88,6 +94,29 @@ using (var conn = Connection.Open(device.Port))
 }
 
 return 0;
+
+// Serial ports belonging to a Raspberry Pi Debugprobe (VID 2e8a / PID 000c),
+// resolved through /sys/class/tty the same way Discovery enumerates.
+static List<string> DebugprobePorts()
+{
+    var ports = new List<string>();
+    foreach (var entry in Directory.GetDirectories("/sys/class/tty"))
+    {
+        var real = new DirectoryInfo(entry)
+            .ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? entry;
+        var idDir = Path.GetFullPath(Path.Combine(real, "..", "..", ".."));
+        var vidPath = Path.Combine(idDir, "idVendor");
+        var pidPath = Path.Combine(idDir, "idProduct");
+        if (File.Exists(vidPath) && File.Exists(pidPath)
+            && File.ReadAllText(vidPath).Trim() == "2e8a"
+            && File.ReadAllText(pidPath).Trim() == "000c")
+        {
+            ports.Add("/dev/" + Path.GetFileName(entry));
+        }
+    }
+
+    return ports;
+}
 
 static void Check(bool condition, string message)
 {

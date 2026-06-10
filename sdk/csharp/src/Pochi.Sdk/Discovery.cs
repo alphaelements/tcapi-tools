@@ -40,7 +40,9 @@ public static class Discovery
 
     /// <summary>List serial port paths whose USB descriptors match a
     /// Pochi-DIO (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy
-    /// "Tachyon*"). No ports are opened.</summary>
+    /// "Tachyon*"). No ports are opened. Results are sorted by port path:
+    /// the OS enumeration order is unspecified, and callers rely on a
+    /// deterministic device order.</summary>
     public static IReadOnlyList<string> EnumeratePorts()
     {
         if (!OperatingSystem.IsLinux())
@@ -80,14 +82,18 @@ public static class Discovery
     /// <c>idVendor</c>/<c>idProduct</c>. Returns null for non-USB ttys.</summary>
     private static (int Vid, int Pid, string? Product)? TryReadUsbInfo(string ttyDir)
     {
-        var deviceLink = Path.Combine(ttyDir, "device");
+        // /sys/class/tty entries are themselves symlinks into /sys/devices,
+        // and the `device` link below them is a relative symlink. Resolve the
+        // class entry to its real path first: a relative target resolved
+        // against the un-dereferenced class path points outside the tree.
+        var realTtyDir = ResolveDirLink(ttyDir);
+        var deviceLink = Path.Combine(realTtyDir, "device");
         if (!Directory.Exists(deviceLink))
         {
             return null;
         }
 
-        var resolved = new DirectoryInfo(deviceLink).ResolveLinkTarget(returnFinalTarget: true);
-        var current = resolved?.FullName ?? Path.GetFullPath(deviceLink);
+        var current = ResolveDirLink(deviceLink);
         for (var depth = 0; depth < 6 && current is not null;
              depth++, current = Path.GetDirectoryName(current))
         {
@@ -114,6 +120,15 @@ public static class Discovery
         }
 
         return null;
+    }
+
+    /// <summary>Fully resolve a directory path that may be (or end in) a
+    /// symlink, normalizing any <c>..</c> components against real
+    /// directories.</summary>
+    private static string ResolveDirLink(string path)
+    {
+        var resolved = new DirectoryInfo(path).ResolveLinkTarget(returnFinalTarget: true);
+        return Path.GetFullPath(resolved?.FullName ?? path);
     }
 
     /// <summary>Probe one port: open it and query <c>info</c> (best-effort

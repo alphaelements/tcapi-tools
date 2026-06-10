@@ -34,11 +34,15 @@ public class SysfsEnumerationTests : IDisposable
 
     private void AddTty(string name, string? vid, string? pid, string? product)
     {
-        // Layout mirrors sysfs: tty/<name>/device -> usb interface dir whose
-        // parent holds idVendor / idProduct / product.
-        var usbDevice = Path.Combine(_root, "usb", name);
-        var usbInterface = Path.Combine(usbDevice, $"{name}:1.0");
-        Directory.CreateDirectory(usbInterface);
+        // Layout mirrors real sysfs, including its symlink shape: the
+        // class/tty/<name> entry is itself a relative symlink into
+        // devices/..., and the `device` link inside the real tty dir is a
+        // relative symlink to the USB interface dir whose parent holds
+        // idVendor / idProduct / product. Absolute links here would hide
+        // resolution bugs that only real sysfs exhibits.
+        var usbDevice = Path.Combine(_root, "devices", "usb1", name);
+        var realTtyDir = Path.Combine(usbDevice, $"{name}:1.0", "tty", name);
+        Directory.CreateDirectory(realTtyDir);
         if (vid is not null)
         {
             File.WriteAllText(Path.Combine(usbDevice, "idVendor"), vid + "\n");
@@ -54,13 +58,18 @@ public class SysfsEnumerationTests : IDisposable
             File.WriteAllText(Path.Combine(usbDevice, "product"), product + "\n");
         }
 
-        var ttyDir = Path.Combine(_root, "tty", name);
-        Directory.CreateDirectory(ttyDir);
-        Directory.CreateSymbolicLink(Path.Combine(ttyDir, "device"), usbInterface);
+        Directory.CreateSymbolicLink(
+            Path.Combine(realTtyDir, "device"), $"../../../{name}:1.0");
+        Directory.CreateDirectory(Path.Combine(_root, "class", "tty"));
+        Directory.CreateSymbolicLink(
+            Path.Combine(_root, "class", "tty", name),
+            $"../../devices/usb1/{name}/{name}:1.0/tty/{name}");
     }
 
-    private void AddBareTty(string name) =>
-        Directory.CreateDirectory(Path.Combine(_root, "tty", name));
+    private void AddBareTty(string name)
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "class", "tty", name));
+    }
 
     [Fact]
     public void FindsPochiAndIgnoresOthers()
@@ -72,7 +81,7 @@ public class SysfsEnumerationTests : IDisposable
         AddBareTty("ttyS0"); // non-USB tty: no device link
         AddTty("ttyACM3", "2e8a", "000a", null); // no product string
 
-        var ports = Discovery.EnumeratePorts(Path.Combine(_root, "tty"));
+        var ports = Discovery.EnumeratePorts(Path.Combine(_root, "class", "tty"));
         Assert.Equal(["/dev/ttyACM0", "/dev/ttyACM1"], ports);
     }
 
