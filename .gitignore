@@ -1,0 +1,36 @@
+# Rust
+/target
+
+# Node.js / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/
+*.pyc
+
+# C#
+bin/
+obj/
+*.user
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Sensitive / local-only
+tmp/
+CLAUDE.md
+.claude/
+.mcp.json
+.public-repo-deny-patterns
+
+# Tauri build artifacts
+gui/src-tauri/gen/

@@ -1,0 +1,17 @@
+[package]
+name = "pochi-sdk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Rust SDK for Pochi-DIO (RP2350 high-speed digital I/O unit)"
+
+[dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = "4"
+thiserror = "2"
+toml = "0.8"
+
+[dev-dependencies]
+assert_matches = "1"

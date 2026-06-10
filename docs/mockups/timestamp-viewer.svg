@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500">
+  <defs>
+    <style>
+      .mono { font-family: 'Consolas', 'Courier New', monospace; }
+      .sans { font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; }
+      .text-primary { fill: #e2e8f0; }
+      .text-secondary { fill: #94a3b8; }
+      .text-accent { fill: #7c3aed; }
+      .text-high { fill: #22c55e; }
+      .text-low { fill: #64748b; }
+      .text-warn { fill: #ef4444; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="500" fill="#1e1e2e"/>
+
+  <!-- Title bar -->
+  <!-- Component: <TimestampViewer /> -->
+  <rect x="0" y="0" width="900" height="44" fill="#2a2a3e"/>
+  <text x="20" y="28" class="sans text-primary" font-size="16" font-weight="bold">Timestamp Capture</text>
+  <text x="720" y="28" class="sans text-secondary" font-size="12">FW Phase 9.6</text>
+
+  <!-- ==================== Controls Bar ==================== -->
+  <!-- Component: <TimestampControls /> -->
+  <rect x="0" y="44" width="900" height="40" fill="#252538"/>
+  <line x1="0" y1="84" x2="900" y2="84" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Mask input -->
+  <text x="16" y="68" class="sans text-secondary" font-size="11">Mask:</text>
+  <rect x="52" y="52" width="80" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="60" y="68" class="mono text-primary" font-size="11">0x000F</text>
+
+  <!-- Mode selector -->
+  <text x="148" y="68" class="sans text-secondary" font-size="11">Mode:</text>
+  <rect x="184" y="52" width="80" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="192" y="68" class="mono text-primary" font-size="11">Both</text>
+  <text x="244" y="68" class="sans text-secondary" font-size="10">&#x25BC;</text>
+
+  <!-- Separator -->
+  <line x1="280" y1="52" x2="280" y2="76" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Action buttons -->
+  <rect x="296" y="52" width="52" height="24" fill="#22c55e" fill-opacity="0.2" rx="4" stroke="#22c55e" stroke-width="1"/>
+  <text x="310" y="68" class="sans text-high" font-size="11">Arm</text>
+
+  <rect x="356" y="52" width="48" height="24" fill="#7c3aed" rx="4"/>
+  <text x="370" y="68" class="sans text-primary" font-size="11">Get</text>
+
+  <rect x="412" y="52" width="68" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="424" y="68" class="sans text-primary" font-size="11">Disarm</text>
+
+  <!-- Separator -->
+  <line x1="496" y1="52" x2="496" y2="76" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Reconcile checkbox -->
+  <!-- Component: <ReconcileToggle /> -->
+  <rect x="512" y="56" width="16" height="16" fill="#7c3aed" rx="3"/>
+  <polyline points="515,64 519,68 527,60" fill="none" stroke="white" stroke-width="2"/>
+  <text x="534" y="68" class="sans text-primary" font-size="11">Reconcile</text>
+
+  <!-- ==================== Event Table (left) ==================== -->
+  <!-- Component: <TimestampEventTable events={events} /> -->
+  <rect x="12" y="92" width="640" height="396" fill="#1a1a28" rx="6" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Table header -->
+  <rect x="16" y="96" width="632" height="28" fill="#2a2a3e" rx="4"/>
+  <text x="28" y="114" class="mono text-secondary" font-size="10" font-weight="bold">#</text>
+  <text x="56" y="114" class="mono text-secondary" font-size="10" font-weight="bold">Inputs</text>
+  <text x="140" y="114" class="mono text-secondary" font-size="10" font-weight="bold">Count</text>
+  <text x="216" y="114" class="mono text-secondary" font-size="10" font-weight="bold">Phase</text>
+  <text x="280" y="114" class="mono text-secondary" font-size="10" font-weight="bold">Sync</text>
+  <text x="340" y="114" class="mono text-secondary" font-size="10" font-weight="bold">Timestamp (ns)</text>
+  <text x="496" y="114" class="mono text-secondary" font-size="10" font-weight="bold">Reconciled (ns)</text>
+
+  <!-- Event row 1 -->
+  <!-- Component: <EventRow event={event} index={0} /> -->
+  <rect x="16" y="126" width="632" height="28" fill="transparent"/>
+  <text x="28" y="144" class="mono text-primary" font-size="11">0</text>
+  <text x="56" y="144" class="mono text-primary" font-size="11">0x0001</text>
+  <text x="140" y="144" class="mono text-primary" font-size="11">1000</text>
+  <text x="224" y="144" class="mono text-primary" font-size="11">7</text>
+  <text x="288" y="144" class="mono text-primary" font-size="11">1</text>
+  <text x="340" y="144" class="mono text-primary" font-size="11">8,000,058</text>
+  <text x="496" y="144" class="mono text-high" font-size="11">8,000,042</text>
+
+  <!-- Event row 2 -->
+  <rect x="16" y="156" width="632" height="28" fill="#2a2a3e" fill-opacity="0.3"/>
+  <text x="28" y="174" class="mono text-primary" font-size="11">1</text>
+  <text x="56" y="174" class="mono text-primary" font-size="11">0x0002</text>
+  <text x="140" y="174" class="mono text-primary" font-size="11">2500</text>
+  <text x="224" y="174" class="mono text-primary" font-size="11">7</text>
+  <text x="288" y="174" class="mono text-primary" font-size="11">1</text>
+  <text x="340" y="174" class="mono text-primary" font-size="11">20,000,122</text>
+  <text x="496" y="174" class="mono text-high" font-size="11">20,000,080</text>
+
+  <!-- Event row 3 -->
+  <rect x="16" y="186" width="632" height="28" fill="transparent"/>
+  <text x="28" y="204" class="mono text-primary" font-size="11">2</text>
+  <text x="56" y="204" class="mono text-primary" font-size="11">0x0003</text>
+  <text x="140" y="204" class="mono text-primary" font-size="11">3750</text>
+  <text x="224" y="204" class="mono text-primary" font-size="11">3</text>
+  <text x="288" y="204" class="mono text-primary" font-size="11">0</text>
+  <text x="340" y="204" class="mono text-primary" font-size="11">30,000,087</text>
+  <text x="496" y="204" class="mono text-high" font-size="11">30,000,045</text>
+
+  <!-- Event row 4 -->
+  <rect x="16" y="216" width="632" height="28" fill="#2a2a3e" fill-opacity="0.3"/>
+  <text x="28" y="234" class="mono text-primary" font-size="11">3</text>
+  <text x="56" y="234" class="mono text-primary" font-size="11">0x0001</text>
+  <text x="140" y="234" class="mono text-primary" font-size="11">5000</text>
+  <text x="224" y="234" class="mono text-primary" font-size="11">7</text>
+  <text x="288" y="234" class="mono text-primary" font-size="11">1</text>
+  <text x="340" y="234" class="mono text-primary" font-size="11">40,000,195</text>
+  <text x="496" y="234" class="mono text-high" font-size="11">40,000,108</text>
+
+  <!-- Event row 5 -->
+  <rect x="16" y="246" width="632" height="28" fill="transparent"/>
+  <text x="28" y="264" class="mono text-primary" font-size="11">4</text>
+  <text x="56" y="264" class="mono text-primary" font-size="11">0x0006</text>
+  <text x="140" y="264" class="mono text-primary" font-size="11">6200</text>
+  <text x="224" y="264" class="mono text-primary" font-size="11">3</text>
+  <text x="288" y="264" class="mono text-primary" font-size="11">0</text>
+  <text x="340" y="264" class="mono text-primary" font-size="11">49,600,064</text>
+  <text x="496" y="264" class="mono text-high" font-size="11">49,600,031</text>
+
+  <!-- Event row 6 -->
+  <rect x="16" y="276" width="632" height="28" fill="#2a2a3e" fill-opacity="0.3"/>
+  <text x="28" y="294" class="mono text-primary" font-size="11">5</text>
+  <text x="56" y="294" class="mono text-primary" font-size="11">0x000F</text>
+  <text x="140" y="294" class="mono text-primary" font-size="11">7500</text>
+  <text x="224" y="294" class="mono text-primary" font-size="11">7</text>
+  <text x="288" y="294" class="mono text-primary" font-size="11">1</text>
+  <text x="340" y="294" class="mono text-primary" font-size="11">60,000,210</text>
+  <text x="496" y="294" class="mono text-high" font-size="11">60,000,123</text>
+
+  <!-- Table footer / summary -->
+  <line x1="20" y1="316" x2="644" y2="316" stroke="#3a3a4e" stroke-width="0.5"/>
+  <text x="28" y="336" class="sans text-secondary" font-size="11">6 events captured | Reconcile: ON | c=count, p=phase(0-7), s=sync(0/1)</text>
+
+  <!-- ==================== Statistics Panel (right) ==================== -->
+  <!-- Component: <TimestampStatistics stats={stats} /> -->
+  <rect x="664" y="92" width="224" height="200" fill="#2a2a3e" rx="6"/>
+
+  <text x="680" y="116" class="sans text-primary" font-size="13" font-weight="bold">Statistics</text>
+  <line x1="672" y1="124" x2="880" y2="124" stroke="#3a3a4e" stroke-width="0.5"/>
+
+  <text x="680" y="148" class="sans text-secondary" font-size="11">Events</text>
+  <text x="820" y="148" class="mono text-primary" font-size="12" font-weight="bold">6</text>
+
+  <text x="680" y="172" class="sans text-secondary" font-size="11">Mean diff</text>
+  <text x="808" y="172" class="mono text-primary" font-size="12">42 ns</text>
+
+  <text x="680" y="196" class="sans text-secondary" font-size="11">Stdev</text>
+  <text x="808" y="196" class="mono text-primary" font-size="12">18 ns</text>
+
+  <text x="680" y="220" class="sans text-secondary" font-size="11">Max |diff|</text>
+  <text x="808" y="220" class="mono text-primary" font-size="12">87 ns</text>
+
+  <text x="680" y="244" class="sans text-secondary" font-size="11">Within 500ns</text>
+  <text x="808" y="244" class="mono text-high" font-size="12" font-weight="bold">100%</text>
+
+  <line x1="672" y1="256" x2="880" y2="256" stroke="#3a3a4e" stroke-width="0.5"/>
+  <text x="680" y="276" class="sans text-secondary" font-size="10">Phase 9.6 host-side reconcile</text>
+
+  <!-- ==================== Diff Distribution Bar Chart ==================== -->
+  <!-- Component: <DiffDistribution diffs={diffs} /> -->
+  <rect x="664" y="300" width="224" height="188" fill="#2a2a3e" rx="6"/>
+
+  <text x="680" y="324" class="sans text-primary" font-size="12" font-weight="bold">Diff Distribution</text>
+  <text x="680" y="340" class="sans text-secondary" font-size="9">Reconciled - Raw (ns)</text>
+
+  <!-- Bar chart area -->
+  <!-- Y-axis -->
+  <line x1="700" y1="352" x2="700" y2="460" stroke="#3a3a4e" stroke-width="1"/>
+  <!-- X-axis -->
+  <line x1="700" y1="460" x2="870" y2="460" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Bars (diff distribution buckets) -->
+  <!-- 0-20ns bucket: 1 event -->
+  <rect x="710" y="440" width="24" height="20" fill="#7c3aed" fill-opacity="0.6" rx="2"/>
+  <text x="717" y="472" class="mono text-secondary" font-size="8">0-20</text>
+
+  <!-- 20-40ns bucket: 2 events -->
+  <rect x="742" y="420" width="24" height="40" fill="#7c3aed" fill-opacity="0.7" rx="2"/>
+  <text x="746" y="472" class="mono text-secondary" font-size="8">20-40</text>
+
+  <!-- 40-60ns bucket: 2 events -->
+  <rect x="774" y="420" width="24" height="40" fill="#7c3aed" fill-opacity="0.8" rx="2"/>
+  <text x="778" y="472" class="mono text-secondary" font-size="8">40-60</text>
+
+  <!-- 60-80ns bucket: 0 events -->
+  <rect x="806" y="458" width="24" height="2" fill="#7c3aed" fill-opacity="0.4" rx="1"/>
+  <text x="810" y="472" class="mono text-secondary" font-size="8">60-80</text>
+
+  <!-- 80-100ns bucket: 1 event -->
+  <rect x="838" y="440" width="24" height="20" fill="#7c3aed" fill-opacity="0.6" rx="2"/>
+  <text x="838" y="472" class="mono text-secondary" font-size="8">80+</text>
+
+  <!-- Y-axis labels -->
+  <text x="688" y="464" class="mono text-secondary" font-size="8" text-anchor="end">0</text>
+  <text x="688" y="444" class="mono text-secondary" font-size="8" text-anchor="end">1</text>
+  <text x="688" y="424" class="mono text-secondary" font-size="8" text-anchor="end">2</text>
+  <text x="688" y="404" class="mono text-secondary" font-size="8" text-anchor="end">3</text>
+
+  <!-- X-axis label -->
+  <text x="785" y="484" class="sans text-secondary" font-size="9" text-anchor="middle">|diff| (ns)</text>
+</svg>

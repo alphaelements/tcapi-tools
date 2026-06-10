@@ -1,0 +1,19 @@
+stages:
+  - deploy
+
+# Local-first quality model: lefthook pre-commit/pre-push runs all checks.
+# CI owns only deploy-stage work that cannot run locally:
+#   mirror-main — push main to the GitHub public repo on every merge.
+
+mirror-main:
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  variables:
+    GIT_DEPTH: "0"
+    GITHUB_TOKEN: ${GITHUB_TOKEN}
+  script:
+    - 'GITHUB_TOKEN_CLEAN=$(printf "%s" "$GITHUB_TOKEN" | tr -d "[:space:]")'
+    - git remote remove github 2>/dev/null || true
+    - git remote add github "https://x-access-token:${GITHUB_TOKEN_CLEAN}@github.com/alphaelements/pochi-tools.git"
+    - git push github HEAD:main --force

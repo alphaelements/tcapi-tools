@@ -1,0 +1,290 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+  <defs>
+    <style>
+      .mono { font-family: 'Consolas', 'Courier New', monospace; }
+      .sans { font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; }
+      .text-primary { fill: #e2e8f0; }
+      .text-secondary { fill: #94a3b8; }
+      .text-accent { fill: #7c3aed; }
+      .text-high { fill: #22c55e; }
+      .text-low { fill: #64748b; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="600" fill="#1e1e2e"/>
+
+  <!-- Title bar -->
+  <!-- Component: <GpioMonitor /> -->
+  <rect x="0" y="0" width="800" height="44" fill="#2a2a3e"/>
+  <text x="20" y="28" class="sans text-primary" font-size="16" font-weight="bold">GPIO Monitor</text>
+  <text x="600" y="28" class="sans text-secondary" font-size="12">23 pins | 12 out, 11 in</text>
+
+  <!-- GPIO Grid: 4 columns x 6 rows -->
+  <!-- Each cell is 180x80, with 12px gaps -->
+  <!-- Column positions: 20, 208, 396, 584 -->
+  <!-- Row positions: 56, 144, 232, 320, 408, 496 -->
+
+  <!-- === Row 0: GP0-GP3 (Outputs) === -->
+  <!-- Component: <PinCell pin="GP0" direction="output" state="HIGH" pull="none" /> -->
+  <g transform="translate(20, 56)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP0</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <!-- Direction arrow: output -->
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <!-- State indicator -->
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <!-- Component: <PinCell pin="GP1" direction="output" state="LOW" pull="none" /> -->
+  <g transform="translate(208, 56)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP1</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <!-- Component: <PinCell pin="GP2" direction="output" state="HIGH" pull="none" /> -->
+  <g transform="translate(396, 56)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP2</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <!-- Component: <PinCell pin="GP3" direction="output" state="HIGH" pull="none" /> -->
+  <g transform="translate(584, 56)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP3</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <!-- === Row 1: GP4-GP7 (Outputs) === -->
+  <g transform="translate(20, 144)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP4</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <g transform="translate(208, 144)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP5</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <g transform="translate(396, 144)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP6</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <g transform="translate(584, 144)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP7</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <!-- === Row 2: GP8-GP11 (Outputs) === -->
+  <g transform="translate(20, 232)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP8</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <g transform="translate(208, 232)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP9</text>
+    <text x="60" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="100" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <g transform="translate(396, 232)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP10</text>
+    <text x="68" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="108" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <g transform="translate(584, 232)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#7c3aed" stroke-width="2"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP11</text>
+    <text x="68" y="24" class="sans text-accent" font-size="11" font-weight="bold">OUT</text>
+    <text x="108" y="24" class="sans text-accent" font-size="14">&#x2192;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">No pull</text>
+  </g>
+
+  <!-- === Row 3: GP12-GP15 (Inputs) === -->
+  <!-- Component: <PinCell pin="GP12" direction="input" state="HIGH" pull="down" /> -->
+  <g transform="translate(20, 320)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP12</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <!-- Direction arrow: input -->
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <g transform="translate(208, 320)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP13</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <g transform="translate(396, 320)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP14</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2191; Pull-up</text>
+  </g>
+
+  <g transform="translate(584, 320)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP15</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <!-- === Row 4: GP16-GP19 (Inputs) === -->
+  <g transform="translate(20, 408)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP16</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <g transform="translate(208, 408)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP17</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2191; Pull-up</text>
+  </g>
+
+  <g transform="translate(396, 408)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP18</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <g transform="translate(584, 408)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP19</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <!-- === Row 5: GP20-GP22 (Inputs, only 3 cells) === -->
+  <g transform="translate(20, 496)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP20</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <g transform="translate(208, 496)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP21</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#64748b"/>
+    <text x="12" y="52" class="mono text-low" font-size="18" font-weight="bold">LOW</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2191; Pull-up</text>
+  </g>
+
+  <g transform="translate(396, 496)">
+    <rect width="180" height="80" fill="#2a2a3e" rx="6" stroke="#3a3a4e" stroke-width="1.5"/>
+    <text x="12" y="24" class="mono text-primary" font-size="16" font-weight="bold">GP22</text>
+    <text x="68" y="24" class="sans text-secondary" font-size="11">IN</text>
+    <text x="100" y="24" class="sans text-secondary" font-size="14">&#x2190;</text>
+    <circle cx="152" cy="18" r="12" fill="#22c55e"/>
+    <text x="12" y="52" class="mono text-high" font-size="18" font-weight="bold">HIGH</text>
+    <text x="12" y="70" class="sans text-secondary" font-size="10">&#x2193; Pull-down</text>
+  </g>
+
+  <!-- Empty cell placeholder -->
+  <g transform="translate(584, 496)">
+    <rect width="180" height="80" fill="#252538" rx="6" stroke="#2a2a3e" stroke-width="1" stroke-dasharray="4,4"/>
+  </g>
+
+  <!-- Legend bar at bottom -->
+  <!-- Component: <PinLegend /> -->
+  <rect x="0" y="584" width="800" height="16" fill="#2a2a3e"/>
+  <rect x="20" y="588" width="10" height="8" fill="none" stroke="#7c3aed" stroke-width="2" rx="1"/>
+  <text x="36" y="596" class="sans text-secondary" font-size="10">Output (accent border)</text>
+  <rect x="180" y="588" width="10" height="8" fill="none" stroke="#3a3a4e" stroke-width="1.5" rx="1"/>
+  <text x="196" y="596" class="sans text-secondary" font-size="10">Input (normal border)</text>
+  <circle cx="340" cy="592" r="4" fill="#22c55e"/>
+  <text x="350" y="596" class="sans text-secondary" font-size="10">HIGH</text>
+  <circle cx="400" cy="592" r="4" fill="#64748b"/>
+  <text x="410" y="596" class="sans text-secondary" font-size="10">LOW</text>
+  <text x="460" y="596" class="sans text-secondary" font-size="10">&#x2192; Output direction</text>
+  <text x="590" y="596" class="sans text-secondary" font-size="10">&#x2190; Input direction</text>
+</svg>

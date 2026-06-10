@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400">
+  <defs>
+    <style>
+      .mono { font-family: 'Consolas', 'Courier New', monospace; }
+      .sans { font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; }
+      .text-primary { fill: #e2e8f0; }
+      .text-secondary { fill: #94a3b8; }
+      .text-accent { fill: #7c3aed; }
+      .text-high { fill: #22c55e; }
+      .text-low { fill: #64748b; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="400" fill="#1e1e2e"/>
+
+  <!-- Title bar -->
+  <!-- Component: <WaveformViewer /> -->
+  <rect x="0" y="0" width="900" height="44" fill="#2a2a3e"/>
+  <text x="20" y="28" class="sans text-primary" font-size="16" font-weight="bold">Waveform Viewer</text>
+  <text x="750" y="28" class="sans text-secondary" font-size="12">Real-time</text>
+
+  <!-- ==================== Toolbar ==================== -->
+  <!-- Component: <WaveformToolbar /> -->
+  <rect x="0" y="44" width="900" height="36" fill="#252538"/>
+  <line x1="0" y1="80" x2="900" y2="80" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Transport controls -->
+  <rect x="12" y="50" width="60" height="24" fill="#22c55e" fill-opacity="0.2" rx="4" stroke="#22c55e" stroke-width="1"/>
+  <text x="22" y="66" class="sans text-high" font-size="11">&#x25B6; Start</text>
+
+  <rect x="80" y="50" width="64" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="90" y="66" class="sans text-primary" font-size="11">&#x23F8; Pause</text>
+
+  <rect x="152" y="50" width="52" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="164" y="66" class="sans text-primary" font-size="11">Clear</text>
+
+  <!-- Separator -->
+  <line x1="220" y1="52" x2="220" y2="72" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Time scale selector -->
+  <text x="232" y="66" class="sans text-secondary" font-size="11">Time scale:</text>
+  <rect x="304" y="50" width="40" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="312" y="66" class="mono text-primary" font-size="10">1ms</text>
+  <rect x="350" y="50" width="44" height="24" fill="#7c3aed" rx="4"/>
+  <text x="358" y="66" class="mono text-primary" font-size="10">10ms</text>
+  <rect x="400" y="50" width="52" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="406" y="66" class="mono text-primary" font-size="10">100ms</text>
+  <rect x="458" y="50" width="32" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="468" y="66" class="mono text-primary" font-size="10">1s</text>
+
+  <!-- Separator -->
+  <line x1="506" y1="52" x2="506" y2="72" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Export -->
+  <rect x="518" y="50" width="88" height="24" fill="#1a1a28" rx="4" stroke="#3a3a4e" stroke-width="1"/>
+  <text x="530" y="66" class="sans text-primary" font-size="11">Export CSV</text>
+
+  <!-- ==================== Waveform Area ==================== -->
+  <!-- Component: <WaveformCanvas channels={channels} /> -->
+  <rect x="16" y="88" width="868" height="270" fill="#1a1a28" rx="6" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Channel labels (left side) -->
+  <!-- Component: <ChannelLabel channel={ch} /> for each -->
+  <rect x="24" y="96" width="64" height="20" fill="#22c55e" fill-opacity="0.15" rx="3"/>
+  <text x="32" y="110" class="mono text-high" font-size="10">GP12 IN</text>
+  <text x="848" y="110" class="mono text-high" font-size="10">HIGH</text>
+
+  <rect x="24" y="158" width="64" height="20" fill="#7c3aed" fill-opacity="0.15" rx="3"/>
+  <text x="32" y="172" class="mono text-accent" font-size="10">GP13 IN</text>
+  <text x="852" y="172" class="mono text-low" font-size="10">LOW</text>
+
+  <rect x="24" y="220" width="64" height="20" fill="#ef4444" fill-opacity="0.15" rx="3"/>
+  <text x="32" y="234" class="mono" font-size="10" fill="#ef4444">GP14 IN</text>
+  <text x="852" y="234" class="mono text-low" font-size="10">LOW</text>
+
+  <rect x="24" y="282" width="64" height="20" fill="#3b82f6" fill-opacity="0.15" rx="3"/>
+  <text x="32" y="296" class="mono" font-size="10" fill="#3b82f6">GP15 IN</text>
+  <text x="848" y="296" class="mono text-high" font-size="10">HIGH</text>
+
+  <!-- Horizontal channel dividers -->
+  <line x1="20" y1="150" x2="876" y2="150" stroke="#2a2a3e" stroke-width="0.5"/>
+  <line x1="20" y1="212" x2="876" y2="212" stroke="#2a2a3e" stroke-width="0.5"/>
+  <line x1="20" y1="274" x2="876" y2="274" stroke="#2a2a3e" stroke-width="0.5"/>
+
+  <!-- Vertical grid lines (time) -->
+  <line x1="100" y1="92" x2="100" y2="352" stroke="#2a2a3e" stroke-width="0.5"/>
+  <line x1="260" y1="92" x2="260" y2="352" stroke="#2a2a3e" stroke-width="0.5"/>
+  <line x1="420" y1="92" x2="420" y2="352" stroke="#2a2a3e" stroke-width="0.5"/>
+  <line x1="580" y1="92" x2="580" y2="352" stroke="#2a2a3e" stroke-width="0.5"/>
+  <line x1="740" y1="92" x2="740" y2="352" stroke="#2a2a3e" stroke-width="0.5"/>
+
+  <!-- GP12 waveform (green) -->
+  <!-- LOW=140, HIGH=100 -->
+  <polyline points="100,140 200,140 200,100 340,100 340,140 460,140 460,100 560,100 560,140 640,140 640,100 780,100 780,140 840,140"
+    fill="none" stroke="#22c55e" stroke-width="2"/>
+
+  <!-- GP13 waveform (purple) -->
+  <!-- LOW=202, HIGH=162 -->
+  <polyline points="100,202 160,202 160,162 280,162 280,202 380,202 380,162 500,162 500,202 600,202 600,162 700,162 700,202 840,202"
+    fill="none" stroke="#7c3aed" stroke-width="2"/>
+
+  <!-- GP14 waveform (red) -->
+  <!-- LOW=264, HIGH=224 -->
+  <polyline points="100,264 300,264 300,224 440,224 440,264 600,264 600,224 660,224 660,264 840,264"
+    fill="none" stroke="#ef4444" stroke-width="2"/>
+
+  <!-- GP15 waveform (blue) -->
+  <!-- LOW=326, HIGH=286 -->
+  <polyline points="100,326 130,326 130,286 250,286 250,326 350,326 350,286 520,286 520,326 580,326 580,286 720,286 720,326 760,326 760,286 840,286"
+    fill="none" stroke="#3b82f6" stroke-width="2"/>
+
+  <!-- Cursor line (vertical dotted) -->
+  <!-- Component: <WaveformCursor time={23.456} /> -->
+  <line x1="475" y1="88" x2="475" y2="358" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,3"/>
+  <rect x="440" y="88" width="70" height="18" fill="#e2e8f0" rx="3"/>
+  <text x="450" y="101" class="mono" font-size="10" fill="#1e1e2e">23.456ms</text>
+
+  <!-- Cursor intersection dots -->
+  <circle cx="475" cy="140" r="3" fill="#22c55e"/>
+  <circle cx="475" cy="162" r="3" fill="#7c3aed"/>
+  <circle cx="475" cy="224" r="3" fill="#ef4444"/>
+  <circle cx="475" cy="286" r="3" fill="#3b82f6"/>
+
+  <!-- Time axis -->
+  <text x="96" y="370" class="mono text-secondary" font-size="9">0ms</text>
+  <text x="250" y="370" class="mono text-secondary" font-size="9">10ms</text>
+  <text x="410" y="370" class="mono text-secondary" font-size="9">20ms</text>
+  <text x="570" y="370" class="mono text-secondary" font-size="9">30ms</text>
+  <text x="730" y="370" class="mono text-secondary" font-size="9">40ms</text>
+  <text x="840" y="370" class="mono text-secondary" font-size="9">50ms</text>
+
+  <!-- ==================== Legend / Status Bar ==================== -->
+  <!-- Component: <WaveformStatusBar /> -->
+  <rect x="0" y="366" width="900" height="34" fill="#2a2a3e"/>
+  <line x1="0" y1="366" x2="900" y2="366" stroke="#3a3a4e" stroke-width="1"/>
+
+  <!-- Legend items -->
+  <rect x="16" y="374" width="8" height="8" fill="#22c55e" rx="1"/>
+  <text x="28" y="382" class="mono text-secondary" font-size="10">GP12: HIGH</text>
+
+  <rect x="130" y="374" width="8" height="8" fill="#7c3aed" rx="1"/>
+  <text x="142" y="382" class="mono text-secondary" font-size="10">GP13: LOW</text>
+
+  <rect x="240" y="374" width="8" height="8" fill="#ef4444" rx="1"/>
+  <text x="252" y="382" class="mono text-secondary" font-size="10">GP14: LOW</text>
+
+  <rect x="348" y="374" width="8" height="8" fill="#3b82f6" rx="1"/>
+  <text x="360" y="382" class="mono text-secondary" font-size="10">GP15: HIGH</text>
+
+  <!-- Cursor readout -->
+  <text x="560" y="382" class="sans text-secondary" font-size="10">Cursor: t = 23.456ms</text>
+
+  <!-- Buffer info -->
+  <text x="740" y="382" class="sans text-secondary" font-size="10">Buffer: 2048 / 4096</text>
+</svg>
