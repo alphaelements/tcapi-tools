@@ -1,6 +1,7 @@
 [package]
 name = "pochi-gui"
 version = "0.1.0"
+publish = false
 edition.workspace = true
 license.workspace = true
 description = "GUI application for Pochi-DIO (Tauri v2 + React)"
