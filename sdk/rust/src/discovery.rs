@@ -41,16 +41,20 @@ fn matches_pochi(info: &serialport::UsbPortInfo) -> bool {
 
 /// List serial port paths whose USB descriptors match a Pochi-DIO
 /// (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy "Tachyon*").
-/// No ports are opened.
+/// No ports are opened. Results are sorted by port path: the OS
+/// enumeration order is unspecified, and callers rely on a deterministic
+/// device order.
 pub fn enumerate_ports() -> Result<Vec<String>> {
     let ports = serialport::available_ports()?;
-    Ok(ports
+    let mut matched: Vec<String> = ports
         .into_iter()
         .filter_map(|port| match &port.port_type {
             SerialPortType::UsbPort(info) if matches_pochi(info) => Some(port.port_name),
             _ => None,
         })
-        .collect())
+        .collect();
+    matched.sort();
+    Ok(matched)
 }
 
 /// Probe one port: open it and query `info` (and best-effort `version`).

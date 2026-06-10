@@ -242,6 +242,9 @@ discover() -> DeviceInfo[]
 Enumerates all connected Pochi-DIO devices. Filters USB serial ports by
 VID (`0x2E8A`), PID (`0x000A`), and product string prefix (`"Pochi"`).
 Sends `info` and `version` to each matching port to populate `DeviceInfo`.
+Results are sorted by port path in every SDK: the OS enumeration order is
+unspecified, and callers (and the hardware smoke tests) rely on a
+deterministic device order when several devices are connected.
 
 **Rust:**
 ```rust
@@ -269,8 +272,24 @@ def discover() -> list[DeviceInfo]
 
 **C#:**
 ```csharp
-public static DeviceInfo[] Discover()
+public static class Discovery {
+    public static DeviceInfo[] Discover();
+
+    /// Variant that also reports matching ports that failed to open or
+    /// respond, mirroring the Rust discover_detailed().
+    public static DiscoveryResult DiscoverDetailed();
+}
+
+public sealed record DiscoveryResult(
+    IReadOnlyList<DeviceInfo> Devices,
+    IReadOnlyList<ProbeFailure> Failures
+);
 ```
+
+C# enumeration reads Linux sysfs directly (`System.IO.Ports` exposes no
+USB descriptors). On other platforms `Discover()` throws a `Connection`
+error instead of silently returning an empty list — connect by explicit
+port path (`Connection.Open(path)`) there.
 
 ### Connection
 
@@ -481,7 +500,9 @@ enum ErrorCode {
     SyncState = "SYNC_STATE",
     SyncTimeout = "SYNC_TIMEOUT",
     NoResource = "NO_RESOURCE",
+    UnknownDevice = "UNKNOWN_DEVICE",
     Connection = "CONNECTION",
+    Io = "IO",
     Parse = "PARSE",
     Timeout = "TIMEOUT",
     NoDevice = "NO_DEVICE",
@@ -533,7 +554,9 @@ public enum ErrorCode {
     SyncState,
     SyncTimeout,
     NoResource,
+    UnknownDevice,
     Connection,
+    Io,
     Parse,
     Timeout,
     NoDevice,

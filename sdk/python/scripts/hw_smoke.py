@@ -5,8 +5,17 @@ Mirrors ``sdk/rust/tests/hw_smoke.rs``; restores device state on exit."""
 
 import time
 
+from serial.tools import list_ports
+
 from pochi import Connection, discover_detailed
-from pochi.types import EdgeMode, PatternMode, PatternState, PatternStep, PinMap, PullMode
+from pochi.types import (
+    EdgeMode,
+    PatternMode,
+    PatternState,
+    PatternStep,
+    PinMap,
+    PullMode,
+)
 
 
 def main() -> None:
@@ -15,7 +24,17 @@ def main() -> None:
     devices = detailed.devices
     assert devices, "no Pochi-DIO found"
     print("discovered:", devices)
-    assert all("ttyACM2" not in d.port for d in devices), "Debugprobe misdetected"
+
+    # A Debugprobe (2e8a:000c) on the same host must NOT be detected. Its tty
+    # number depends on plug order, so locate it by USB descriptor instead of
+    # hard-coding a port name.
+    debugprobe_ports = [
+        p.device for p in list_ports.comports() if p.vid == 0x2E8A and p.pid == 0x000C
+    ]
+    print("debugprobe ports:", debugprobe_ports)
+    assert all(d.port not in debugprobe_ports for d in devices), (
+        "Debugprobe misdetected"
+    )
 
     device = devices[0]
     with Connection.open(device.port) as conn:
@@ -32,8 +51,13 @@ def main() -> None:
 
         conn.map_set(
             PinMap(
-                version=1, out_base=0, out_count=12, in_base=12, in_count=11,
-                pull=PullMode.UP, flags=0x01,
+                version=1,
+                out_base=0,
+                out_count=12,
+                in_base=12,
+                in_count=11,
+                pull=PullMode.UP,
+                flags=0x01,
             )
         )
         active = conn.map_get()

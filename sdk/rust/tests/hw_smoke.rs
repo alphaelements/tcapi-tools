@@ -30,9 +30,22 @@ fn hw_discovery() {
     assert!(!devices.is_empty(), "no Pochi-DIO found");
     println!("discovered: {devices:?}");
 
-    // The Debugprobe (2e8a:000c) on the same host must NOT be detected.
+    // A Debugprobe (2e8a:000c) on the same host must NOT be detected. Its
+    // tty number depends on plug order, so locate it by USB descriptor
+    // instead of hard-coding a port name.
+    let debugprobe_ports: Vec<String> = serialport::available_ports()
+        .expect("port enumeration failed")
+        .into_iter()
+        .filter_map(|p| match p.port_type {
+            serialport::SerialPortType::UsbPort(usb) if usb.vid == 0x2E8A && usb.pid == 0x000C => {
+                Some(p.port_name)
+            }
+            _ => None,
+        })
+        .collect();
+    println!("debugprobe ports: {debugprobe_ports:?}");
     assert!(
-        devices.iter().all(|d| !d.port.contains("ttyACM2")),
+        devices.iter().all(|d| !debugprobe_ports.contains(&d.port)),
         "Debugprobe misdetected as Pochi-DIO"
     );
     for dev in &devices {
