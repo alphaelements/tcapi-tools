@@ -48,12 +48,14 @@ def matches_pochi(vid: int | None, pid: int | None, product: str | None) -> bool
 def enumerate_ports() -> list[str]:
     """List serial port paths whose USB descriptors match a Pochi-DIO
     (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy "Tachyon*").
-    No ports are opened."""
-    return [
+    No ports are opened. Results are sorted by port path: the OS
+    enumeration order is unspecified, and callers rely on a deterministic
+    device order."""
+    return sorted(
         info.device
         for info in list_ports.comports()
         if matches_pochi(info.vid, info.pid, info.product)
-    ]
+    )
 
 
 def probe(port_path: str) -> DeviceInfo:
