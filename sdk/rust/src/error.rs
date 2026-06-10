@@ -52,6 +52,12 @@ pub enum SdkError {
 
     #[error("multiple devices found (specify --uid, --device, or --port)")]
     MultipleDevices,
+
+    #[error("device disconnected")]
+    Disconnected,
+
+    #[error("unsupported firmware: {0} (requires FW Phase 9.6+)")]
+    UnsupportedFirmware(String),
 }
 
 pub type Result<T> = std::result::Result<T, SdkError>;

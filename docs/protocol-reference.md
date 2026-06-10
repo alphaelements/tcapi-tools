@@ -304,13 +304,14 @@ When enabled, the device sends a push event on every input change:
 Load an output pattern into the device buffer.
 
 ```
-> pattern load 0F00000064000000000000006400000005000000C800000000000000C8000000
+> pattern load 04000F00000064000000000000006400000005000000C800000000000000C8000000
 OK accepted=4
 ```
 
 Arguments:
-- `<hex>` -- hex-encoded pattern data. Each step is 8 bytes:
-  `out_bits` (u32 LE) + `hold_ticks` (u32 LE, microseconds).
+- `<hex>` -- hex-encoded pattern data: a step count (u16 LE) followed by
+  the steps. Each step is 8 bytes: `out_bits` (u32 LE) + `hold_ticks`
+  (u32 LE, microseconds).
 
 Response: `accepted=<n>` -- number of steps accepted.
 
@@ -329,9 +330,12 @@ OK
 
 Arguments:
 - `<mode>` -- `once` (play through once) or `loop` (repeat)
-- `<repeat>` -- repeat count (u16; for `once` mode, use 1)
+- `<repeat>` -- repeat count (u16, >= 1; for `once` mode, use 1).
+  `loop` with `repeat=0` is rejected with `ERR BAD_PARAM` -- there is
+  no infinite mode; use a large repeat count and `pattern stop`.
 
-Errors: `ERR BUSY` (already running), `ERR BAD_PARAM` (no pattern loaded)
+Errors: `ERR BUSY` (already running), `ERR BAD_PARAM` (no pattern
+loaded, or `loop` with repeat=0)
 
 #### `pattern stop`
 
@@ -352,7 +356,8 @@ OK state=running step=5 loops=3
 ```
 
 Response fields:
-- `state=<idle|running|done>` -- playback state
+- `state=<idle|loaded|running|done>` -- playback state (`loaded` =
+  pattern data present but not started)
 - `step=<n>` -- current step index
 - `loops=<n>` -- completed loop count
 
@@ -801,38 +806,47 @@ Each pattern step is 8 bytes:
 
 ### Hex Encoding
 
-Steps are concatenated and hex-encoded for the `pattern load` command.
-Example: 4 steps, each 8 bytes = 32 bytes = 64 hex characters.
+The `pattern load` payload is a step count (u16 LE) followed by the
+concatenated steps, hex-encoded.
+Example: 4 steps = 2 + 4 x 8 bytes = 34 bytes = 68 hex characters.
 
 ### TOML Format
 
 Host-side tools can use TOML files for human-readable pattern definition.
-The host converts TOML to hex before sending.
+The host converts TOML to hex before sending. Either a `steps` list or an
+`edge` list (expanded to steps host-side) is accepted.
 
 ```toml
 # Example pattern: toggle outputs with timing
-[[step]]
-outputs = 0x0F
-hold_us = 100
+version = 1
+unit = "us"
+steps = [
+  { out = 0x0F, hold = 100 },
+  { out = 0x00, hold = 100 },
+  { out = 0x05, hold = 200 },
+  { out = 0x00, hold = 200 },
+]
+```
 
-[[step]]
-outputs = 0x00
-hold_us = 100
+```toml
+# Equivalent edge-list form: per-channel transitions at absolute times
+[[edge]]
+ch = 0
+t = 0
+level = 1
 
-[[step]]
-outputs = 0x05
-hold_us = 200
-
-[[step]]
-outputs = 0x00
-hold_us = 200
+[[edge]]
+ch = 0
+t = 100
+level = 0
 ```
 
 ### Playback Modes
 
 - **Once**: Play through the pattern once and stop. `pattern run once 1`
-- **Loop**: Repeat the pattern N times. `pattern run loop <N>`
-  (N=0 means infinite loop, stopped by `pattern stop`)
+- **Loop**: Repeat the pattern N times (N >= 1). `pattern run loop <N>`
+  (N=0 is rejected with `ERR BAD_PARAM`; for long runs use a large N
+  and stop with `pattern stop`)
 
 ### Maximum Steps
 

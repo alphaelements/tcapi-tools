@@ -1,11 +1,34 @@
+# cargo-deny configuration (schema for cargo-deny >= 0.14, "version 2").
+# Vulnerabilities, unmaintained crates, and unlicensed crates are denied
+# by default in version 2 — no explicit keys needed.
+
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
+version = 2
 yanked = "warn"
-notice = "warn"
+# All entries below are "unmaintained" notices (not vulnerabilities) pulled
+# in by the Tauri v2 dependency tree on Linux; they cannot be fixed here.
+# Revisit when Tauri moves off GTK3 (tauri-apps/tauri#9662).
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error via tauri macros (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0411", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0412", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0413", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0414", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0415", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0416", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0417", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0418", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0419", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2024-0420", reason = "GTK3 bindings via tauri/wry on Linux (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-* via tauri config parsing (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-* via tauri config parsing (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-* via tauri config parsing (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-* via tauri config parsing (unmaintained, no vuln)" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-* via tauri config parsing (unmaintained, no vuln)" },
+]
 
 [licenses]
-unlicensed = "deny"
+version = 2
 allow = [
     "MIT",
     "Apache-2.0",
@@ -14,13 +37,11 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
     "OpenSSL",
     "BSL-1.0",
     "MPL-2.0",
 ]
-copyleft = "deny"
 
 [[licenses.clarify]]
 name = "ring"
@@ -30,6 +51,9 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal path dependencies (e.g. pochi-gui -> pochi-sdk) carry
+# no version; that is not the supply-chain wildcard this lint targets.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

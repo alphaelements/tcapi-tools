@@ -169,6 +169,7 @@ pub struct PatternStatus {
 
 pub enum PatternState {
     Idle,
+    Loaded,
     Running,
     Done,
 }
@@ -245,6 +246,15 @@ Sends `info` and `version` to each matching port to populate `DeviceInfo`.
 **Rust:**
 ```rust
 pub fn discover() -> Result<Vec<DeviceInfo>>
+
+/// Variant that also reports matching ports that failed to open or
+/// respond (e.g. held open by another process) instead of hiding them.
+pub fn discover_detailed() -> Result<Discovery>
+
+pub struct Discovery {
+    pub devices: Vec<DeviceInfo>,
+    pub failures: Vec<ProbeFailure>, // (port, error) pairs
+}
 ```
 
 **TypeScript:**
@@ -273,9 +283,13 @@ UID, or device number.
 
 **Rust:**
 ```rust
-pub fn connect(port: &str) -> Result<Connection>
-pub fn connect_by_uid(uid: &str) -> Result<Connection>
-pub fn connect_by_device_number(n: u8) -> Result<Connection>
+impl Connection {
+    pub fn open(port: &str) -> Result<Connection>
+    pub fn open_by_uid(uid: &str) -> Result<Connection>
+    pub fn open_by_device_number(n: u8) -> Result<Connection>
+    /// Connect to the only device; NoDevice / MultipleDevices otherwise.
+    pub fn open_sole_device() -> Result<Connection>
+}
 ```
 
 **TypeScript:**
@@ -445,6 +459,8 @@ pub enum SdkError {
     Timeout,
     NoDevice,
     MultipleDevices,
+    Disconnected,
+    UnsupportedFirmware(String),
 }
 ```
 
@@ -470,6 +486,8 @@ enum ErrorCode {
     Timeout = "TIMEOUT",
     NoDevice = "NO_DEVICE",
     MultipleDevices = "MULTIPLE_DEVICES",
+    Disconnected = "DISCONNECTED",
+    UnsupportedFirmware = "UNSUPPORTED_FIRMWARE",
 }
 ```
 
@@ -494,6 +512,8 @@ class ParseError(SdkError): ...
 class TimeoutError(SdkError): ...
 class NoDeviceError(SdkError): ...
 class MultipleDevicesError(SdkError): ...
+class DisconnectedError(SdkError): ...
+class UnsupportedFirmwareError(SdkError): ...
 ```
 
 **C#:**
@@ -518,6 +538,8 @@ public enum ErrorCode {
     Timeout,
     NoDevice,
     MultipleDevices,
+    Disconnected,
+    UnsupportedFirmware,
 }
 ```
 
@@ -552,24 +574,31 @@ error variant:
 | Timeout | No response received within the timeout period |
 | NoDevice | No Pochi-DIO device found during discovery |
 | MultipleDevices | Multiple devices found but no selector specified |
+| Disconnected | Device went away mid-session (unplug, reader thread exit) |
+| UnsupportedFirmware | Pre-Phase 9.6 firmware detected (`ts_res=1000` in caps, or `t=` timestamp event format). Never parsed silently |
 
 ## 5. Event Model
 
 ### Rust
 
 ```rust
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 
 impl Connection {
-    /// Start a background reader that routes push events to the channel.
-    /// Returns a receiver that yields events as they arrive.
-    pub fn subscribe_events(&mut self) -> Result<mpsc::Receiver<PushEvent>>
+    /// Install a push event subscriber on the existing reader thread.
+    /// Returns a receiver that yields events as they arrive (including
+    /// while commands are in flight). A second call replaces the first
+    /// subscriber. No async runtime dependency.
+    pub fn subscribe_events(&mut self) -> mpsc::Receiver<PushEvent>
 }
 
 pub enum PushEvent {
     InputChange { inputs: u32, timestamp_us: u64 },
     PatternDone { loops: u16 },
     SyncDone { status: String, devnum: u8, timestamp: u64 },
+    /// Unrecognized or malformed push line, preserved verbatim so newer
+    /// firmware events are observable instead of silently dropped.
+    Unknown { raw: String },
 }
 ```
 
@@ -696,41 +725,59 @@ ensures that:
 The reconcile engine is part of the SDK, not just the CLI. Any application
 can use it.
 
+The Rust signatures below are normative (ported from `pochi-cli` together
+with its test vectors); other languages mirror them with idiomatic naming
+and container types. All SDKs must produce identical results for the
+shared test vectors.
+
 ```rust
-/// Generate 3 candidate timestamps for a (count, phase) pair.
+/// Generate 3 candidate timestamps for a (count, phase) pair:
+/// [as-is, count-1, count+1].
 pub fn candidates(count: u32, phase: u8) -> [i64; 3]
+
+/// Naive (uncorrected) ns value: count * 1000 + phase * 40.
+pub fn as_is_ns(count: u32, phase: u8) -> i64
 
 /// Given K events from the same physical time, find the combination
 /// of candidates that minimizes total pairwise |diff|.
 /// Returns K reconciled timestamps in nanoseconds.
+/// K=1 and K>8 return as-is values; ties prefer as-is.
 pub fn reconcile(events: &[(u32, u8)]) -> Vec<i64>
 
-/// Group events from multiple sources by raw_count proximity.
-/// Events with count within +/-1 are in the same group.
-pub fn group_events(sources: &[Vec<(u32, u8)>]) -> Vec<Vec<(usize, usize)>>
-```
+/// One timestamp event tagged with its origin (device x channel).
+pub struct SourceEvent {
+    pub device: String,      // UID, or "local" for single-device use
+    pub channel: String,     // e.g. "GP0" (best-effort label)
+    pub inputs: String,      // input snapshot, "0x..." form
+    pub raw_count: u32,
+    pub raw_phase: u8,
+    pub sync_active: bool,
+}
 
-### TypeScript
+/// A group of events attributed to the same physical instant.
+pub struct ReconcileGroup {
+    pub approx_count: u32,
+    pub events: Vec<SourceEvent>,
+    pub reconciled_ns: Vec<i64>,
+    pub reconciled: bool,        // false when no correction was possible
+    pub warning: Option<String>, // why correction was skipped
+}
 
-```typescript
-function candidates(count: number, phase: number): [number, number, number]
-function reconcile(events: Array<[number, number]>): number[]
-function groupEvents(sources: Array<Array<[number, number]>>): Array<Array<[number, number]>>
-```
+/// Group events by raw_count proximity (gap >= 2 starts a new group)
+/// and reconcile within each group. Groups with mixed sync_active, or
+/// sync_active=0 across different devices, or K>8 are left as-is with
+/// a warning.
+pub fn group_events(events: &[SourceEvent]) -> Vec<ReconcileGroup>
 
-### Python
+/// Per-source-pair diff statistics across all groups (mean, stdev,
+/// max |diff|, % within 500ns).
+pub fn pair_stats(groups: &[ReconcileGroup]) -> Vec<PairStats>
 
-```python
-def candidates(count: int, phase: int) -> tuple[int, int, int]
-def reconcile(events: list[tuple[int, int]]) -> list[int]
-def group_events(sources: list[list[tuple[int, int]]]) -> list[list[tuple[int, int]]]
-```
-
-### C#
-
-```csharp
-public static long[] Candidates(uint count, byte phase)
-public static long[] Reconcile((uint Count, byte Phase)[] events)
-public static List<List<(int Source, int Index)>> GroupEvents(
-    List<List<(uint Count, byte Phase)>> sources)
+/// Extend wrapping u32 raw counts to u64 (one instance per device per
+/// count source).
+pub struct CountExtender;
+impl CountExtender {
+    pub fn new() -> Self
+    pub fn extend(&mut self, raw: u32) -> u64
+}
 ```
