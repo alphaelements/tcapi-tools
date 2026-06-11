@@ -110,6 +110,10 @@ class TimestampEvent:
 class TimestampResult:
     events: list[TimestampEvent] = field(default_factory=list)
     reconciled: bool = False
+    #: ``True`` if the FW reported a ring overflow since the last ``ts get``
+    #: (i.e. events were dropped). ``False`` for FW without the ``overflow=``
+    #: field in the ``ts get`` response.
+    overflow: bool = False
 
 
 class SyncRole(str, Enum):

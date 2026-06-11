@@ -6,6 +6,7 @@ import {
   parseAccepted,
   parseCaps,
   parseCountField,
+  parseCountOverflowField,
   parseInfo,
   parseMap,
   parsePatternStatus,
@@ -81,6 +82,46 @@ describe("parseCountField", () => {
     expect(errCode(() => parseCountField("n=2"))).toBe(ErrorCode.Parse);
     expect(errCode(() => parseCountField("count=abc"))).toBe(ErrorCode.Parse);
     expect(errCode(() => parseCountField("count=-1"))).toBe(ErrorCode.Parse);
+  });
+});
+
+describe("parseCountOverflowField", () => {
+  it("parses new-FW form (count + overflow)", () => {
+    expect(parseCountOverflowField("count=3 overflow=0")).toEqual({
+      count: 3,
+      overflow: false,
+    });
+    expect(parseCountOverflowField("count=85 overflow=1")).toEqual({
+      count: 85,
+      overflow: true,
+    });
+  });
+  it("treats missing overflow= as overflow=false (old-FW compat)", () => {
+    expect(parseCountOverflowField("count=3")).toEqual({
+      count: 3,
+      overflow: false,
+    });
+    expect(parseCountOverflowField("count=0")).toEqual({
+      count: 0,
+      overflow: false,
+    });
+  });
+  it("is field-order independent", () => {
+    expect(parseCountOverflowField("overflow=1 count=4")).toEqual({
+      count: 4,
+      overflow: true,
+    });
+  });
+  it("rejects invalid overflow= values", () => {
+    expect(errCode(() => parseCountOverflowField("count=1 overflow=2"))).toBe(
+      ErrorCode.Parse,
+    );
+    expect(errCode(() => parseCountOverflowField("count=1 overflow=yes"))).toBe(
+      ErrorCode.Parse,
+    );
+    expect(errCode(() => parseCountOverflowField("overflow=0"))).toBe(
+      ErrorCode.Parse,
+    );
   });
 });
 

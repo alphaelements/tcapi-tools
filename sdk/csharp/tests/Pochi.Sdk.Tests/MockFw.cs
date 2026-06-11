@@ -17,6 +17,7 @@ internal sealed class MockFw
     public bool TsArmed;
     public List<string> TsEvents =
         ["  0x00000005 c=1000 p=7 s=1", "  0x0000000A c=2000 p=12 s=0"];
+    public bool TsOverflow;
     public bool SyncClocking;
     public bool OldFirmware;
 
@@ -193,7 +194,8 @@ internal sealed class MockFw
                 ? int.Parse(parts[2], CultureInfo.InvariantCulture)
                 : 0;
             var events = TsEvents.Take(maxEvents).ToList();
-            return [$"OK count={events.Count}", .. events];
+            var overflowFlag = TsOverflow ? 1 : 0;
+            return [$"OK count={events.Count} overflow={overflowFlag}", .. events];
         }
 
         return ["ERR UNKNOWN_CMD"];

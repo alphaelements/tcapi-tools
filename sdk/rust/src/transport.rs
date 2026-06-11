@@ -100,15 +100,19 @@ impl Transport {
     pub fn command_counted(&mut self, cmd: &str) -> Result<(String, Vec<String>)> {
         self.drain_stale_responses();
         self.write_line(cmd)?;
-        let deadline = Instant::now() + self.timeout;
 
-        let first = self.recv_response(deadline)?;
+        let first = self.recv_response(Instant::now() + self.timeout)?;
         let data = protocol::parse_response(&first)?.ok_data()?;
         let count = protocol::parse_count_field(&data)?;
 
+        // Per-line deadline: large captures (e.g. ts ring full of 256 events)
+        // can take longer than a single command-level timeout because the FW
+        // streams the data lines, and the host CDC schedules USB packets
+        // asynchronously. Reset the deadline for each line so a slow stream
+        // does not trip the same 2 s budget that bounds the OK line.
         let mut lines = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            lines.push(self.recv_response(deadline)?);
+            lines.push(self.recv_response(Instant::now() + self.timeout)?);
         }
         Ok((data, lines))
     }

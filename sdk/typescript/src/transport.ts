@@ -93,15 +93,18 @@ export class Transport extends EventEmitter<TransportEvents> {
   async commandCounted(cmd: string): Promise<[string, string[]]> {
     this.drainStaleResponses();
     await this.writeLine(cmd);
-    const deadline = Date.now() + this.timeoutMs;
 
-    const first = await this.recvResponse(deadline - Date.now());
+    const first = await this.recvResponse(this.timeoutMs);
     const data = okData(parseResponse(first));
     const count = parseCountField(data);
 
+    // Per-line budget: large captures (e.g. ts get on a full ring) stream
+    // many data lines and the USB CDC scheduler may pace them slower than a
+    // single command-level timeout allows. Reset the budget for each line so
+    // a slow stream does not trip the same timeout that bounds the OK line.
     const lines: string[] = [];
     for (let i = 0; i < count; i++) {
-      lines.push(await this.recvResponse(deadline - Date.now()));
+      lines.push(await this.recvResponse(this.timeoutMs));
     }
     return [data, lines];
   }

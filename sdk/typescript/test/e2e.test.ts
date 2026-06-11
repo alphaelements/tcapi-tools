@@ -16,6 +16,7 @@ class MockFw {
   patternState = "idle";
   tsArmed = false;
   tsEvents = ["  0x00000005 c=1000 p=7 s=1", "  0x0000000A c=2000 p=12 s=0"];
+  tsOverflow = false;
   syncClocking = false;
   oldFirmware = false;
 
@@ -94,7 +95,11 @@ class MockFw {
       if (this.oldFirmware) return ["OK count=1", "  0x00000005 t=1234567890"];
       const max = Number(parts[2] ?? 0);
       const events = this.tsEvents.slice(0, max);
-      return [`OK count=${events.length}`, ...events];
+      const overflowFlag = this.tsOverflow ? 1 : 0;
+      return [
+        `OK count=${events.length} overflow=${overflowFlag}`,
+        ...events,
+      ];
     }
     if (key === "ts disarm") {
       this.tsArmed = false;
@@ -259,7 +264,20 @@ describe("empty ts ring", () => {
     await conn.tsArm(0x01, "rising");
     const result = await conn.tsGet(256);
     expect(result.events).toEqual([]);
+    expect(result.overflow).toBe(false);
     expect(await conn.read()).toBe(0x05);
+  });
+});
+
+describe("ts overflow flag propagation", () => {
+  it("FW overflow=1 surfaces as result.overflow=true", async () => {
+    const fw = new MockFw();
+    fw.tsOverflow = true;
+    const { conn } = connectMock(fw);
+    await conn.tsArm(0x0f, "rising");
+    const result = await conn.tsGet(256);
+    expect(result.overflow).toBe(true);
+    expect(result.events.length).toBe(2);
   });
 });
 

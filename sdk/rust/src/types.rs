@@ -111,6 +111,11 @@ pub struct TimestampEvent {
 pub struct TimestampResult {
     pub events: Vec<TimestampEvent>,
     pub reconciled: bool,
+    /// `true` if the FW reported a ring overflow since the last `ts get`
+    /// (i.e. events were dropped). `false` for FW without the
+    /// `overflow=` field in the `ts get` response.
+    #[serde(default)]
+    pub overflow: bool,
 }
 
 /// Asynchronous push event from the device (`! ...` lines).

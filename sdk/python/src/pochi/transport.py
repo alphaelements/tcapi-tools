@@ -94,16 +94,20 @@ class Transport:
 
     def command_counted(self, cmd: str) -> tuple[str, list[str]]:
         """Send a command whose response is ``OK count=N`` followed by
-        exactly N data lines (``ts get`` only)."""
+        exactly N data lines (``ts get`` only).
+
+        Each data line gets its own ``self.timeout`` budget: large captures
+        stream many lines and the USB CDC scheduler may pace them slower
+        than a single command-level timeout allows.
+        """
         self._drain_stale_responses()
         self._write_line(cmd)
-        deadline = time.monotonic() + self.timeout
 
-        first = self._recv_response(deadline - time.monotonic())
+        first = self._recv_response(self.timeout)
         data = parse_response(first).ok_data()
         count = parse_count_field(data)
 
-        lines = [self._recv_response(deadline - time.monotonic()) for _ in range(count)]
+        lines = [self._recv_response(self.timeout) for _ in range(count)]
         return data, lines
 
     def raw(self, cmd: str) -> str:

@@ -71,6 +71,7 @@ class MockFw:
             "  0x00000005 c=1000 p=7 s=1",
             "  0x0000000A c=2000 p=12 s=0",
         ]
+        self.ts_overflow = False
         self.sync_clocking = False
         self.old_firmware = False
 
@@ -163,7 +164,11 @@ class MockFw:
                 return ["OK count=1", "  0x00000005 t=1234567890"]
             max_events = int(parts[2]) if len(parts) > 2 else 0
             events = self.ts_events[:max_events]
-            return [f"OK count={len(events)}", *events]
+            overflow_flag = 1 if self.ts_overflow else 0
+            return [
+                f"OK count={len(events)} overflow={overflow_flag}",
+                *events,
+            ]
         if key == "ts disarm":
             self.ts_armed = False
             return ["OK"]

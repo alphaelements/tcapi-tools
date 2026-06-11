@@ -82,6 +82,12 @@ export interface TimestampEvent {
 export interface TimestampResult {
   events: TimestampEvent[];
   reconciled: boolean;
+  /**
+   * `true` if the FW reported a ring overflow since the last `ts get`
+   * (i.e. events were dropped). `false` for FW without the `overflow=`
+   * field in the `ts get` response.
+   */
+  overflow: boolean;
 }
 
 export type SyncRole = "master" | "slave";

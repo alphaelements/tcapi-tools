@@ -71,6 +71,26 @@ def parse_count_field(ok_data: str) -> int:
     raise ParseError(f"missing count= field: {ok_data}")
 
 
+def parse_count_overflow_field(ok_data: str) -> tuple[int, bool]:
+    """Extract ``count=N overflow=B`` from a ``ts get`` OK data string.
+
+    ``overflow=B`` was added in FW v0.1.2 (Pochi-DIO
+    ``fix/cdc-tx-buffer-truncation``) and signals that the ring buffer
+    overflowed since the last ``ts get`` (read-then-clear on the FW side).
+    A missing ``overflow=`` (older FW) is treated as ``overflow=0``.
+    """
+    count = parse_count_field(ok_data)
+    for part in ok_data.split():
+        if part.startswith("overflow="):
+            value = part[len("overflow=") :]
+            if value == "0":
+                return count, False
+            if value == "1":
+                return count, True
+            raise ParseError(f"invalid overflow= value: {value}")
+    return count, False
+
+
 def _parse_u32(s: str) -> int:
     if re.fullmatch(r"0[xX][0-9a-fA-F]+", s):
         value = int(s, 16)
@@ -372,6 +392,7 @@ __all__ = [
     "Response",
     "parse_response",
     "parse_count_field",
+    "parse_count_overflow_field",
     "parse_version",
     "parse_caps",
     "parse_info",
