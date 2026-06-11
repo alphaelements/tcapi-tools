@@ -69,6 +69,7 @@ interface WireTsRow {
 interface WireTsResult {
   events: WireTsRow[];
   reconciled: boolean;
+  overflow: boolean;
 }
 interface WirePatternTomlPayload {
   steps: { out_bits: number; hold_us: number }[];
@@ -172,7 +173,12 @@ interface StoreState {
     armed: boolean;
     mask: number;
     edge: "rising" | "falling" | "both";
-    result: { rows: TsRowUi[]; reconciled: boolean; span: number } | null;
+    result: {
+      rows: TsRowUi[];
+      reconciled: boolean;
+      overflow: boolean;
+      span: number;
+    } | null;
     bufferEst: number;
   };
 
@@ -847,6 +853,7 @@ function createStore() {
         S.ts.result = {
           rows,
           reconciled: result.reconciled,
+          overflow: result.overflow,
           span: rows.length
             ? rows[rows.length - 1].computedNs - rows[0].computedNs
             : 0,

@@ -192,6 +192,14 @@ export function TimestampViewer() {
         Reconcile timestamps
       </label>
 
+      {/* device buffer overflowed during capture: events were dropped */}
+      {res?.overflow && (
+        <div className="mono" style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", fontSize: 10, color: "#ef4444", background: "color-mix(in oklab, #ef4444 12%, transparent)", borderRadius: "var(--r-sm)", border: "1px solid color-mix(in oklab, #ef4444 35%, transparent)" }}>
+          <span className="dot-led err"></span>
+          OVERFLOW — capture buffer full, events dropped
+        </div>
+      )}
+
       {/* summary */}
       {stats && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, padding: "8px", background: "var(--surface-2)", borderRadius: "var(--r-sm)", border: "1px solid var(--border-soft)" }}>
@@ -244,6 +252,7 @@ async function exportData(kind: "csv" | "json", res: TsResultUi | null) {
       : JSON.stringify(
           {
             reconciled: res.reconciled,
+            overflow: res.overflow,
             events: res.rows.map((r) => ({
               inputs: r.inputs,
               raw_count: r.rawCount,

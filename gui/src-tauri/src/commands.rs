@@ -314,6 +314,8 @@ pub struct TsRow {
 pub struct TsResultPayload {
     pub events: Vec<TsRow>,
     pub reconciled: bool,
+    /// Device-side capture buffer overflowed; events were dropped.
+    pub overflow: bool,
 }
 
 fn as_is_rows(result: &TimestampResult) -> Vec<TsRow> {
@@ -342,6 +344,7 @@ pub async fn ts_get(
         Ok(TsResultPayload {
             events: as_is_rows(&result),
             reconciled: false,
+            overflow: result.overflow,
         })
     })
     .await
@@ -398,6 +401,7 @@ fn reconcile_rows(result: &TimestampResult) -> TsResultPayload {
     TsResultPayload {
         events: rows,
         reconciled: true,
+        overflow: result.overflow,
     }
 }
 
@@ -527,6 +531,7 @@ mod tests {
         let result = TimestampResult {
             events: vec![ev(1000, 24), ev(1001, 24)],
             reconciled: false,
+            overflow: false,
         };
         let payload = reconcile_rows(&result);
         assert!(payload.reconciled);
@@ -540,6 +545,7 @@ mod tests {
         let result = TimestampResult {
             events: vec![ev(1000, 5), ev(5000, 9)],
             reconciled: false,
+            overflow: false,
         };
         let payload = reconcile_rows(&result);
         assert!(payload.events.iter().all(|r| !r.reconciled));
@@ -552,6 +558,7 @@ mod tests {
         let result = TimestampResult {
             events: vec![ev(5000, 9), ev(1000, 5)],
             reconciled: false,
+            overflow: false,
         };
         let payload = reconcile_rows(&result);
         assert_eq!(payload.events[0].raw_count, 5000);
@@ -563,9 +570,21 @@ mod tests {
         let result = TimestampResult {
             events: vec![],
             reconciled: false,
+            overflow: false,
         };
         let payload = reconcile_rows(&result);
         assert!(payload.events.is_empty());
         assert!(payload.reconciled);
+    }
+
+    #[test]
+    fn reconcile_rows_propagates_overflow() {
+        let result = TimestampResult {
+            events: vec![ev(1000, 5)],
+            reconciled: false,
+            overflow: true,
+        };
+        let payload = reconcile_rows(&result);
+        assert!(payload.overflow);
     }
 }
