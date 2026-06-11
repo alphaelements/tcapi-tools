@@ -338,6 +338,18 @@ interface PinMapEditorState {
 - Visual feedback: green border on applied map, yellow on unsaved edits.
 - Validation: prevent overlapping ranges, out-of-bound pins.
 
+**Hardware-imposed scope (editable surface)**:
+The RP2350 + current FW fix `out_base = 0` and derive `in_base` from
+`out_base + out_count` (see `map_to_hex` in `sdk/rust/src/protocol.rs`).
+The only degree of freedom is the **split point** (`out_count`); `in_count`
+follows as `caps.max_dio - out_count`. So the editor surfaces:
+- the **split slider** (out/in boundary),
+- the **pull mode** dropdown,
+- the **flags** checkboxes.
+Separate numeric fields for `out_base` / `in_base` / `in_count` would be
+semantically redundant and a misinput hazard. If a future FW supports
+non-zero `out_base`, extend the editor then.
+
 ### PatternEditor
 
 **Purpose**: Create, load, and control output patterns.
