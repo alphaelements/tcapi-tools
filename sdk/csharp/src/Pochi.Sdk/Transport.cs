@@ -143,17 +143,19 @@ public sealed class Transport : IDisposable
     {
         DrainStaleResponses();
         WriteLine(cmd);
-        var deadline = Environment.TickCount64 + (long)CommandTimeout.TotalMilliseconds;
 
-        var first = RecvResponse(TimeSpan.FromMilliseconds(deadline - Environment.TickCount64));
+        var first = RecvResponse(CommandTimeout);
         var data = Protocol.ParseResponse(first).OkData();
         var count = Protocol.ParseCountField(data);
 
+        // Per-line budget: large captures (e.g. ts get on a full ring) stream
+        // many data lines and the USB CDC scheduler may pace them slower than
+        // a single command-level timeout allows. Reset the budget for each
+        // line so a slow stream does not trip the OK-line timeout.
         var lines = new List<string>();
         for (var i = 0UL; i < count; i++)
         {
-            lines.Add(RecvResponse(
-                TimeSpan.FromMilliseconds(deadline - Environment.TickCount64)));
+            lines.Add(RecvResponse(CommandTimeout));
         }
 
         return (data, lines);
