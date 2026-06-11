@@ -37,11 +37,38 @@ const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 type EventSlot = Arc<Mutex<Option<Sender<PushEvent>>>>;
 
+/// Direction of one logical line on the wire, as seen by a
+/// [`TrafficHook`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficDirection {
+    /// Command line written to the device (without the trailing `\r\n`).
+    Sent,
+    /// Response line (`OK ...` / `ERR ...` / counted data line).
+    Received,
+    /// Push event line (`! ...`), delivered from the reader thread.
+    Event,
+}
+
+/// Observer for every line exchanged with the device (GUI command log,
+/// debug tracing). Called synchronously: `Sent`/`Received` from the
+/// caller's thread, `Event` from the reader thread — keep it fast.
+pub type TrafficHook = Arc<dyn Fn(TrafficDirection, &str) + Send + Sync>;
+
+type HookSlot = Arc<Mutex<Option<TrafficHook>>>;
+
+fn notify_hook(slot: &HookSlot, dir: TrafficDirection, line: &str) {
+    let guard = slot.lock().expect("traffic hook poisoned");
+    if let Some(hook) = guard.as_ref() {
+        hook(dir, line);
+    }
+}
+
 /// Line-oriented transport to one device.
 pub struct Transport {
     port: Box<dyn serialport::SerialPort>,
     responses: Receiver<String>,
     event_slot: EventSlot,
+    hook_slot: HookSlot,
     shutdown: Arc<AtomicBool>,
     reader: Option<JoinHandle<()>>,
     timeout: Duration,
@@ -63,22 +90,31 @@ impl Transport {
 
         let (resp_tx, responses) = mpsc::channel();
         let event_slot: EventSlot = Arc::new(Mutex::new(None));
+        let hook_slot: HookSlot = Arc::new(Mutex::new(None));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let reader = std::thread::spawn({
             let event_slot = Arc::clone(&event_slot);
+            let hook_slot = Arc::clone(&hook_slot);
             let shutdown = Arc::clone(&shutdown);
-            move || reader_loop(read_half, resp_tx, event_slot, shutdown)
+            move || reader_loop(read_half, resp_tx, event_slot, hook_slot, shutdown)
         });
 
         Ok(Self {
             port,
             responses,
             event_slot,
+            hook_slot,
             shutdown,
             reader: Some(reader),
             timeout: DEFAULT_COMMAND_TIMEOUT,
         })
+    }
+
+    /// Install an observer for every line exchanged with the device.
+    /// Replaces any previous hook; `None` removes it.
+    pub fn set_traffic_hook(&mut self, hook: Option<TrafficHook>) {
+        *self.hook_slot.lock().expect("traffic hook poisoned") = hook;
     }
 
     /// Set the command response timeout.
@@ -144,7 +180,10 @@ impl Transport {
             .write_all(line.as_bytes())
             .and_then(|()| self.port.flush());
         match result {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                notify_hook(&self.hook_slot, TrafficDirection::Sent, cmd);
+                Ok(())
+            }
             // A write failure after the reader thread died means the device
             // is gone; report that uniformly instead of a raw I/O error.
             Err(_) if self.reader_exited() => Err(SdkError::Disconnected),
@@ -187,6 +226,7 @@ fn reader_loop(
     mut port: Box<dyn serialport::SerialPort>,
     resp_tx: Sender<String>,
     event_slot: EventSlot,
+    hook_slot: HookSlot,
     shutdown: Arc<AtomicBool>,
 ) {
     let mut acc: Vec<u8> = Vec::new();
@@ -205,9 +245,13 @@ fn reader_loop(
                         continue;
                     }
                     if let Ok(Response::Push(payload)) = protocol::parse_response(trimmed) {
+                        notify_hook(&hook_slot, TrafficDirection::Event, trimmed);
                         dispatch_event(&event_slot, &payload);
-                    } else if resp_tx.send(trimmed.to_string()).is_err() {
-                        return; // Transport dropped
+                    } else {
+                        notify_hook(&hook_slot, TrafficDirection::Received, trimmed);
+                        if resp_tx.send(trimmed.to_string()).is_err() {
+                            return; // Transport dropped
+                        }
                     }
                 }
             }
@@ -321,6 +365,46 @@ mod tests {
         t.set_timeout(Duration::from_millis(200));
         let err = t.command("version").unwrap_err();
         assert!(matches!(err, SdkError::Timeout));
+    }
+
+    #[test]
+    fn traffic_hook_sees_sent_received_and_event_lines() {
+        let (mut t, master) = pty_transport();
+        let seen: Arc<Mutex<Vec<(TrafficDirection, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_seen = Arc::clone(&seen);
+        t.set_traffic_hook(Some(Arc::new(move |dir, line: &str| {
+            hook_seen.lock().unwrap().push((dir, line.to_string()));
+        })));
+        let responder = respond_once(master, "read", &["! INPUT 0x000005 t=111", "OK 0x000003"]);
+        t.command("read").unwrap();
+        responder.join().unwrap();
+        // The event line arrives on the reader thread; wait for it to land.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while seen.lock().unwrap().len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let seen = seen.lock().unwrap();
+        assert!(seen.contains(&(TrafficDirection::Sent, "read".to_string())));
+        assert!(seen.contains(&(
+            TrafficDirection::Event,
+            "! INPUT 0x000005 t=111".to_string()
+        )));
+        assert!(seen.contains(&(TrafficDirection::Received, "OK 0x000003".to_string())));
+    }
+
+    #[test]
+    fn traffic_hook_removed_stops_observing() {
+        let (mut t, master) = pty_transport();
+        let seen: Arc<Mutex<Vec<(TrafficDirection, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_seen = Arc::clone(&seen);
+        t.set_traffic_hook(Some(Arc::new(move |dir, line: &str| {
+            hook_seen.lock().unwrap().push((dir, line.to_string()));
+        })));
+        t.set_traffic_hook(None);
+        let responder = respond_once(master, "version", &["OK v0.1.0 proto=1"]);
+        t.command("version").unwrap();
+        responder.join().unwrap();
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[test]

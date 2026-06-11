@@ -436,6 +436,27 @@ impl Connection {
 Sends an arbitrary text command and returns the raw response string.
 Useful for debugging and forward compatibility with new firmware commands.
 
+### Traffic Hook (Rust)
+
+```rust
+pub enum TrafficDirection { Sent, Received, Event }
+pub type TrafficHook = Arc<dyn Fn(TrafficDirection, &str) + Send + Sync>;
+
+impl Connection {
+    pub fn set_traffic_hook(&mut self, hook: Option<TrafficHook>)
+}
+```
+
+Installs an observer for every line exchanged with the device: command
+lines written (`Sent`, without the trailing CRLF), response/data lines
+(`Received`), and push lines (`Event`, including the `! ` prefix). The
+GUI uses this to feed its command log. The hook is called synchronously —
+`Sent`/`Received` from the calling thread, `Event` from the reader
+thread — so it must be fast and must not call back into the connection.
+A second call replaces the hook; `None` removes it. Rust-only for now;
+other languages expose equivalent logging via their event layers when
+needed.
+
 ### Connection Lifecycle
 
 ```rust

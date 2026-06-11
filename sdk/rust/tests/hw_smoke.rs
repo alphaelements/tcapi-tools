@@ -263,6 +263,11 @@ fn hw_full_smoke() {
 fn run_loopback_edge_capture(conn: &mut Connection) {
     // Clean slate: clear outputs and let inputs settle before arming,
     // so residual state from prior tests does not contaminate the ring.
+    // Also force-stop a possibly running pattern and turn off subscribe,
+    // in case a previous test run was aborted mid-flight and the device
+    // is still in `state=running step=0 loops=0` or pushing events.
+    let _ = conn.subscribe(false);
+    let _ = conn.pattern_stop();
     let _ = conn.ts_disarm();
     conn.write(0, 0xF).expect("write clear before arm");
     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -339,6 +344,22 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
     for w in ns.windows(2) {
         assert!(w[1] > w[0], "ts not monotonic: {ns:?}");
     }
+
+    // Hold timing assertion: the trailing tail [0x3, 0x7, 0xF] is always
+    // present, so the span between its first and last edges should equal
+    // `(tail.len() - 1) * HOLD_US`. A regression where the FW completes
+    // the pattern before honoring the last hold (the v0.1.2 problem A bug
+    // fixed in pochi-dio commit ae2af10) would make the span much shorter,
+    // so a generous ±50 µs/step tolerance still catches it.
+    let tail_ns = &ns[ns.len() - expected_tail.len()..];
+    let span_us = ((tail_ns[tail_ns.len() - 1] - tail_ns[0]) / 1000) as u64;
+    let expected_us = (expected_tail.len() as u64 - 1) * HOLD_US as u64;
+    let tolerance_us = expected_tail.len() as u64 * 50;
+    assert!(
+        span_us.abs_diff(expected_us) < tolerance_us,
+        "hold timing drift: expected {expected_us}us got {span_us}us (tail ns={tail_ns:?})"
+    );
+
     conn.ts_disarm().expect("ts disarm loopback");
 
     // --- Pass 2: subscribe on → run → assert ≥1 InputChange push ---

@@ -1,0 +1,15 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- App icon: the MenuBar logo mark (accent rounded square + waveform
+       path) on the instrument-theme window background. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#23233a"/>
+      <stop offset="1" stop-color="#16161f"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect x="76.8" y="76.8" width="870.4" height="870.4" rx="204.8" fill="#7c3aed" opacity="0.18"/>
+  <rect x="76.8" y="76.8" width="870.4" height="870.4" rx="204.8" fill="none" stroke="#7c3aed" stroke-width="66.6"/>
+  <path d="M153.6 614.4 h153.6 l76.8 -256 l102.4 409.6 l102.4 -307.2 l76.8 153.6 H870.4"
+        fill="none" stroke="#7c3aed" stroke-width="76.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
