@@ -145,7 +145,14 @@ export function TimestampViewer() {
   const tsDepth = S.capabilities?.tsDepth ?? 4096;
 
   // ts arm takes an *input-channel* bitmask (bit c = channel c), not GPs.
-  function allInputsMask() { let m = 0; for (let c = 0; c < NUM_PINS - S.splitIndex; c++) m |= (1 << c); return m >>> 0; }
+  // The FW rejects mask bits beyond caps.in_count even when the pin map
+  // assigns more inputs, so clamp to whichever is smaller.
+  function allInputsMask() {
+    const n = Math.min(NUM_PINS - S.splitIndex, S.capabilities?.inCount ?? NUM_PINS);
+    let m = 0;
+    for (let c = 0; c < n; c++) m |= 1 << c;
+    return m >>> 0;
+  }
 
   const stats = useMemo(() => {
     if (!res || !res.rows.length) return null;

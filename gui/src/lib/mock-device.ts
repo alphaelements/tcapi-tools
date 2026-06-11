@@ -248,7 +248,7 @@ export function installMockDevice(): void {
           return;
         }
         patLoops++;
-        if (mode === "loop" && (repeat === 0 || patLoops < repeat)) {
+        if (mode === "loop" && patLoops < repeat) {
           patStep = 0;
           playStep();
           return;
@@ -413,6 +413,11 @@ export function installMockDevice(): void {
       case "pattern_run":
         requireConnected();
         if (!patSteps.length) throw "pattern empty";
+        // FW parity: repeat=0 is BAD_PARAM (no infinite mode).
+        if (args.repeat === 0) {
+          wire(`pattern run ${args.mode} ${args.repeat}`, "ERR BAD_PARAM");
+          throw "pattern run: device error: BAD_PARAM (invalid parameter)";
+        }
         wire(`pattern run ${args.mode} ${args.repeat}`);
         runPattern(args.mode, args.repeat);
         return null;
@@ -431,8 +436,14 @@ export function installMockDevice(): void {
         };
 
       // --- timestamps ---
-      case "ts_arm":
+      case "ts_arm": {
         requireConnected();
+        // FW parity: mask bits beyond caps.in_count are BAD_PARAM.
+        const valid = ((1 << map.in_count) - 1) >>> 0;
+        if (((args.mask >>> 0) & ~valid) !== 0) {
+          wire(`ts arm ${hex(args.mask)} ${args.mode}`, "ERR BAD_PARAM");
+          throw "ts arm: device error: BAD_PARAM (invalid parameter)";
+        }
         tsArmed = true;
         tsMask = args.mask >>> 0;
         tsMode = args.mode;
@@ -441,6 +452,7 @@ export function installMockDevice(): void {
         syncHandle();
         wire(`ts arm ${hex(args.mask)} ${args.mode}`);
         return null;
+      }
       case "ts_disarm":
         requireConnected();
         tsArmed = false;

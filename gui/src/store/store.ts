@@ -134,6 +134,7 @@ interface StoreState {
   version: { fw: string; proto: string } | null;
   capabilities: {
     pins: number;
+    inCount: number;
     maxPattern: number;
     tsDepth: number;
     clockMhz: number;
@@ -467,6 +468,16 @@ function createStore() {
     async scan() {
       S.scanning = true;
       bump("conn");
+      // A webview reload leaves the backend holding the previous port,
+      // which makes that device probe as "busy" and vanish from the
+      // list; release any stale connection before discovery.
+      if (S.connStatus === "disconnected" && tauriAvailable) {
+        try {
+          await invoke("disconnect");
+        } catch {
+          /* nothing to release */
+        }
+      }
       // Discovery probes use their own short-lived transports, so the
       // traffic hook can't see them; summarize the scan here instead.
       log("sent", "discover");
@@ -510,6 +521,9 @@ function createStore() {
         };
         S.capabilities = {
           pins: caps.max_dio,
+          // The FW services at most this many input channels regardless of
+          // the pin map; ts arm masks beyond it are BAD_PARAM.
+          inCount: caps.in_count,
           maxPattern: caps.max_pattern_steps,
           tsDepth: caps.ts_ring_events,
           // System clock is not reported by `caps` (ts_resolution_ns is the
@@ -767,9 +781,14 @@ function createStore() {
         if (S.pattern.accepted == null) return; // upload failed
       }
       try {
+        // FW rejects repeat=0 (BAD_PARAM; no infinite mode) — the ∞ field
+        // value maps to the u16 maximum instead.
         await invoke("pattern_run", {
           mode: S.pattern.mode,
-          repeat: S.pattern.mode === "loop" ? S.pattern.repeat : 1,
+          repeat:
+            S.pattern.mode === "loop"
+              ? Math.min(S.pattern.repeat, 65535) || 65535
+              : 1,
         });
         S.pattern.playState = "running";
         S.pattern.curStep = 0;
