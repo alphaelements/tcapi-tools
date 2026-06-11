@@ -64,6 +64,30 @@ pub fn parse_count_field(ok_data: &str) -> Result<u64> {
         .map_err(|_| SdkError::Parse(format!("invalid count= value: {ok_data}")))
 }
 
+/// Extract `count=N overflow=B` from a `ts get` `OK` data string.
+///
+/// `overflow=B` was added in FW v0.1.2 (Pochi-DIO `fix/cdc-tx-buffer-truncation`)
+/// and signals that the ring buffer overflowed since the last `ts get`
+/// (read-then-clear semantics on the FW side).
+///
+/// For backward compatibility with FW that does not emit the field, a
+/// missing `overflow=` is treated as `overflow=0`.
+pub fn parse_count_overflow_field(ok_data: &str) -> Result<(u64, bool)> {
+    let count = parse_count_field(ok_data)?;
+    let overflow = match ok_data
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("overflow="))
+    {
+        None => false,
+        Some("0") => false,
+        Some("1") => true,
+        Some(other) => {
+            return Err(SdkError::Parse(format!("invalid overflow= value: {other}")));
+        }
+    };
+    Ok((count, overflow))
+}
+
 fn parse_u32_hex_or_dec(s: &str) -> Result<u32> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u32::from_str_radix(hex, 16).map_err(|_| SdkError::Parse(format!("invalid hex: {s}")))
@@ -612,6 +636,50 @@ mod tests {
         assert_matches!(parse_count_field("n=2"), Err(SdkError::Parse(_)));
         assert_matches!(parse_count_field("count=abc"), Err(SdkError::Parse(_)));
         assert_matches!(parse_count_field("count=-1"), Err(SdkError::Parse(_)));
+    }
+
+    #[test]
+    fn count_overflow_field_new_fw() {
+        assert_eq!(
+            parse_count_overflow_field("count=3 overflow=0").unwrap(),
+            (3, false)
+        );
+        assert_eq!(
+            parse_count_overflow_field("count=85 overflow=1").unwrap(),
+            (85, true)
+        );
+    }
+
+    #[test]
+    fn count_overflow_field_old_fw_missing_field() {
+        // FW without the overflow= field is treated as overflow=false.
+        assert_eq!(parse_count_overflow_field("count=3").unwrap(), (3, false));
+        assert_eq!(parse_count_overflow_field("count=0").unwrap(), (0, false));
+    }
+
+    #[test]
+    fn count_overflow_field_field_order_independent() {
+        assert_eq!(
+            parse_count_overflow_field("overflow=1 count=4").unwrap(),
+            (4, true)
+        );
+    }
+
+    #[test]
+    fn count_overflow_field_invalid_value() {
+        assert_matches!(
+            parse_count_overflow_field("count=1 overflow=2"),
+            Err(SdkError::Parse(_))
+        );
+        assert_matches!(
+            parse_count_overflow_field("count=1 overflow=yes"),
+            Err(SdkError::Parse(_))
+        );
+        // count= still required even with overflow= present.
+        assert_matches!(
+            parse_count_overflow_field("overflow=0"),
+            Err(SdkError::Parse(_))
+        );
     }
 
     // --- version ---

@@ -58,6 +58,34 @@ class TestCountField:
             protocol.parse_count_field(data)
 
 
+class TestCountOverflowField:
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            ("count=3 overflow=0", (3, False)),
+            ("count=85 overflow=1", (85, True)),
+            ("overflow=1 count=4", (4, True)),
+        ],
+    )
+    def test_new_fw_form(self, data, expected):
+        assert protocol.parse_count_overflow_field(data) == expected
+
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [("count=3", (3, False)), ("count=0", (0, False))],
+    )
+    def test_old_fw_missing_overflow(self, data, expected):
+        assert protocol.parse_count_overflow_field(data) == expected
+
+    @pytest.mark.parametrize(
+        "data",
+        ["count=1 overflow=2", "count=1 overflow=yes", "overflow=0"],
+    )
+    def test_invalid(self, data):
+        with pytest.raises(ParseError):
+            protocol.parse_count_overflow_field(data)
+
+
 class TestVersion:
     def test_basic(self):
         v = protocol.parse_version("v0.1.0 proto=1")

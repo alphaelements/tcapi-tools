@@ -222,12 +222,21 @@ export class Connection extends EventEmitter<ConnectionEvents> {
    * `ts get <max>` — retrieve captured events (counted multi-line read).
    * `timestampNs` is the host-computed as-is value; apply the reconcile
    * module for straddle correction across events.
+   *
+   * The returned `overflow` is `true` if the FW reported a ring overflow
+   * since the last `ts get` (FW v0.1.2+). `maxEvents` is clamped FW-side:
+   * as of FW v0.1.2 a single response carries at most 85 events, so
+   * draining a full 256-event ring may need multiple calls.
    */
   async tsGet(maxEvents: number): Promise<TimestampResult> {
-    const [, lines] = await this.transport.commandCounted(`ts get ${maxEvents}`);
+    const [data, lines] = await this.transport.commandCounted(
+      `ts get ${maxEvents}`,
+    );
+    const { overflow } = protocol.parseCountOverflowField(data);
     return {
       events: lines.map((line) => protocol.parseTsEventLine(line)),
       reconciled: false,
+      overflow,
     };
   }
 

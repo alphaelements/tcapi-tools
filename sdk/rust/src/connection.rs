@@ -203,10 +203,17 @@ impl Connection {
     /// `ts get <max>` — retrieve captured events (counted multi-line read).
     /// `timestamp_ns` is the host-computed as-is value; apply
     /// [`crate::reconcile`] for straddle correction across events.
+    ///
+    /// The returned [`TimestampResult::overflow`] is `true` if the FW
+    /// reported a ring overflow since the last `ts get` (FW v0.1.2+).
+    /// Note that `max_events` is clamped FW-side: as of FW v0.1.2 a single
+    /// response carries at most 85 events, so draining a full 256-event
+    /// ring may need multiple calls.
     pub fn ts_get(&mut self, max_events: u16) -> Result<TimestampResult> {
-        let (_, lines) = self
+        let (data, lines) = self
             .transport
             .command_counted(&format!("ts get {max_events}"))?;
+        let (_, overflow) = protocol::parse_count_overflow_field(&data)?;
         let events = lines
             .iter()
             .map(|line| protocol::parse_ts_event_line(line))
@@ -214,6 +221,7 @@ impl Connection {
         Ok(TimestampResult {
             events,
             reconciled: false,
+            overflow,
         })
     }
 

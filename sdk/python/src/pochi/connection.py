@@ -168,12 +168,21 @@ class Connection:
 
     def ts_get(self, max_events: int) -> TimestampResult:
         """``ts get <max>`` — retrieve captured events (counted read).
+
         ``timestamp_ns`` is the host-computed as-is value; apply the
-        reconcile module for straddle correction across events."""
-        _, lines = self._transport.command_counted(f"ts get {max_events}")
+        reconcile module for straddle correction across events.
+
+        ``TimestampResult.overflow`` is ``True`` if the FW reported a ring
+        overflow since the last ``ts get`` (FW v0.1.2+). ``max_events`` is
+        clamped FW-side: as of FW v0.1.2 a single response carries at most
+        85 events, so draining a full 256-event ring may need multiple calls.
+        """
+        data, lines = self._transport.command_counted(f"ts get {max_events}")
+        _, overflow = protocol.parse_count_overflow_field(data)
         return TimestampResult(
             events=[protocol.parse_ts_event_line(line) for line in lines],
             reconciled=False,
+            overflow=overflow,
         )
 
     def ts_disarm(self) -> None:

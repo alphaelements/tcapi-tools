@@ -68,10 +68,12 @@ public class WireJsonTests
                 new TimestampEvent(5, 1000, 7, true, 1000280),
                 new TimestampEvent(10, 2000, 12, false, 2000480),
             ],
-            Reconciled: false);
+            Reconciled: false,
+            Overflow: true);
         var restored = WireJson.Deserialize<TimestampResult>(
             WireJson.Serialize(original));
         Assert.Equal(original.Reconciled, restored.Reconciled);
+        Assert.Equal(original.Overflow, restored.Overflow);
         Assert.Equal(original.Events.ToList(), restored.Events.ToList());
     }
 

@@ -80,6 +80,39 @@ public static partial class Protocol
         throw new SdkException(ErrorCode.Parse, $"missing count= field: {okData}");
     }
 
+    /// <summary>
+    /// Extract <c>count=N overflow=B</c> from a <c>ts get</c> OK data string.
+    /// <c>overflow=B</c> was added in FW v0.1.2 (Pochi-DIO
+    /// <c>fix/cdc-tx-buffer-truncation</c>) and signals that the ring buffer
+    /// overflowed since the last <c>ts get</c> (read-then-clear on the FW
+    /// side). A missing <c>overflow=</c> (older FW) is treated as
+    /// <c>overflow=0</c>.
+    /// </summary>
+    public static (ulong Count, bool Overflow) ParseCountOverflowField(string okData)
+    {
+        var count = ParseCountField(okData);
+        foreach (var part in SplitWhitespace(okData))
+        {
+            if (part.StartsWith("overflow=", StringComparison.Ordinal))
+            {
+                var value = part["overflow=".Length..];
+                if (value == "0")
+                {
+                    return (count, false);
+                }
+
+                if (value == "1")
+                {
+                    return (count, true);
+                }
+
+                throw new SdkException(ErrorCode.Parse, $"invalid overflow= value: {value}");
+            }
+        }
+
+        return (count, false);
+    }
+
     // --- low-level field helpers ---
 
     private static string[] SplitWhitespace(string s) =>

@@ -74,7 +74,7 @@ The `OK` line includes a count indicating how many data lines follow.
 
 Example (`ts get`):
 ```
-OK count=2\r\n
+OK count=2 overflow=0\r\n
   0x00000005 c=1000 p=7 s=1\r\n
   0x0000000A c=2000 p=12 s=0\r\n
 ```
@@ -391,16 +391,24 @@ Retrieve captured timestamp events. Returns a multi-line response.
 
 ```
 > ts get 256
-OK count=2
+OK count=2 overflow=0
   0x00000005 c=1000 p=7 s=1
   0x0000000A c=2000 p=12 s=0
 ```
 
 Arguments:
-- `<max>` -- maximum number of events to retrieve (u16)
+- `<max>` -- maximum number of events to retrieve (u16). FW v0.1.2+
+  clamps a single response to at most 85 events (≤ 1023 bytes), so
+  draining a full 256-event ring may require multiple calls.
 
 Response:
-- First line: `OK count=<n>` where N is the actual event count.
+- First line: `OK count=<n> overflow=<0|1>` where:
+  - `count=<n>` is the actual event count in this response.
+  - `overflow=<0|1>` (FW v0.1.2+) is set to `1` if the ring buffer
+    overflowed since the last `ts get` (i.e. events were dropped).
+    The flag is cleared by the FW at the end of each `ts get`
+    (read-then-clear). Older FW omits this field; SDKs treat a
+    missing `overflow=` as `overflow=0`.
 - Following N lines, each with:
   - `0x<hex>` -- input snapshot at the moment of the edge
   - `c=<n>` -- raw microsecond count (u32)
@@ -408,7 +416,7 @@ Response:
   - `s=<0|1>` -- sync active flag (1 = sync clock running, 0 = free-running timer)
 
 **Important**: When `count=0`, no data lines follow. The host must read
-exactly N lines after the `OK count=N` line.
+exactly N lines after the `OK count=N ...` line.
 
 Errors: `ERR NOT_ARMED` (timestamp not armed)
 
@@ -548,7 +556,7 @@ Commands:
 | `pattern stop` | -- | `OK` | Stop playback |
 | `pattern status` | -- | `OK state=... step=... loops=...` | Playback status |
 | `ts arm <m> <mode>` | u32, rising\|falling\|both | `OK` | Arm timestamp |
-| `ts get <max>` | u16 | `OK count=<n>` + N lines | Get timestamps |
+| `ts get <max>` | u16 | `OK count=<n> overflow=<0|1>` + N lines | Get timestamps (FW v0.1.2+ adds overflow; clamped ≤85 events/call) |
 | `ts disarm` | -- | `OK` | Disarm timestamp |
 | `sync arm` | -- | `OK` | Prepare as slave |
 | `sync master` | -- | `OK` | Prepare as master |

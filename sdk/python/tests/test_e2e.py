@@ -89,6 +89,7 @@ def test_full_command_sweep():
     assert len(result.events) == 2
     assert result.events[0].timestamp_ns == 1_000_280
     assert not result.reconciled
+    assert not result.overflow
     conn.ts_disarm()
 
     conn.sync_master()
@@ -153,7 +154,18 @@ def test_empty_ts_ring_keeps_connection_healthy():
     conn.ts_arm(0x01, EdgeMode.RISING)
     result = conn.ts_get(256)
     assert result.events == []
+    assert not result.overflow
     assert conn.read() == 0x05
+
+
+def test_ts_overflow_flag_propagates():
+    fw = MockFw()
+    fw.ts_overflow = True
+    conn, _ = connect_mock(fw)
+    conn.ts_arm(0x0F, EdgeMode.RISING)
+    result = conn.ts_get(256)
+    assert result.overflow
+    assert len(result.events) == 2
 
 
 def test_reconcile_pipeline_from_ts_get():

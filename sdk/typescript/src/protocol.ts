@@ -62,6 +62,27 @@ export function parseCountField(okDataStr: string): number {
   return value;
 }
 
+/**
+ * Extract `count=N overflow=B` from a `ts get` OK data string.
+ *
+ * `overflow=B` was added in FW v0.1.2 (Pochi-DIO `fix/cdc-tx-buffer-truncation`)
+ * and signals that the ring buffer overflowed since the last `ts get`
+ * (read-then-clear on the FW side). A missing `overflow=` (older FW) is
+ * treated as `overflow=0`.
+ */
+export function parseCountOverflowField(
+  okDataStr: string,
+): { count: number; overflow: boolean } {
+  const count = parseCountField(okDataStr);
+  const part = okDataStr.split(/\s+/).find((p) => p.startsWith("overflow="));
+  if (!part) return { count, overflow: false };
+  const value = part.slice("overflow=".length);
+  if (value !== "0" && value !== "1") {
+    throw SdkError.parse(`invalid overflow= value: ${value}`);
+  }
+  return { count, overflow: value === "1" };
+}
+
 function parseU32(s: string): number {
   if (!/^(0[xX][0-9a-fA-F]+|\d+)$/.test(s)) {
     throw SdkError.parse(`invalid number: ${s}`);

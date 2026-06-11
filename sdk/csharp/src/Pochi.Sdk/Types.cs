@@ -103,7 +103,11 @@ public sealed record TimestampEvent(
 
 public sealed record TimestampResult(
     IReadOnlyList<TimestampEvent> Events,
-    bool Reconciled
+    bool Reconciled,
+    // True if the FW reported a ring overflow since the last `ts get`
+    // (i.e. events were dropped). False for FW without the `overflow=`
+    // field in the `ts get` response.
+    bool Overflow = false
 );
 
 public enum SyncRole

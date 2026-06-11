@@ -65,6 +65,7 @@ public class E2eTests
         Assert.Equal(2, result.Events.Count);
         Assert.Equal(1_000_280, result.Events[0].TimestampNs);
         Assert.False(result.Reconciled);
+        Assert.False(result.Overflow);
         conn.TsDisarm();
 
         conn.SyncMaster();
@@ -166,7 +167,19 @@ public class E2eTests
         conn.TsArm(0x01, EdgeMode.Rising);
         var result = conn.TsGet(256);
         Assert.Empty(result.Events);
+        Assert.False(result.Overflow);
         Assert.Equal(0x05U, conn.Read());
+    }
+
+    [Fact]
+    public void TsOverflowFlagPropagates()
+    {
+        var fw = new MockFw { TsOverflow = true };
+        var (conn, _) = ConnectMock(fw);
+        conn.TsArm(0x0F, EdgeMode.Rising);
+        var result = conn.TsGet(256);
+        Assert.True(result.Overflow);
+        Assert.Equal(2, result.Events.Count);
     }
 
     [Fact]

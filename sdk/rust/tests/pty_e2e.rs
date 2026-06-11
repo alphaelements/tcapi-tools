@@ -26,6 +26,7 @@ struct MockFw {
     pattern_state: &'static str,
     ts_armed: bool,
     ts_events: Vec<&'static str>,
+    ts_overflow: bool,
     sync_clocking: bool,
     /// Reply with the pre-Phase 9.6 formats.
     old_firmware: bool,
@@ -45,6 +46,7 @@ impl MockFw {
                 "  0x00000005 c=1000 p=7 s=1",
                 "  0x0000000A c=2000 p=12 s=0",
             ],
+            ts_overflow: false,
             sync_clocking: false,
             old_firmware: false,
         }
@@ -176,6 +178,7 @@ impl MockFw {
                 }
                 let max: usize = max.parse().unwrap_or(0);
                 if self.old_firmware {
+                    // Pre-Phase 9.6 omitted overflow= and used `t=` ts format.
                     return vec!["OK count=1".into(), "  0x00000005 t=1234567890".into()];
                 }
                 let events: Vec<String> = self
@@ -184,7 +187,11 @@ impl MockFw {
                     .take(max)
                     .map(|s| s.to_string())
                     .collect();
-                let mut lines = vec![format!("OK count={}", events.len())];
+                let overflow_flag = if self.ts_overflow { 1 } else { 0 };
+                let mut lines = vec![format!(
+                    "OK count={} overflow={overflow_flag}",
+                    events.len()
+                )];
                 lines.extend(events);
                 lines
             }
@@ -496,8 +503,21 @@ fn ts_get_empty_ring() {
     conn.ts_arm(0x01, EdgeMode::Rising).unwrap();
     let result = conn.ts_get(256).unwrap();
     assert!(result.events.is_empty());
+    assert!(!result.overflow);
     // The connection is still usable right away (no stray lines pending).
     assert_eq!(conn.read().unwrap(), 0x05);
+}
+
+#[test]
+fn ts_get_overflow_flag_propagates() {
+    // FW reported ring overflow since the last get; SDK must surface it.
+    let mut fw = MockFw::new();
+    fw.ts_overflow = true;
+    let (mut conn, _dev) = connect_mock(fw, vec![]);
+    conn.ts_arm(0x0F, EdgeMode::Rising).unwrap();
+    let result = conn.ts_get(256).unwrap();
+    assert!(result.overflow);
+    assert_eq!(result.events.len(), 2);
 }
 
 #[test]

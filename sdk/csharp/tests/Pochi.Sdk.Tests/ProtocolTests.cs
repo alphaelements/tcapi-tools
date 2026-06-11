@@ -80,6 +80,38 @@ public class CountFieldTests
         TestHelpers.AssertSdkThrows(ErrorCode.Parse, () => Protocol.ParseCountField(data));
 }
 
+public class CountOverflowFieldTests
+{
+    [Theory]
+    [InlineData("count=3 overflow=0", 3UL, false)]
+    [InlineData("count=85 overflow=1", 85UL, true)]
+    [InlineData("overflow=1 count=4", 4UL, true)]
+    public void NewFwForm(string data, ulong expectedCount, bool expectedOverflow)
+    {
+        var (count, overflow) = Protocol.ParseCountOverflowField(data);
+        Assert.Equal(expectedCount, count);
+        Assert.Equal(expectedOverflow, overflow);
+    }
+
+    [Theory]
+    [InlineData("count=3", 3UL)]
+    [InlineData("count=0", 0UL)]
+    public void OldFwMissingOverflowDefaultsFalse(string data, ulong expectedCount)
+    {
+        var (count, overflow) = Protocol.ParseCountOverflowField(data);
+        Assert.Equal(expectedCount, count);
+        Assert.False(overflow);
+    }
+
+    [Theory]
+    [InlineData("count=1 overflow=2")]
+    [InlineData("count=1 overflow=yes")]
+    [InlineData("overflow=0")]
+    public void Invalid(string data) =>
+        TestHelpers.AssertSdkThrows(ErrorCode.Parse,
+            () => Protocol.ParseCountOverflowField(data));
+}
+
 public class VersionTests
 {
     [Fact]
