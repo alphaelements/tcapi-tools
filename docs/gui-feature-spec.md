@@ -48,6 +48,20 @@ The application is configured in `gui/src-tauri/tauri.conf.json`:
 - **Window**: 1280x800, resizable, not fullscreen
 - **Dev server**: Vite at `http://localhost:1420`
 
+### Testing
+
+- **Unit (frontend)**: vitest, `npm test` — scoped to `src/**/*.test.ts`.
+- **Unit (backend)**: `cargo test -p pochi-gui` — event routing, map hex
+  decode, reconcile rows, state.
+- **E2E**: Playwright, `npm run test:e2e` — runs the full UI against a
+  browser-only virtual device (`src/lib/mock-device.ts`, activated with
+  `/?mock` on the dev server). The mock implements every Tauri command,
+  mirrors the rig's loopback wiring (output ch c → input ch c) and the
+  FW's BAD_PARAM behaviours, and exposes `window.__POCHI_MOCK__` test
+  hooks (forced ts overflow, saved-file capture, direct edge injection).
+- **Hardware**: manual pass driven over Xvfb + xdotool (see
+  `tmp/` handoffs); requires a connected Pochi-DIO.
+
 ## 3. Color Palette
 
 The application uses a dark theme optimized for long hardware debugging
@@ -622,6 +636,8 @@ fn pattern_load(steps: Vec<PatternStep>) -> Result<u16, String>
 fn pattern_load_toml(path: String) -> Result<PatternTomlPayload, String>
 // struct PatternTomlPayload { steps: Vec<PatternStep>, accepted: u16 }
 
+/// repeat must be >= 1: the FW rejects repeat=0 with BAD_PARAM (there is
+/// no infinite mode). The frontend maps its loop "∞" field to 65535.
 #[tauri::command]
 fn pattern_run(mode: PatternMode, repeat: u16) -> Result<(), String>
 
@@ -635,6 +651,9 @@ fn pattern_status() -> Result<PatternStatus, String>
 ### Timestamp
 
 ```rust
+/// mask bits beyond caps.in_count are rejected by the FW (BAD_PARAM)
+/// even when the pin map assigns more inputs; the frontend clamps its
+/// all-inputs mask to min(map inputs, caps.in_count).
 #[tauri::command]
 fn ts_arm(mask: u32, mode: EdgeMode) -> Result<(), String>
 
@@ -648,7 +667,11 @@ fn ts_get(max_events: u16) -> Result<TsResultPayload, String>
 fn ts_get_reconciled(max_events: u16) -> Result<TsResultPayload, String>
 // struct TsRow { inputs, raw_count, raw_phase, sync_active,
 //                timestamp_ns, reconciled }
-// struct TsResultPayload { events: Vec<TsRow>, reconciled: bool }
+// struct TsResultPayload { events: Vec<TsRow>, reconciled: bool,
+//                          overflow: bool }
+// overflow mirrors the FW's `overflow=` field (capture ring overrun);
+// the TimestampViewer shows a red OVERFLOW banner and the JSON export
+// carries the flag.
 
 #[tauri::command]
 fn ts_disarm() -> Result<(), String>
