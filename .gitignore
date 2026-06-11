@@ -38,3 +38,8 @@ wiki/
 
 # Tauri build artifacts
 gui/src-tauri/gen/
+
+# Playwright
+test-results/
+playwright-report/
+.playwright-mcp/
