@@ -51,11 +51,19 @@ internal sealed class MockFw
                 Map = "v=1 out=0:0 in=0:23 pull=down flags=0x01";
                 return ["OK"];
             case "pattern stop":
-                if (PatternLoaded > 0)
+                if (PatternState != "running")
                 {
-                    PatternState = "loaded";
+                    return ["ERR NOT_RUNNING"];
                 }
 
+                PatternState = PatternLoaded > 0 ? "loaded" : "idle";
+                return ["OK"];
+            case "pattern reset":
+                PatternState = "idle";
+                PatternLoaded = 0;
+                return ["OK"];
+            case "reset":
+            case "bootsel":
                 return ["OK"];
             case "pattern status":
                 return [$"OK state={PatternState} step=0 loops=0"];

@@ -154,8 +154,26 @@ public class CapsTests
         Assert.Equal(40U, c.TsResolutionNs);
         Assert.Equal(256, c.MaxPatternSteps);
         Assert.Equal(256, c.TsRingEvents);
-        Assert.Equal(1U, c.Features);
+        Assert.NotEqual(0U, c.Features & Feature.Sync);
         Assert.True(c.HasSync);
+        Assert.False(c.HasReset);
+    }
+
+    [Fact]
+    public void HasReset()
+    {
+        Assert.Equal(0x1U, Feature.Sync);
+        Assert.Equal(0x2U, Feature.Reset);
+
+        var both = Protocol.ParseCaps(
+            "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000003");
+        Assert.True(both.HasSync);
+        Assert.True(both.HasReset);
+
+        var none = Protocol.ParseCaps(
+            "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000000");
+        Assert.False(none.HasSync);
+        Assert.False(none.HasReset);
     }
 
     [Fact]
@@ -369,6 +387,16 @@ public class PushEventTests
             Protocol.ParsePushEvent("PATTERN_DONE loops=10"));
 
     [Fact]
+    public void PatternTimeout() =>
+        Assert.Equal(new PatternTimeoutEvent(Loops: 42),
+            Protocol.ParsePushEvent("PATTERN_TIMEOUT loops=42"));
+
+    [Fact]
+    public void PatternTimeoutZeroLoops() =>
+        Assert.Equal(new PatternTimeoutEvent(Loops: 0),
+            Protocol.ParsePushEvent("PATTERN_TIMEOUT loops=0"));
+
+    [Fact]
     public void SyncDone() =>
         Assert.Equal(new SyncDoneEvent(Status: "ready", Devnum: 1, Timestamp: 12345),
             Protocol.ParsePushEvent("SYNC_DONE status=ready devnum=1 ts=12345"));
@@ -382,6 +410,8 @@ public class PushEventTests
     [InlineData("INPUT t=99")]
     [InlineData("INPUT 0x05")]
     [InlineData("PATTERN_DONE loops=abc")]
+    [InlineData("PATTERN_TIMEOUT")]
+    [InlineData("PATTERN_TIMEOUT loops=xyz")]
     public void Malformed(string payload) =>
         TestHelpers.AssertSdkThrows(ErrorCode.Parse,
             () => Protocol.ParsePushEvent(payload));

@@ -15,6 +15,7 @@ export enum ErrorCode {
   SyncState = "SYNC_STATE",
   SyncTimeout = "SYNC_TIMEOUT",
   NoResource = "NO_RESOURCE",
+  NotRunning = "NOT_RUNNING",
   UnknownDevice = "UNKNOWN_DEVICE",
 
   // SDK errors
@@ -71,6 +72,7 @@ export class SdkError extends Error {
       SYNC_STATE: [ErrorCode.SyncState, "invalid sync state transition"],
       SYNC_TIMEOUT: [ErrorCode.SyncTimeout, "sync pulse not detected"],
       NO_RESOURCE: [ErrorCode.NoResource, "required resource not configured"],
+      NOT_RUNNING: [ErrorCode.NotRunning, "pattern not running"],
     };
     const entry = map[code];
     if (entry) {

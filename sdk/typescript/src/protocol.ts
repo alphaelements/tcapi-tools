@@ -378,6 +378,13 @@ export function parsePushEvent(payload: string): PushEvent {
       }
       return { type: "pattern_done", loops: Number(loops) };
     }
+    case "PATTERN_TIMEOUT": {
+      const loops = f.get("loops");
+      if (loops === undefined || !/^\d+$/.test(loops)) {
+        throw SdkError.parse(`missing or invalid loops= in PATTERN_TIMEOUT event: ${trimmed}`);
+      }
+      return { type: "pattern_timeout", loops: Number(loops) };
+    }
     case "SYNC_DONE": {
       const status = f.get("status");
       const devnum = f.get("devnum");

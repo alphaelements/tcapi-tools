@@ -412,3 +412,136 @@ fn wait_pattern_idle(conn: &mut Connection, label: &str) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
+
+fn pick_device() -> pochi_sdk::DeviceInfo {
+    let devices = discover().expect("discovery failed");
+    match std::env::var("POCHI_SMOKE_UID") {
+        Ok(uid) if !uid.is_empty() => devices
+            .iter()
+            .find(|d| d.uid.eq_ignore_ascii_case(&uid))
+            .cloned()
+            .unwrap_or_else(|| panic!("POCHI_SMOKE_UID={uid} not in discovered: {devices:?}")),
+        _ => devices.first().cloned().expect("no Pochi-DIO found"),
+    }
+}
+
+/// `pattern reset` during a running loop returns the engine to Idle with
+/// `loops=0 step=0`, but keeps USB up — so the same Connection still answers
+/// follow-up commands (FW v0.1.3+).
+#[test]
+#[ignore = "requires connected Pochi-DIO hardware (FW v0.1.3+)"]
+fn hw_pattern_reset_during_loop() {
+    let device = pick_device();
+    let mut conn = Connection::open(&device.port).expect("connect");
+    let caps = conn.caps().expect("caps");
+    assert!(
+        caps.has_reset(),
+        "device must advertise FEAT_RESET (FW v0.1.3+); features=0x{:x}",
+        caps.features
+    );
+
+    let steps = [
+        PatternStep {
+            out_bits: 0x1,
+            hold_us: 1_000,
+        },
+        PatternStep {
+            out_bits: 0x2,
+            hold_us: 1_000,
+        },
+        PatternStep {
+            out_bits: 0x4,
+            hold_us: 1_000,
+        },
+        PatternStep {
+            out_bits: 0x8,
+            hold_us: 1_000,
+        },
+    ];
+    assert_eq!(conn.pattern_load(&steps).expect("load"), 4);
+    conn.pattern_run(PatternMode::Loop, 10_000).expect("run");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let running = conn.pattern_status().expect("status mid-run");
+    assert_eq!(
+        running.state,
+        PatternState::Running,
+        "pattern did not enter Running before reset"
+    );
+
+    conn.pattern_reset().expect("pattern reset");
+    let after = conn.pattern_status().expect("status after reset");
+    assert_eq!(after.state, PatternState::Idle, "status: {after:?}");
+    assert_eq!(after.loops_done, 0);
+    assert_eq!(after.current_step, 0);
+
+    // USB must still be up — a follow-up `version` succeeds without reopen.
+    conn.version().expect("USB stayed up after pattern reset");
+}
+
+/// `reset` makes the device re-enumerate; after a brief wait the SDK can
+/// rediscover it with the same UID (FW v0.1.3+).
+#[test]
+#[ignore = "requires connected Pochi-DIO hardware (FW v0.1.3+)"]
+fn hw_system_reset_reenumerates() {
+    let device = pick_device();
+    let uid = device.uid.clone();
+    {
+        let mut conn = Connection::open(&device.port).expect("connect");
+        let caps = conn.caps().expect("caps");
+        assert!(
+            caps.has_reset(),
+            "device must advertise FEAT_RESET; features=0x{:x}",
+            caps.features
+        );
+        conn.system_reset().expect("system_reset");
+    }
+
+    // Wait for the device to drop off the bus, then for re-enumeration.
+    // Linux kernel typically takes 1-2 s to settle. Poll for up to 10 s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut found = false;
+    while std::time::Instant::now() < deadline {
+        if let Ok(devs) = discover() {
+            if devs.iter().any(|d| d.uid.eq_ignore_ascii_case(&uid)) {
+                found = true;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(
+        found,
+        "device with uid={uid} did not reappear within 10s of system_reset"
+    );
+}
+
+/// Sanity loop — run the full smoke 8 times in a row. Catches the
+/// "second run hangs" mode that the FW B1/B2 fixes were intended to
+/// eliminate.
+#[test]
+#[ignore = "requires connected Pochi-DIO hardware (FW v0.1.3+)"]
+fn hw_full_smoke_loop_8_times() {
+    for i in 0..8 {
+        println!("--- hw_full_smoke iteration {} ---", i + 1);
+        let device = pick_device();
+        let mut conn = Connection::open(&device.port).expect("connect");
+        let _ = conn.subscribe(false);
+        let _ = conn.pattern_reset();
+
+        let steps = [PatternStep {
+            out_bits: 0x1,
+            hold_us: 100,
+        }];
+        conn.pattern_load(&steps).expect("load");
+        conn.pattern_run(PatternMode::Once, 1).expect("run");
+        wait_pattern_idle(&mut conn, &format!("loop iteration {}", i + 1));
+        let status = conn.pattern_status().expect("status");
+        assert_eq!(
+            status.state,
+            PatternState::Done,
+            "iter {}: {status:?}",
+            i + 1
+        );
+        conn.close().expect("close");
+    }
+}

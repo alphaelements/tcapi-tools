@@ -9,6 +9,7 @@ from pochi import Connection, reconcile
 from pochi.errors import (
     BadParamError,
     NotArmedError,
+    NotRunningError,
     SyncStateError,
     UnsupportedFirmwareError,
 )
@@ -111,6 +112,9 @@ def test_typed_device_errors():
     with pytest.raises(BadParamError):
         conn.pattern_run(PatternMode.ONCE, 1)
     assert conn.raw("frobnicate") == "ERR UNKNOWN_CMD"
+    # pattern stop while idle surfaces NotRunningError (FW v0.1.3+)
+    with pytest.raises(NotRunningError):
+        conn.pattern_stop()
 
 
 def test_loop_repeat_zero_rejected():
@@ -118,6 +122,25 @@ def test_loop_repeat_zero_rejected():
     conn.pattern_load([PatternStep(out_bits=1, hold_us=1)])
     with pytest.raises(BadParamError):
         conn.pattern_run(PatternMode.LOOP, 0)
+
+
+def test_pattern_reset_returns_engine_to_idle():
+    conn, _ = connect_mock(MockFw())
+    conn.pattern_load([PatternStep(out_bits=1, hold_us=1)])
+    conn.pattern_run(PatternMode.LOOP, 10)
+    assert conn.pattern_status().state is PatternState.RUNNING
+    conn.pattern_reset()
+    assert conn.pattern_status().state is PatternState.IDLE
+    # Buffer cleared — pattern run now hits BAD_PARAM.
+    with pytest.raises(BadParamError):
+        conn.pattern_run(PatternMode.ONCE, 1)
+
+
+def test_system_reset_and_bootsel_reset_succeed():
+    conn, _ = connect_mock(MockFw())
+    conn.system_reset()
+    # Mock keeps the port open; real device re-enumerates here.
+    conn.bootsel_reset()
 
 
 def test_push_events_interleaved_with_commands():

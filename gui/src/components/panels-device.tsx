@@ -3,6 +3,7 @@
 // Ported from design-reference panels-device.jsx (mechanical
 // ESM/TSX conversion; structure and inline styles unchanged).
 // ============================================================
+import { useState } from "react";
 import { DeviceEntry, PochiStore, useStore } from "../store/store";
 
 function StatusPill() {
@@ -67,11 +68,55 @@ function Info({ k, v }: { k: string; v: string | number | undefined }) {
   );
 }
 
+function ResetMenu({ onClose }: { onClose: () => void }) {
+  const [confirm, setConfirm] = useState<null | "pattern" | "system" | "bootsel">(null);
+
+  async function run() {
+    if (confirm === "pattern") await PochiStore.patternReset();
+    else if (confirm === "system") await PochiStore.systemReset();
+    else if (confirm === "bootsel") await PochiStore.bootselReset();
+    setConfirm(null);
+    onClose();
+  }
+
+  if (confirm) {
+    const labels = {
+      pattern: ["Pattern reset", "Stop the pattern engine and clear the loaded buffer. USB stays up."],
+      system: ["System reset", "Reboot the device (SCB::sys_reset). USB will re-enumerate — you must reconnect."],
+      bootsel: ["BOOTSEL reset", "Reboot into BOOTSEL mass-storage mode for UF2 reflash. The device leaves normal operation."],
+    } as const;
+    const [title, body] = labels[confirm];
+    const danger = confirm !== "pattern";
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid " + (danger ? "var(--err)" : "var(--border))") }}>
+        <div style={{ fontWeight: 600, fontSize: 12 }}>{title}?</div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4 }}>{body}</div>
+        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <button className={"btn " + (danger ? "danger" : "primary")} style={{ flex: 1, justifyContent: "center" }} onClick={() => void run()}>Confirm</button>
+          <button className="btn" style={{ flex: 1, justifyContent: "center" }} onClick={() => setConfirm(null)}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-soft)" }}>
+      <div className="eyebrow" style={{ fontSize: 9, marginBottom: 2 }}>Reset</div>
+      <button className="btn" style={{ justifyContent: "center", fontSize: 11.5 }} onClick={() => setConfirm("pattern")}>Pattern reset</button>
+      <button className="btn danger" style={{ justifyContent: "center", fontSize: 11.5 }} onClick={() => setConfirm("system")}>System reset</button>
+      <button className="btn danger" style={{ justifyContent: "center", fontSize: 11.5 }} onClick={() => setConfirm("bootsel")}>BOOTSEL</button>
+      <button className="btn" style={{ justifyContent: "center", fontSize: 10.5, opacity: 0.7 }} onClick={onClose}>Close</button>
+    </div>
+  );
+}
+
 export function DevicePanel() {
   useStore(["conn"]);
   const S = PochiStore.get();
   const isConn = S.connStatus === "connected";
+  const hasReset = isConn && (S.capabilities?.reset ?? false);
   const sel = S.selectedUid;
+  const [showReset, setShowReset] = useState(false);
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div style={{ padding: "11px 12px 9px", borderBottom: "1px solid var(--border-soft)" }}>
@@ -98,7 +143,13 @@ export function DevicePanel() {
             {S.connStatus === "connecting" ? "Connecting…" : "Connect"}
           </button>
         ) : (
-          <button className="btn danger" style={{ justifyContent: "center" }} onClick={() => void PochiStore.disconnect()}>Disconnect</button>
+          <>
+            <button className="btn danger" style={{ justifyContent: "center" }} onClick={() => void PochiStore.disconnect()}>Disconnect</button>
+            {hasReset && !showReset && (
+              <button className="btn" style={{ justifyContent: "center", fontSize: 11.5 }} onClick={() => setShowReset(true)}>Reset…</button>
+            )}
+            {hasReset && showReset && <ResetMenu onClose={() => setShowReset(false)} />}
+          </>
         )}
       </div>
     </div>

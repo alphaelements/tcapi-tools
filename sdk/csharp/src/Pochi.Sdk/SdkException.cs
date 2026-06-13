@@ -18,6 +18,7 @@ public enum ErrorCode
     SyncState,
     SyncTimeout,
     NoResource,
+    NotRunning,
     UnknownDevice,
 
     // SDK errors
@@ -64,6 +65,7 @@ public class SdkException : Exception
         "SYNC_STATE" => new(ErrorCode.SyncState, "device error: SYNC_STATE (invalid sync state transition)"),
         "SYNC_TIMEOUT" => new(ErrorCode.SyncTimeout, "device error: SYNC_TIMEOUT (sync pulse not detected)"),
         "NO_RESOURCE" => new(ErrorCode.NoResource, "device error: NO_RESOURCE (required resource not configured)"),
+        "NOT_RUNNING" => new(ErrorCode.NotRunning, "device error: NOT_RUNNING (pattern not running)"),
         _ => new(ErrorCode.UnknownDevice, $"device error: {code}"),
     };
 

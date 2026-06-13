@@ -160,6 +160,37 @@ class Connection:
         """``pattern status`` — current playback status."""
         return protocol.parse_pattern_status(self._transport.command("pattern status"))
 
+    def pattern_reset(self) -> None:
+        """``pattern reset`` — pattern engine soft reset (FW v0.1.3+,
+        ``FEAT_RESET``).
+
+        Stops the state machine, clears the loaded pattern buffer, and
+        returns the engine to ``Idle``. USB stays up; the connection
+        remains usable.
+        """
+        self._transport.command("pattern reset")
+
+    # --- reset ---
+
+    def system_reset(self) -> None:
+        """``reset`` — full chip soft reset (FW v0.1.3+, ``FEAT_RESET``).
+
+        The device responds ``OK``, drains its CDC TX ring for ~50 ms, then
+        calls ``SCB::sys_reset()``. The USB port re-enumerates, so the
+        caller must close this connection and rediscover the device
+        afterwards.
+        """
+        self._transport.command("reset")
+
+    def bootsel_reset(self) -> None:
+        """``bootsel`` — reboot into BOOTSEL mass-storage mode for UF2
+        reflash (FW v0.1.3+, ``FEAT_RESET``).
+
+        Like :meth:`system_reset`, the device re-enumerates afterwards
+        (as a USB mass-storage device). Callers must close this connection.
+        """
+        self._transport.command("bootsel")
+
     # --- timestamp ---
 
     def ts_arm(self, mask: int, mode: EdgeMode) -> None:

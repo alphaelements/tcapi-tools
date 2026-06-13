@@ -156,13 +156,28 @@ impl MockFw {
                 }
             }
             ["pattern", "stop"] => {
-                if self.pattern_loaded > 0 {
-                    self.pattern_state = "loaded";
+                if self.pattern_state != "running" {
+                    vec!["ERR NOT_RUNNING".into()]
+                } else {
+                    self.pattern_state = if self.pattern_loaded > 0 {
+                        "loaded"
+                    } else {
+                        "idle"
+                    };
+                    vec!["OK".into()]
                 }
-                vec!["OK".into()]
             }
             ["pattern", "status"] => {
                 vec![format!("OK state={} step=0 loops=0", self.pattern_state)]
+            }
+            ["pattern", "reset"] => {
+                self.pattern_state = "idle";
+                self.pattern_loaded = 0;
+                vec!["OK".into()]
+            }
+            ["reset"] | ["bootsel"] => {
+                // FW would drain TX then re-enumerate. The mock just ACKs.
+                vec!["OK".into()]
             }
             ["ts", "arm", _, _] => {
                 if self.ts_armed {
@@ -428,6 +443,44 @@ fn device_errors_are_typed() {
         conn.map_set(&bad_map).unwrap_err(),
         SdkError::BadMap
     ));
+    // pattern stop while idle now surfaces ErrNotRunning (FW v0.1.3+)
+    assert!(matches!(
+        conn.pattern_stop().unwrap_err(),
+        SdkError::NotRunning
+    ));
+}
+
+#[test]
+fn pattern_reset_returns_engine_to_idle() {
+    let (mut conn, _dev) = connect_mock(MockFw::new(), vec![]);
+    let steps = [PatternStep {
+        out_bits: 0x0F,
+        hold_us: 100,
+    }];
+    conn.pattern_load(&steps).unwrap();
+    conn.pattern_run(PatternMode::Loop, 1).unwrap();
+    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Running);
+
+    conn.pattern_reset().unwrap();
+    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Idle);
+    // After pattern reset the loaded buffer is gone — re-running is BAD_PARAM.
+    assert!(matches!(
+        conn.pattern_run(PatternMode::Once, 1).unwrap_err(),
+        SdkError::BadParam
+    ));
+}
+
+#[test]
+fn system_reset_consumes_connection() {
+    let (conn, _dev) = connect_mock(MockFw::new(), vec![]);
+    conn.system_reset().unwrap();
+    // The connection has been consumed — the type system enforces this.
+}
+
+#[test]
+fn bootsel_reset_consumes_connection() {
+    let (conn, _dev) = connect_mock(MockFw::new(), vec![]);
+    conn.bootsel_reset().unwrap();
 }
 
 #[test]

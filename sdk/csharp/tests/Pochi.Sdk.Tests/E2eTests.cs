@@ -87,6 +87,8 @@ public class E2eTests
         TestHelpers.AssertSdkThrows(ErrorCode.BadParam,
             () => conn.PatternRun(PatternMode.Once, 1));
         Assert.Equal("ERR UNKNOWN_CMD", conn.Raw("frobnicate"));
+        // pattern stop while idle surfaces ErrNotRunning (FW v0.1.3+)
+        TestHelpers.AssertSdkThrows(ErrorCode.NotRunning, () => conn.PatternStop());
     }
 
     [Fact]
@@ -96,6 +98,28 @@ public class E2eTests
         conn.PatternLoad([new PatternStep(OutBits: 1, HoldUs: 1)]);
         TestHelpers.AssertSdkThrows(ErrorCode.BadParam,
             () => conn.PatternRun(PatternMode.Loop, 0));
+    }
+
+    [Fact]
+    public void PatternResetReturnsEngineToIdle()
+    {
+        var (conn, _) = ConnectMock(new MockFw());
+        conn.PatternLoad([new PatternStep(OutBits: 1, HoldUs: 1)]);
+        conn.PatternRun(PatternMode.Loop, 10);
+        Assert.Equal(PatternState.Running, conn.PatternStatus().State);
+        conn.PatternReset();
+        Assert.Equal(PatternState.Idle, conn.PatternStatus().State);
+        TestHelpers.AssertSdkThrows(ErrorCode.BadParam,
+            () => conn.PatternRun(PatternMode.Once, 1));
+    }
+
+    [Fact]
+    public void SystemResetAndBootselResetSucceed()
+    {
+        var (conn, _) = ConnectMock(new MockFw());
+        conn.SystemReset();
+        // Mock keeps the port open; real device re-enumerates here.
+        conn.BootselReset();
     }
 
     private sealed class CollectingObserver : IObserver<PushEvent>

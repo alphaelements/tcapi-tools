@@ -37,6 +37,9 @@ export {
   type PortLike,
 } from "./transport.js";
 export {
+  FEAT_RESET,
+  FEAT_SYNC,
+  hasReset,
   hasSync,
   type Capabilities,
   type DeviceInfo,

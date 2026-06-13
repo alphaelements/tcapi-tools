@@ -32,6 +32,9 @@ pub enum SdkError {
     #[error("device error: NO_RESOURCE (required resource not configured)")]
     NoResource,
 
+    #[error("device error: NOT_RUNNING (pattern not running)")]
+    NotRunning,
+
     #[error("device error: {0}")]
     UnknownDevice(String),
 
@@ -75,6 +78,7 @@ impl SdkError {
             "SYNC_STATE" => Self::SyncState,
             "SYNC_TIMEOUT" => Self::SyncTimeout,
             "NO_RESOURCE" => Self::NoResource,
+            "NOT_RUNNING" => Self::NotRunning,
             other => Self::UnknownDevice(other.to_string()),
         }
     }
@@ -94,6 +98,10 @@ mod tests {
         assert!(matches!(
             SdkError::from_error_code("SYNC_TIMEOUT"),
             SdkError::SyncTimeout
+        ));
+        assert!(matches!(
+            SdkError::from_error_code("NOT_RUNNING"),
+            SdkError::NotRunning
         ));
     }
 

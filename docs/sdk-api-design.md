@@ -116,8 +116,16 @@ pub struct Capabilities {
 }
 ```
 
-Helper method: `has_sync() -> bool` returns `true` if bit 0 of `features`
-is set.
+Helper methods on `Capabilities`:
+
+- `has_sync() -> bool` — bit 0 (`FEAT_SYNC = 0x1`): multi-device clock
+  sync (`SYNC_*` commands).
+- `has_reset() -> bool` — bit 1 (`FEAT_RESET = 0x2`): reset commands
+  (`PATTERN_RESET` / `SYSTEM_RESET` / `BOOTSEL_RESET`); set by FW v0.1.3+.
+
+Both bit values are exported as public constants (`FEAT_SYNC`, `FEAT_RESET`
+in Rust/Python/TS; `Feature.Sync` / `Feature.Reset` in C#) so callers can
+test feature support without hard-coded literals.
 
 ### IoState
 
@@ -382,10 +390,34 @@ impl Connection {
     pub fn pattern_run(&mut self, mode: PatternMode, repeat: u16) -> Result<()>
     pub fn pattern_stop(&mut self) -> Result<()>
     pub fn pattern_status(&mut self) -> Result<PatternStatus>
+    pub fn pattern_reset(&mut self) -> Result<()>
 }
 ```
 
 `pattern_load` returns the number of accepted steps.
+
+`pattern_stop` on a non-running engine returns `SdkError::NotRunning`
+(maps from `ERR NOT_RUNNING (0x0C)`, FW v0.1.3+). Callers should guard
+the call with a state check, or treat `NotRunning` as benign.
+
+`pattern_reset` (FW v0.1.3+, `FEAT_RESET`) is a soft reset of the
+pattern engine: SM/DMA stop, the loaded buffer is cleared, state goes
+to `Idle`. USB stays up, so the connection remains usable.
+
+### Reset Commands
+
+```rust
+impl Connection {
+    pub fn system_reset(self) -> Result<()>
+    pub fn bootsel_reset(self) -> Result<()>
+}
+```
+
+Both commands trigger a USB re-enumeration (so the Rust SDK consumes
+`self`; other languages document that the connection must be reopened).
+`system_reset` calls `SCB::sys_reset()` for a full chip reboot;
+`bootsel_reset` reboots into BOOTSEL mass-storage mode for UF2 reflash.
+Requires `FEAT_RESET` (FW v0.1.3+).
 
 ### Timestamp Commands
 
@@ -490,6 +522,7 @@ pub enum SdkError {
     SyncState,
     SyncTimeout,
     NoResource,
+    NotRunning,
     UnknownDevice(String),
 
     // SDK errors
@@ -521,6 +554,7 @@ enum ErrorCode {
     SyncState = "SYNC_STATE",
     SyncTimeout = "SYNC_TIMEOUT",
     NoResource = "NO_RESOURCE",
+    NotRunning = "NOT_RUNNING",
     UnknownDevice = "UNKNOWN_DEVICE",
     Connection = "CONNECTION",
     Io = "IO",
@@ -549,6 +583,7 @@ class NotArmedError(SdkError): ...
 class SyncStateError(SdkError): ...
 class SyncTimeoutError(SdkError): ...
 class NoResourceError(SdkError): ...
+class NotRunningError(SdkError): ...
 class ConnectionError(SdkError): ...
 class ParseError(SdkError): ...
 class TimeoutError(SdkError): ...
@@ -575,6 +610,7 @@ public enum ErrorCode {
     SyncState,
     SyncTimeout,
     NoResource,
+    NotRunning,
     UnknownDevice,
     Connection,
     Io,
@@ -639,6 +675,10 @@ impl Connection {
 pub enum PushEvent {
     InputChange { inputs: u32, timestamp_us: u64 },
     PatternDone { loops: u16 },
+    /// Pattern aborted by the FW wall-clock safety budget (FW v0.1.3+).
+    /// Outputs hold the last written step value; safe recovery is
+    /// `SET_OUTPUTS` or `PATTERN_RESET`.
+    PatternTimeout { loops: u16 },
     SyncDone { status: String, devnum: u8, timestamp: u64 },
     /// Unrecognized or malformed push line, preserved verbatim so newer
     /// firmware events are observable instead of silently dropped.
@@ -654,6 +694,7 @@ import { EventEmitter } from "events";
 interface ConnectionEvents {
     "input-change": (event: InputChangeEvent) => void;
     "pattern-done": (event: PatternDoneEvent) => void;
+    "pattern-timeout": (event: PatternTimeoutEvent) => void;
     "sync-done": (event: SyncDoneEvent) => void;
 }
 
@@ -687,12 +728,18 @@ class PatternDoneEvent:
     loops: int
 
 @dataclass
+class PatternTimeoutEvent:
+    loops: int
+
+@dataclass
 class SyncDoneEvent:
     status: str
     devnum: int
     timestamp: int
 
-PushEvent = InputChangeEvent | PatternDoneEvent | SyncDoneEvent
+PushEvent = (
+    InputChangeEvent | PatternDoneEvent | PatternTimeoutEvent | SyncDoneEvent
+)
 ```
 
 ### C#
@@ -705,6 +752,7 @@ public class Connection : IDisposable {
 public abstract record PushEvent;
 public record InputChangeEvent(uint Inputs, ulong TimestampUs) : PushEvent;
 public record PatternDoneEvent(ushort Loops) : PushEvent;
+public record PatternTimeoutEvent(ushort Loops) : PushEvent;
 public record SyncDoneEvent(string Status, byte Devnum, ulong Timestamp) : PushEvent;
 
 // Usage:

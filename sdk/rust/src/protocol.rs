@@ -533,6 +533,23 @@ pub fn parse_push_event(payload: &str) -> Result<PushEvent> {
                 })?;
             Ok(PushEvent::PatternDone { loops })
         }
+        "PATTERN_TIMEOUT" => {
+            let loops = rest
+                .split_whitespace()
+                .find_map(|p| p.strip_prefix("loops="))
+                .ok_or_else(|| {
+                    SdkError::Parse(format!(
+                        "missing loops= in PATTERN_TIMEOUT event: {trimmed}"
+                    ))
+                })?
+                .parse()
+                .map_err(|_| {
+                    SdkError::Parse(format!(
+                        "invalid loops= in PATTERN_TIMEOUT event: {trimmed}"
+                    ))
+                })?;
+            Ok(PushEvent::PatternTimeout { loops })
+        }
         "SYNC_DONE" => {
             let mut status = None;
             let mut devnum = None;
@@ -1066,6 +1083,27 @@ mod tests {
     fn push_pattern_done() {
         let ev = parse_push_event("PATTERN_DONE loops=10").unwrap();
         assert_matches!(ev, PushEvent::PatternDone { loops: 10 });
+    }
+
+    #[test]
+    fn push_pattern_timeout() {
+        let ev = parse_push_event("PATTERN_TIMEOUT loops=42").unwrap();
+        assert_matches!(ev, PushEvent::PatternTimeout { loops: 42 });
+    }
+
+    #[test]
+    fn push_pattern_timeout_zero_loops() {
+        let ev = parse_push_event("PATTERN_TIMEOUT loops=0").unwrap();
+        assert_matches!(ev, PushEvent::PatternTimeout { loops: 0 });
+    }
+
+    #[test]
+    fn push_pattern_timeout_malformed() {
+        assert_matches!(parse_push_event("PATTERN_TIMEOUT"), Err(SdkError::Parse(_)));
+        assert_matches!(
+            parse_push_event("PATTERN_TIMEOUT loops=abc"),
+            Err(SdkError::Parse(_))
+        );
     }
 
     #[test]

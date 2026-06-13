@@ -107,6 +107,8 @@ class TestCaps:
     GOOD = "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000001"
 
     def test_basic(self):
+        from pochi.types import FEAT_SYNC
+
         c = protocol.parse_caps(self.GOOD)
         assert c.max_dio == 23
         assert c.out_count == 12
@@ -114,8 +116,27 @@ class TestCaps:
         assert c.ts_resolution_ns == 40
         assert c.max_pattern_steps == 256
         assert c.ts_ring_events == 256
-        assert c.features == 1
+        assert (c.features & FEAT_SYNC) != 0
         assert c.has_sync()
+        assert not c.has_reset()
+
+    def test_has_reset(self):
+        from pochi.types import FEAT_RESET, FEAT_SYNC
+
+        assert FEAT_SYNC == 0x1
+        assert FEAT_RESET == 0x2
+
+        both = protocol.parse_caps(
+            "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000003"
+        )
+        assert both.has_sync()
+        assert both.has_reset()
+
+        none = protocol.parse_caps(
+            "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000000"
+        )
+        assert not none.has_sync()
+        assert not none.has_reset()
 
     def test_old_firmware_rejected(self):
         with pytest.raises(UnsupportedFirmwareError):
@@ -302,6 +323,16 @@ class TestPushEvents:
             loops=10
         )
 
+    def test_pattern_timeout(self):
+        from pochi.types import PatternTimeoutEvent
+
+        assert protocol.parse_push_event(
+            "PATTERN_TIMEOUT loops=42"
+        ) == PatternTimeoutEvent(loops=42)
+        assert protocol.parse_push_event(
+            "PATTERN_TIMEOUT loops=0"
+        ) == PatternTimeoutEvent(loops=0)
+
     def test_sync_done(self):
         from pochi.types import SyncDoneEvent
 
@@ -316,7 +347,14 @@ class TestPushEvents:
         )
 
     @pytest.mark.parametrize(
-        "payload", ["INPUT t=99", "INPUT 0x05", "PATTERN_DONE loops=abc"]
+        "payload",
+        [
+            "INPUT t=99",
+            "INPUT 0x05",
+            "PATTERN_DONE loops=abc",
+            "PATTERN_TIMEOUT",
+            "PATTERN_TIMEOUT loops=xyz",
+        ],
     )
     def test_malformed(self, payload):
         with pytest.raises(ParseError):
