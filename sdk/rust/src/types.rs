@@ -20,9 +20,22 @@ pub struct Capabilities {
     pub features: u32,
 }
 
+/// `caps.features` bit 0: multi-device clock sync (`SYNC_*` commands).
+pub const FEAT_SYNC: u32 = 0x01;
+
+/// `caps.features` bit 1: reset commands (`PATTERN_RESET` / `SYSTEM_RESET` /
+/// `BOOTSEL_RESET`). Set by FW v0.1.3+.
+pub const FEAT_RESET: u32 = 0x02;
+
 impl Capabilities {
     pub fn has_sync(&self) -> bool {
-        self.features & 0x01 != 0
+        self.features & FEAT_SYNC != 0
+    }
+
+    /// True if the device supports `PATTERN_RESET` / `SYSTEM_RESET` /
+    /// `BOOTSEL_RESET` (FW v0.1.3+).
+    pub fn has_reset(&self) -> bool {
+        self.features & FEAT_RESET != 0
     }
 }
 
@@ -132,6 +145,12 @@ pub enum PushEvent {
     PatternDone {
         loops: u16,
     },
+    /// Pattern aborted by the FW wall-clock safety budget (FW v0.1.3+). The
+    /// SM / DMA are forced to a safe state; outputs hold the last written
+    /// step value until the host issues `SET_OUTPUTS` or `PATTERN_RESET`.
+    PatternTimeout {
+        loops: u16,
+    },
     SyncDone {
         status: String,
         devnum: u8,
@@ -162,9 +181,8 @@ pub enum SyncState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_capabilities_has_sync() {
-        let caps = Capabilities {
+    fn caps_with_features(features: u32) -> Capabilities {
+        Capabilities {
             protocol_version: 1,
             max_dio: 23,
             out_count: 12,
@@ -172,24 +190,38 @@ mod tests {
             ts_resolution_ns: 40,
             max_pattern_steps: 256,
             ts_ring_events: 256,
-            features: 0x01,
-        };
-        assert!(caps.has_sync());
+            features,
+        }
+    }
+
+    #[test]
+    fn test_capabilities_has_sync() {
+        assert!(caps_with_features(FEAT_SYNC).has_sync());
+        assert!(caps_with_features(FEAT_SYNC | FEAT_RESET).has_sync());
     }
 
     #[test]
     fn test_capabilities_no_sync() {
-        let caps = Capabilities {
-            protocol_version: 1,
-            max_dio: 23,
-            out_count: 0,
-            in_count: 23,
-            ts_resolution_ns: 40,
-            max_pattern_steps: 256,
-            ts_ring_events: 256,
-            features: 0x00,
-        };
-        assert!(!caps.has_sync());
+        assert!(!caps_with_features(0).has_sync());
+        assert!(!caps_with_features(FEAT_RESET).has_sync());
+    }
+
+    #[test]
+    fn test_capabilities_has_reset() {
+        assert!(caps_with_features(FEAT_RESET).has_reset());
+        assert!(caps_with_features(FEAT_SYNC | FEAT_RESET).has_reset());
+    }
+
+    #[test]
+    fn test_capabilities_no_reset() {
+        assert!(!caps_with_features(0).has_reset());
+        assert!(!caps_with_features(FEAT_SYNC).has_reset());
+    }
+
+    #[test]
+    fn test_feature_constants() {
+        assert_eq!(FEAT_SYNC, 0x1);
+        assert_eq!(FEAT_RESET, 0x2);
     }
 
     #[test]

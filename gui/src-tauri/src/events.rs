@@ -48,6 +48,9 @@ pub fn route(event: &PushEvent) -> (&'static str, Value) {
             json!({ "inputs": inputs, "timestampUs": timestamp_us }),
         ),
         PushEvent::PatternDone { loops } => ("pochi://pattern-done", json!({ "loops": loops })),
+        PushEvent::PatternTimeout { loops } => {
+            ("pochi://pattern-timeout", json!({ "loops": loops }))
+        }
         PushEvent::SyncDone {
             status,
             devnum,
@@ -91,6 +94,13 @@ mod tests {
         let (name, payload) = route(&PushEvent::PatternDone { loops: 3 });
         assert_eq!(name, "pochi://pattern-done");
         assert_eq!(payload["loops"], 3);
+    }
+
+    #[test]
+    fn pattern_timeout_routes_with_loops() {
+        let (name, payload) = route(&PushEvent::PatternTimeout { loops: 7 });
+        assert_eq!(name, "pochi://pattern-timeout");
+        assert_eq!(payload["loops"], 7);
     }
 
     #[test]

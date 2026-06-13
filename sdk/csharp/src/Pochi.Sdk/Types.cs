@@ -20,6 +20,19 @@ public sealed record VersionInfo(
     byte ProtocolVersion
 );
 
+/// <summary>Bit flags for <see cref="Capabilities.Features"/>.</summary>
+public static class Feature
+{
+    /// <summary><c>caps.features</c> bit 0: multi-device clock sync
+    /// (<c>SYNC_*</c> commands).</summary>
+    public const uint Sync = 0x1;
+
+    /// <summary><c>caps.features</c> bit 1: reset commands
+    /// (<c>PATTERN_RESET</c> / <c>SYSTEM_RESET</c> / <c>BOOTSEL_RESET</c>).
+    /// Set by FW v0.1.3+.</summary>
+    public const uint Reset = 0x2;
+}
+
 public sealed record Capabilities(
     byte ProtocolVersion,
     byte MaxDio,
@@ -33,7 +46,12 @@ public sealed record Capabilities(
 {
     /// <summary>True if bit 0 of <see cref="Features"/> (sync capability) is set.</summary>
     [JsonIgnore]
-    public bool HasSync => (Features & 0x01) != 0;
+    public bool HasSync => (Features & Feature.Sync) != 0;
+
+    /// <summary>True if the device supports <c>PATTERN_RESET</c> /
+    /// <c>SYSTEM_RESET</c> / <c>BOOTSEL_RESET</c> (FW v0.1.3+).</summary>
+    [JsonIgnore]
+    public bool HasReset => (Features & Feature.Reset) != 0;
 }
 
 public sealed record IoState(
@@ -131,6 +149,11 @@ public abstract record PushEvent;
 public sealed record InputChangeEvent(uint Inputs, ulong TimestampUs) : PushEvent;
 
 public sealed record PatternDoneEvent(ushort Loops) : PushEvent;
+
+/// <summary>Pattern aborted by the FW wall-clock safety budget (FW v0.1.3+).
+/// The SM / DMA are forced to a safe state; outputs hold the last written step
+/// value until the host issues SET_OUTPUTS or PATTERN_RESET.</summary>
+public sealed record PatternTimeoutEvent(ushort Loops) : PushEvent;
 
 public sealed record SyncDoneEvent(string Status, byte Devnum, ulong Timestamp) : PushEvent;
 

@@ -57,6 +57,10 @@ class NoResourceError(SdkError):
     code = "NO_RESOURCE"
 
 
+class NotRunningError(SdkError):
+    code = "NOT_RUNNING"
+
+
 class UnknownDeviceError(SdkError):
     code = "UNKNOWN_DEVICE"
 
@@ -112,6 +116,7 @@ _DEVICE_ERRORS: dict[str, tuple[type[SdkError], str]] = {
     "SYNC_STATE": (SyncStateError, "invalid sync state transition"),
     "SYNC_TIMEOUT": (SyncTimeoutError, "sync pulse not detected"),
     "NO_RESOURCE": (NoResourceError, "required resource not configured"),
+    "NOT_RUNNING": (NotRunningError, "pattern not running"),
 }
 
 

@@ -132,7 +132,10 @@ Response fields:
   (40ns = one sub-microsecond phase step)
 - `pattern=<n>` -- maximum pattern steps
 - `ring=<n>` -- timestamp ring buffer capacity (events)
-- `feat=0x<hex>` -- feature flags (bit 0: sync capability)
+- `feat=0x<hex>` -- feature flags. Defined bits:
+  - bit 0 (`FEAT_SYNC = 0x1`) -- multi-device clock sync (`SYNC_*`)
+  - bit 1 (`FEAT_RESET = 0x2`) -- reset commands (`pattern reset` /
+    `reset` / `bootsel`); set by FW v0.1.3+
 
 #### `info`
 
@@ -346,6 +349,22 @@ Stop pattern playback immediately.
 OK
 ```
 
+Errors: `ERR NOT_RUNNING` (FW v0.1.3+) -- returned when called in
+`idle` / `loaded` / `done` state. Old firmware silently returned `OK`
+even when nothing was running; the explicit error makes the
+"already stopped" case observable.
+
+#### `pattern reset`
+
+Soft reset of the pattern engine (FW v0.1.3+, `FEAT_RESET`). Stops
+SM/DMA, clears the loaded pattern buffer, and returns state to `idle`.
+USB stays up; the connection remains usable.
+
+```
+> pattern reset
+OK
+```
+
 #### `pattern status`
 
 Get current pattern playback status.
@@ -364,6 +383,39 @@ Response fields:
 When playback completes, a push event is sent:
 ```
 ! PATTERN_DONE loops=10
+```
+
+If the FW wall-clock budget aborts the run (e.g. PIO wedge), the timeout
+event is sent instead -- never both:
+```
+! PATTERN_TIMEOUT loops=42
+```
+
+### Device Reset (FW v0.1.3+)
+
+These commands require `FEAT_RESET` (bit 1 of `caps.features`). Text-mode
+FW auto-fills the binary magic argument, so the host sends the bare verb.
+
+#### `reset`
+
+Full chip soft reset via `SCB::sys_reset()`. The device returns `OK`,
+drains the CDC TX ring for ~50 ms, then reboots. **USB re-enumerates**,
+so the host must close the port and rediscover the device.
+
+```
+> reset
+OK
+(~50 ms later: USB disconnect → re-enumerate)
+```
+
+#### `bootsel`
+
+Reboot into BOOTSEL mass-storage mode for UF2 reflash. Same response
+sequence as `reset`; the device reappears as a USB MSC drive.
+
+```
+> bootsel
+OK
 ```
 
 ### Timestamp
@@ -553,8 +605,11 @@ Commands:
 | `subscribe <on\|off>` | on/off | `OK` | Toggle change notifications |
 | `pattern load <hex>` | hex data | `OK accepted=<n>` | Load pattern |
 | `pattern run <m> <r>` | once\|loop, u16 | `OK` | Start playback |
-| `pattern stop` | -- | `OK` | Stop playback |
+| `pattern stop` | -- | `OK` / `ERR NOT_RUNNING` | Stop playback (FW v0.1.3+ errors when not running) |
 | `pattern status` | -- | `OK state=... step=... loops=...` | Playback status |
+| `pattern reset` | -- | `OK` | Pattern engine soft reset (FW v0.1.3+) |
+| `reset` | -- | `OK` then USB re-enumerate | Full chip soft reset (FW v0.1.3+) |
+| `bootsel` | -- | `OK` then USB re-enumerate | Reboot into BOOTSEL mode (FW v0.1.3+) |
 | `ts arm <m> <mode>` | u32, rising\|falling\|both | `OK` | Arm timestamp |
 | `ts get <max>` | u16 | `OK count=<n> overflow=<0|1>` + N lines | Get timestamps (FW v0.1.2+ adds overflow; clamped ≤85 events/call) |
 | `ts disarm` | -- | `OK` | Disarm timestamp |
@@ -585,6 +640,7 @@ with the command or device state.
 | `SYNC_STATE` | 0x08 | Invalid sync state transition |
 | `SYNC_TIMEOUT` | 0x09 | Sync pulse not detected within timeout |
 | `NO_RESOURCE` | 0x0A | Required resource not configured (e.g., no output pins for write) |
+| `NOT_RUNNING` | 0x0C | `pattern stop` called while not running (FW v0.1.3+) |
 
 ### Text Parser Error Codes
 
@@ -614,7 +670,7 @@ Fields:
 
 ### `! PATTERN_DONE`
 
-Sent when pattern playback completes.
+Sent when pattern playback completes **normally**.
 
 ```
 ! PATTERN_DONE loops=10
@@ -622,6 +678,24 @@ Sent when pattern playback completes.
 
 Fields:
 - `loops=<n>` -- total loops completed
+
+### `! PATTERN_TIMEOUT`
+
+Sent when the FW wall-clock safety budget aborts a running pattern
+(FW v0.1.3+, `FEAT_RESET` feature bit). The PIO SM and DMA are forced
+into a safe state; output pins hold the value of the most recently
+written pattern step. Safe recovery is `SET_OUTPUTS` or `PATTERN_RESET`.
+
+```
+! PATTERN_TIMEOUT loops=42
+```
+
+Fields:
+- `loops=<n>` -- number of loops completed before the timeout fired
+
+`PATTERN_DONE` and `PATTERN_TIMEOUT` are mutually exclusive: normal
+completion emits only `PATTERN_DONE`, timeout emits only
+`PATTERN_TIMEOUT`.
 
 ### `! SYNC_DONE`
 

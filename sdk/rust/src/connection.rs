@@ -198,6 +198,42 @@ impl Connection {
         protocol::parse_pattern_status(&data)
     }
 
+    /// `pattern reset` — pattern engine soft reset (FW v0.1.3+, `FEAT_RESET`).
+    ///
+    /// Stops the state machine, clears the loaded pattern buffer, and
+    /// returns the engine to `Idle`. USB stays up; the connection remains
+    /// usable.
+    pub fn pattern_reset(&mut self) -> Result<()> {
+        self.transport.command("pattern reset")?;
+        Ok(())
+    }
+
+    // --- reset ---
+
+    /// `reset` — full chip soft reset (FW v0.1.3+, `FEAT_RESET`).
+    ///
+    /// The device responds `OK`, drains the CDC TX ring for ~50 ms, then
+    /// calls `SCB::sys_reset()`. The USB port re-enumerates, so this method
+    /// consumes the connection — callers must `discover` and `open` again
+    /// after the device comes back.
+    pub fn system_reset(self) -> Result<()> {
+        let mut t = self.transport;
+        t.command("reset")?;
+        Ok(())
+    }
+
+    /// `bootsel` — reboot into BOOTSEL mass-storage mode for UF2 reflash
+    /// (FW v0.1.3+, `FEAT_RESET`).
+    ///
+    /// Like [`Connection::system_reset`] the device responds `OK`, then
+    /// re-enumerates as a USB mass-storage device. Callers must close this
+    /// connection and either wait for the BOOTSEL drive or flash the device.
+    pub fn bootsel_reset(self) -> Result<()> {
+        let mut t = self.transport;
+        t.command("bootsel")?;
+        Ok(())
+    }
+
     // --- timestamp ---
 
     /// `ts arm <mask> <mode>` — arm timestamp capture.

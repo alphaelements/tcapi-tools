@@ -33,5 +33,5 @@ pub use transport::{TrafficDirection, TrafficHook};
 pub use types::{
     Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternState, PatternStatus,
     PatternStep, PinMap, PullMode, PushEvent, SyncRole, SyncState, TimestampEvent, TimestampResult,
-    VersionInfo,
+    VersionInfo, FEAT_RESET, FEAT_SYNC,
 };

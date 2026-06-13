@@ -139,6 +139,7 @@ interface StoreState {
     tsDepth: number;
     clockMhz: number;
     sync: boolean;
+    reset: boolean;
   } | null;
   subscribed: boolean;
 
@@ -164,7 +165,7 @@ interface StoreState {
     accepted: number | null;
     mode: "once" | "loop";
     repeat: number;
-    playState: "idle" | "running" | "done";
+    playState: "idle" | "running" | "done" | "timed_out";
     curStep: number;
     loops: number;
   };
@@ -351,6 +352,13 @@ function createStore() {
       bump("pattern");
     });
 
+    void listen<{ loops: number }>("pochi://pattern-timeout", (p) => {
+      S.pattern.playState = "timed_out";
+      S.pattern.loops = p.loops;
+      stopPatternPoll();
+      bump("pattern");
+    });
+
     // sync has no GUI yet (not in the mock); surfaced via pochi://log.
     void listen<{ raw: string }>("pochi://unknown-event", () => {});
   }
@@ -529,7 +537,8 @@ function createStore() {
           // System clock is not reported by `caps` (ts_resolution_ns is the
           // 40 ns phase step); 125 MHz is the device constant from the spec.
           clockMhz: 125,
-          sync: (caps.features & 1) !== 0,
+          sync: (caps.features & 0x1) !== 0,
+          reset: (caps.features & 0x2) !== 0,
         };
         applyWireMap(map);
         S.connStatus = "connected";
@@ -802,14 +811,49 @@ function createStore() {
       }
     },
     async stopPattern() {
-      try {
-        await invoke("pattern_stop");
-      } catch (e) {
-        logError("pattern stop", e);
+      if (S.pattern.playState === "running") {
+        try {
+          await invoke("pattern_stop");
+        } catch (e) {
+          logError("pattern stop", e);
+        }
       }
       S.pattern.playState = "idle";
       stopPatternPoll();
       bump("pattern", "pins");
+    },
+    async patternReset() {
+      try {
+        await invoke("pattern_reset");
+      } catch (e) {
+        logError("pattern reset", e);
+      }
+      S.pattern.playState = "idle";
+      S.pattern.curStep = 0;
+      S.pattern.loops = 0;
+      S.pattern.accepted = null;
+      stopPatternPoll();
+      bump("pattern");
+    },
+    async systemReset() {
+      try {
+        await invoke("system_reset");
+      } catch (e) {
+        logError("reset", e);
+      }
+      S.connStatus = "disconnected";
+      resetDeviceState();
+      bump("conn", "pattern", "pins", "ts");
+    },
+    async bootselReset() {
+      try {
+        await invoke("bootsel_reset");
+      } catch (e) {
+        logError("bootsel", e);
+      }
+      S.connStatus = "disconnected";
+      resetDeviceState();
+      bump("conn", "pattern", "pins", "ts");
     },
     async loadPatternToml(path: string) {
       try {

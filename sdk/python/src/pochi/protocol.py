@@ -19,6 +19,7 @@ from .types import (
     PatternState,
     PatternStatus,
     PatternStep,
+    PatternTimeoutEvent,
     PinMap,
     PullMode,
     PushEvent,
@@ -372,6 +373,13 @@ def parse_push_event(payload: str) -> PushEvent:
                 f"missing or invalid loops= in PATTERN_DONE event: {trimmed}"
             )
         return PatternDoneEvent(loops=int(loops))
+    if kind == "PATTERN_TIMEOUT":
+        loops = f.get("loops")
+        if loops is None or not loops.isdigit():
+            raise ParseError(
+                f"missing or invalid loops= in PATTERN_TIMEOUT event: {trimmed}"
+            )
+        return PatternTimeoutEvent(loops=int(loops))
     if kind == "SYNC_DONE":
         status = f.get("status")
         devnum = f.get("devnum")

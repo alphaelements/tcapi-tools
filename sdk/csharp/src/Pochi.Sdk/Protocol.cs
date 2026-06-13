@@ -534,6 +534,20 @@ public static partial class Protocol
                     return new PatternDoneEvent(loopCount);
                 }
 
+            case "PATTERN_TIMEOUT":
+                {
+                    if (!f.TryGetValue("loops", out var loops)
+                        || !ushort.TryParse(loops, NumberStyles.None, CultureInfo.InvariantCulture,
+                            out var loopCount))
+                    {
+                        throw new SdkException(
+                            ErrorCode.Parse,
+                            $"missing or invalid loops= in PATTERN_TIMEOUT event: {trimmed}");
+                    }
+
+                    return new PatternTimeoutEvent(loopCount);
+                }
+
             case "SYNC_DONE":
                 {
                     if (!f.TryGetValue("status", out var status)

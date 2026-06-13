@@ -24,6 +24,14 @@ class VersionInfo:
     protocol_version: int
 
 
+#: ``caps.features`` bit 0: multi-device clock sync (``SYNC_*`` commands).
+FEAT_SYNC = 0x01
+
+#: ``caps.features`` bit 1: reset commands (``PATTERN_RESET`` / ``SYSTEM_RESET``
+#: / ``BOOTSEL_RESET``). Set by FW v0.1.3+.
+FEAT_RESET = 0x02
+
+
 @dataclass
 class Capabilities:
     protocol_version: int
@@ -37,7 +45,12 @@ class Capabilities:
 
     def has_sync(self) -> bool:
         """True if bit 0 of ``features`` (sync capability) is set."""
-        return (self.features & 0x01) != 0
+        return (self.features & FEAT_SYNC) != 0
+
+    def has_reset(self) -> bool:
+        """True if the device supports ``PATTERN_RESET`` / ``SYSTEM_RESET`` /
+        ``BOOTSEL_RESET`` (FW v0.1.3+)."""
+        return (self.features & FEAT_RESET) != 0
 
 
 @dataclass
@@ -143,6 +156,15 @@ class PatternDoneEvent:
 
 
 @dataclass
+class PatternTimeoutEvent:
+    """Pattern aborted by the FW wall-clock safety budget (FW v0.1.3+). The
+    SM / DMA are forced to a safe state; outputs hold the last written step
+    value until the host issues SET_OUTPUTS or PATTERN_RESET."""
+
+    loops: int
+
+
+@dataclass
 class SyncDoneEvent:
     status: str
     devnum: int
@@ -157,4 +179,6 @@ class UnknownEvent:
     raw: str
 
 
-PushEvent = InputChangeEvent | PatternDoneEvent | SyncDoneEvent | UnknownEvent
+PushEvent = (
+    InputChangeEvent | PatternDoneEvent | PatternTimeoutEvent | SyncDoneEvent | UnknownEvent
+)

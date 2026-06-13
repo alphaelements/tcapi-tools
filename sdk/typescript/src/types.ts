@@ -29,9 +29,22 @@ export interface Capabilities {
   features: number;
 }
 
+/** `caps.features` bit 0: multi-device clock sync (`SYNC_*` commands). */
+export const FEAT_SYNC = 0x01;
+
+/** `caps.features` bit 1: reset commands (`PATTERN_RESET` / `SYSTEM_RESET` /
+ * `BOOTSEL_RESET`). Set by FW v0.1.3+. */
+export const FEAT_RESET = 0x02;
+
 /** True if bit 0 of `features` (sync capability) is set. */
 export function hasSync(caps: Capabilities): boolean {
-  return (caps.features & 0x01) !== 0;
+  return (caps.features & FEAT_SYNC) !== 0;
+}
+
+/** True if the device supports `PATTERN_RESET` / `SYSTEM_RESET` /
+ * `BOOTSEL_RESET` (FW v0.1.3+). */
+export function hasReset(caps: Capabilities): boolean {
+  return (caps.features & FEAT_RESET) !== 0;
 }
 
 export interface IoState {
@@ -102,5 +115,6 @@ export type SyncState = "idle" | "armed" | "master_armed" | "clocking";
 export type PushEvent =
   | { type: "input_change"; inputs: number; timestampUs: number }
   | { type: "pattern_done"; loops: number }
+  | { type: "pattern_timeout"; loops: number }
   | { type: "sync_done"; status: string; devnum: number; timestamp: number }
   | { type: "unknown"; raw: string };

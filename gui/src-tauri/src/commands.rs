@@ -282,6 +282,49 @@ pub async fn pattern_status(state: State<'_, SharedState>) -> Result<PatternStat
     with_state(shared, |inner| inner.conn()?.pattern_status().map_err(err)).await
 }
 
+/// `pattern reset` — pattern engine soft reset (FW v0.1.3+, `FEAT_RESET`).
+/// Lighter than `system_reset`: USB stays up, so the GUI keeps its open
+/// connection.
+#[tauri::command]
+pub async fn pattern_reset(state: State<'_, SharedState>) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| inner.conn()?.pattern_reset().map_err(err)).await
+}
+
+/// `reset` — full chip soft reset (FW v0.1.3+, `FEAT_RESET`). USB
+/// re-enumerates, so the connection is closed afterwards; the frontend
+/// must rediscover and reconnect.
+#[tauri::command]
+pub async fn system_reset(state: State<'_, SharedState>) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| {
+        let conn = inner
+            .connection
+            .take()
+            .ok_or_else(|| "no device connected".to_string())?;
+        inner.device_info = None;
+        conn.system_reset().map_err(err)
+    })
+    .await
+}
+
+/// `bootsel` — reboot into BOOTSEL mass-storage mode for UF2 reflash
+/// (FW v0.1.3+, `FEAT_RESET`). USB re-enumerates as a mass-storage device,
+/// so the connection is closed and the frontend must not try to reopen.
+#[tauri::command]
+pub async fn bootsel_reset(state: State<'_, SharedState>) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| {
+        let conn = inner
+            .connection
+            .take()
+            .ok_or_else(|| "no device connected".to_string())?;
+        inner.device_info = None;
+        conn.bootsel_reset().map_err(err)
+    })
+    .await
+}
+
 // --- timestamp ---
 
 #[tauri::command]

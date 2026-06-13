@@ -423,9 +423,34 @@ export function installMockDevice(): void {
         return null;
       case "pattern_stop":
         requireConnected();
+        if (patState !== "running") {
+          wire("pattern stop", "ERR NOT_RUNNING");
+          throw "pattern stop: device error: NOT_RUNNING (pattern not running)";
+        }
         stopPattern();
         patState = "idle";
         wire("pattern stop");
+        return null;
+      case "pattern_reset":
+        requireConnected();
+        stopPattern();
+        patState = "idle";
+        patSteps.length = 0;
+        wire("pattern reset");
+        return null;
+      case "system_reset":
+        requireConnected();
+        stopPattern();
+        patState = "idle";
+        wire("reset");
+        connected = false;
+        return null;
+      case "bootsel_reset":
+        requireConnected();
+        stopPattern();
+        patState = "idle";
+        wire("bootsel");
+        connected = false;
         return null;
       case "pattern_status":
         requireConnected();

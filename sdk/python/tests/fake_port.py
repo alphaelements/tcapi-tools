@@ -147,8 +147,15 @@ class MockFw:
             self.pattern_state = "running"
             return ["OK"]
         if key == "pattern stop":
-            if self.pattern_loaded > 0:
-                self.pattern_state = "loaded"
+            if self.pattern_state != "running":
+                return ["ERR NOT_RUNNING"]
+            self.pattern_state = "loaded" if self.pattern_loaded > 0 else "idle"
+            return ["OK"]
+        if key == "pattern reset":
+            self.pattern_state = "idle"
+            self.pattern_loaded = 0
+            return ["OK"]
+        if key in ("reset", "bootsel"):
             return ["OK"]
         if key == "pattern status":
             return [f"OK state={self.pattern_state} step=0 loops=0"]

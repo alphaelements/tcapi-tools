@@ -79,7 +79,16 @@ class MockFw {
       return ["OK"];
     }
     if (key === "pattern stop") {
-      if (this.patternLoaded > 0) this.patternState = "loaded";
+      if (this.patternState !== "running") return ["ERR NOT_RUNNING"];
+      this.patternState = this.patternLoaded > 0 ? "loaded" : "idle";
+      return ["OK"];
+    }
+    if (key === "pattern reset") {
+      this.patternState = "idle";
+      this.patternLoaded = 0;
+      return ["OK"];
+    }
+    if (key === "reset" || key === "bootsel") {
       return ["OK"];
     }
     if (key === "pattern status") {
@@ -210,6 +219,8 @@ describe("typed device errors", () => {
     await expectCode(conn.syncCount(), ErrorCode.SyncState);
     await expectCode(conn.patternRun("once", 1), ErrorCode.BadParam);
     await expect(conn.raw("frobnicate")).resolves.toBe("ERR UNKNOWN_CMD");
+    // pattern stop while idle surfaces ErrNotRunning (FW v0.1.3+)
+    await expectCode(conn.patternStop(), ErrorCode.NotRunning);
   });
 
   it("loop repeat=0 is rejected by FW", async () => {
@@ -217,6 +228,28 @@ describe("typed device errors", () => {
     const { conn } = connectMock(fw);
     await conn.patternLoad([{ outBits: 1, holdUs: 1 }]);
     await expectCode(conn.patternRun("loop", 0), ErrorCode.BadParam);
+  });
+});
+
+describe("reset commands (FW v0.1.3+)", () => {
+  it("patternReset returns the engine to idle", async () => {
+    const fw = new MockFw();
+    const { conn } = connectMock(fw);
+    await conn.patternLoad([{ outBits: 1, holdUs: 1 }]);
+    await conn.patternRun("loop", 10);
+    expect((await conn.patternStatus()).state).toBe("running");
+    await conn.patternReset();
+    expect((await conn.patternStatus()).state).toBe("idle");
+    // Buffer cleared — pattern run now hits BAD_PARAM.
+    await expectCode(conn.patternRun("once", 1), ErrorCode.BadParam);
+  });
+
+  it("systemReset and bootselReset succeed against the mock", async () => {
+    const fw = new MockFw();
+    const { conn } = connectMock(fw);
+    await conn.systemReset();
+    // Mock keeps the port open — real device re-enumerates here.
+    await conn.bootselReset();
   });
 });
 

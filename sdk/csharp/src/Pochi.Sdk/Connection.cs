@@ -134,6 +134,30 @@ public sealed class Connection : IDisposable
     public PatternStatus PatternStatus() =>
         Protocol.ParsePatternStatus(_transport.Command("pattern status"));
 
+    /// <summary><c>pattern reset</c> — pattern engine soft reset (FW v0.1.3+,
+    /// <see cref="Feature.Reset"/>).
+    /// <para>Stops the state machine, clears the loaded pattern buffer, and
+    /// returns the engine to <c>Idle</c>. USB stays up; the connection
+    /// remains usable.</para></summary>
+    public void PatternReset() => _transport.Command("pattern reset");
+
+    // --- reset ---
+
+    /// <summary><c>reset</c> — full chip soft reset (FW v0.1.3+,
+    /// <see cref="Feature.Reset"/>).
+    /// <para>The device responds <c>OK</c>, drains its CDC TX ring for ~50 ms,
+    /// then calls <c>SCB::sys_reset()</c>. The USB port re-enumerates, so
+    /// the caller must dispose this connection and rediscover the device
+    /// afterwards.</para></summary>
+    public void SystemReset() => _transport.Command("reset");
+
+    /// <summary><c>bootsel</c> — reboot into BOOTSEL mass-storage mode for
+    /// UF2 reflash (FW v0.1.3+, <see cref="Feature.Reset"/>).
+    /// <para>Like <see cref="SystemReset"/>, the device re-enumerates
+    /// afterwards (as a USB mass-storage device). Callers must dispose this
+    /// connection.</para></summary>
+    public void BootselReset() => _transport.Command("bootsel");
+
     // --- timestamp ---
 
     /// <summary><c>ts arm &lt;mask&gt; &lt;mode&gt;</c> — arm timestamp capture.</summary>

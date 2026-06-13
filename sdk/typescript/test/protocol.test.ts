@@ -172,6 +172,29 @@ describe("parseCaps", () => {
       ),
     ).toBe(ErrorCode.Parse);
   });
+  it("hasSync / hasReset reflect features bits", async () => {
+    const { hasReset, hasSync, FEAT_RESET, FEAT_SYNC } = await import("../src/types.js");
+    expect(FEAT_SYNC).toBe(0x1);
+    expect(FEAT_RESET).toBe(0x2);
+
+    const both = parseCaps(
+      "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000003",
+    );
+    expect(hasSync(both)).toBe(true);
+    expect(hasReset(both)).toBe(true);
+
+    const syncOnly = parseCaps(
+      "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000001",
+    );
+    expect(hasSync(syncOnly)).toBe(true);
+    expect(hasReset(syncOnly)).toBe(false);
+
+    const none = parseCaps(
+      "dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000000",
+    );
+    expect(hasSync(none)).toBe(false);
+    expect(hasReset(none)).toBe(false);
+  });
 });
 
 describe("parseInfo", () => {
@@ -343,6 +366,18 @@ describe("push events", () => {
       loops: 10,
     });
   });
+  it("parses PATTERN_TIMEOUT", () => {
+    expect(parsePushEvent("PATTERN_TIMEOUT loops=42")).toEqual({
+      type: "pattern_timeout",
+      loops: 42,
+    });
+  });
+  it("parses PATTERN_TIMEOUT with zero loops", () => {
+    expect(parsePushEvent("PATTERN_TIMEOUT loops=0")).toEqual({
+      type: "pattern_timeout",
+      loops: 0,
+    });
+  });
   it("parses SYNC_DONE", () => {
     expect(parsePushEvent("SYNC_DONE status=ready devnum=1 ts=12345")).toEqual({
       type: "sync_done",
@@ -361,6 +396,12 @@ describe("push events", () => {
     expect(errCode(() => parsePushEvent("INPUT t=99"))).toBe(ErrorCode.Parse);
     expect(errCode(() => parsePushEvent("INPUT 0x05"))).toBe(ErrorCode.Parse);
     expect(errCode(() => parsePushEvent("PATTERN_DONE loops=abc"))).toBe(
+      ErrorCode.Parse,
+    );
+    expect(errCode(() => parsePushEvent("PATTERN_TIMEOUT"))).toBe(
+      ErrorCode.Parse,
+    );
+    expect(errCode(() => parsePushEvent("PATTERN_TIMEOUT loops=xyz"))).toBe(
       ErrorCode.Parse,
     );
   });
