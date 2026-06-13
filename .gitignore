@@ -27,6 +27,7 @@ obj/
 
 # Sensitive / local-only
 tmp/
+.handoff/
 CLAUDE.md
 .claude/
 .mcp.json
