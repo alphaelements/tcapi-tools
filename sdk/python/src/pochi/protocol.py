@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from .errors import ParseError, SdkError, UnsupportedFirmwareError, from_error_code
 from .reconcile import as_is_ns
 from .types import (
+    MAP_V2_CHANNEL_LINES,
+    VALID_DIO_MASK,
     Capabilities,
     EdgeMode,
     InputChangeEvent,
@@ -21,12 +23,14 @@ from .types import (
     PatternStep,
     PatternTimeoutEvent,
     PinMap,
+    PinMapV2,
     PullMode,
     PushEvent,
     SyncDoneEvent,
     TimestampEvent,
     UnknownEvent,
     VersionInfo,
+    channel_to_gp,
 )
 
 
@@ -194,11 +198,29 @@ def parse_info(data: str) -> tuple[str, int | None]:
 # --- map ---
 
 
-def parse_map(data: str) -> PinMap:
-    """Parse ``v=1 out=0:12 in=12:11 pull=up flags=0x01``."""
+def parse_map_version(data: str) -> int:
+    """Extract just the ``v=`` field from a ``map get`` header, before
+    deciding whether the 25 v2 detail lines need to be read."""
+    f = _fields(data)
+    return _int_strict(_require(f, "v", f"map: {data}"), f"map: {data}")
+
+
+def parse_map(data: str, channel_lines: list[str] | None = None) -> PinMap | PinMapV2:
+    """Parse a ``map get`` response. Branches on the ``v=`` field first:
+    ``v=1`` uses the legacy ``out=base:count`` / ``pull=`` fields;
+    ``v>=2`` uses the unified-DIO bitmask model (``out=count in=count``,
+    no ``pull=``) and reconstructs ``direction_mask`` from
+    ``channel_lines`` (the 25 ``chN: OUT/IN`` detail lines that follow
+    the header in the raw response, if the caller read them)."""
     f = _fields(data)
     ctx = f"map: {data}"
+    version = _int_strict(_require(f, "v", ctx), ctx)
+    if version >= 2:
+        return _parse_map_v2(f, ctx, channel_lines or [])
+    return _parse_map_v1(f, ctx)
 
+
+def _parse_map_v1(f: dict[str, str], ctx: str) -> PinMap:
     def parse_range(key: str) -> tuple[int, int]:
         value = _require(f, key, ctx)
         base, sep, count = value.partition(":")
@@ -222,6 +244,48 @@ def parse_map(data: str) -> PinMap:
     )
 
 
+def _parse_map_v2(f: dict[str, str], ctx: str, channel_lines: list[str]) -> PinMapV2:
+    version = _int_strict(_require(f, "v", ctx), ctx)
+    out_count = _int_strict(_require(f, "out", ctx), ctx)
+    in_count = _int_strict(_require(f, "in", ctx), ctx)
+    flags = _parse_u32(_require(f, "flags", ctx))
+    channels: list[str] = []
+    direction_mask = 0
+    if channel_lines:
+        direction_mask = parse_map_v2_channels(channel_lines)
+        channels = [line.rpartition(":")[2].strip() for line in channel_lines]
+    return PinMapV2(
+        version=version,
+        flags=flags,
+        direction_mask=direction_mask,
+        out_count=out_count,
+        in_count=in_count,
+        channels=channels,
+    )
+
+
+def parse_map_v2_channels(lines: list[str]) -> int:
+    """Parse the 25 ``  chN: OUT/IN`` detail lines that follow a v2
+    ``map get`` header and reconstruct ``direction_mask`` (ch->GP
+    mapping: ch0-22 -> GP0-22, ch23 -> GP26, ch24 -> GP27)."""
+    if len(lines) != MAP_V2_CHANNEL_LINES:
+        raise ParseError(
+            f"expected {MAP_V2_CHANNEL_LINES} map v2 channel lines, got {len(lines)}"
+        )
+    mask = 0
+    for ch, line in enumerate(lines):
+        trimmed = line.strip()
+        label, sep, direction = trimmed.partition(":")
+        if not sep or label != f"ch{ch}":
+            raise ParseError(f"malformed map v2 channel line: {line!r}")
+        direction = direction.strip()
+        if direction == "OUT":
+            mask |= 1 << channel_to_gp(ch)
+        elif direction != "IN":
+            raise ParseError(f"invalid direction in map v2 channel line: {line!r}")
+    return mask
+
+
 def map_to_hex(pin_map: PinMap) -> str:
     """Encode a PinMap as the 48-char hex string for ``map set``.
     Extended fields not in PinMap (out_default, polarities) are zero."""
@@ -233,6 +297,27 @@ def map_to_hex(pin_map: PinMap) -> str:
     buf[4] = pin_map.in_count
     buf[5] = {"none": 0, "up": 1, "down": 2}[pin_map.pull.value]
     buf[6] = pin_map.flags
+    return buf.hex()
+
+
+def map_v2_to_hex(pin_map: PinMapV2) -> str:
+    """Encode a PinMapV2 as the 64-char (32B) hex string for ``map set``.
+    Fields not observable over the text protocol (pull/polarity/edge/
+    out_default) use the same defaults as FW ``parse_map_set_v2()``:
+    ``pull_down_mask`` / ``edge_mask`` default to the input-pin
+    complement of ``direction_mask``; everything else defaults to 0."""
+    complement = ~pin_map.direction_mask & VALID_DIO_MASK
+    buf = bytearray(32)
+    buf[0] = pin_map.version
+    buf[1] = pin_map.flags
+    buf[2:4] = (0).to_bytes(2, "little")
+    buf[4:8] = pin_map.direction_mask.to_bytes(4, "little")
+    buf[8:12] = (0).to_bytes(4, "little")  # pull_up_mask
+    buf[12:16] = complement.to_bytes(4, "little")  # pull_down_mask
+    buf[16:20] = (0).to_bytes(4, "little")  # out_default
+    buf[20:24] = (0).to_bytes(4, "little")  # out_polarity
+    buf[24:28] = (0).to_bytes(4, "little")  # in_polarity
+    buf[28:32] = complement.to_bytes(4, "little")  # edge_mask
     return buf.hex()
 
 
@@ -404,8 +489,11 @@ __all__ = [
     "parse_version",
     "parse_caps",
     "parse_info",
+    "parse_map_version",
     "parse_map",
+    "parse_map_v2_channels",
     "map_to_hex",
+    "map_v2_to_hex",
     "parse_read",
     "parse_state",
     "pattern_to_hex",

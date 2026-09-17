@@ -9,6 +9,7 @@ from . import protocol
 from .discovery import discover, find_by_device_number, find_by_uid, select_sole_device
 from .transport import EventCallback, PortLike, Transport
 from .types import (
+    MAP_V2_CHANNEL_LINES,
     Capabilities,
     DeviceInfo,
     EdgeMode,
@@ -17,6 +18,7 @@ from .types import (
     PatternStatus,
     PatternStep,
     PinMap,
+    PinMapV2,
     TimestampResult,
     VersionInfo,
 )
@@ -115,13 +117,30 @@ class Connection:
 
     # --- pin map ---
 
-    def map_get(self) -> PinMap:
-        """``map get`` — current pin map."""
-        return protocol.parse_map(self._transport.command("map get"))
+    def map_get(self) -> PinMap | PinMapV2:
+        """``map get`` — current pin map. Returns a v1 ``PinMap`` or a
+        v2 ``PinMapV2`` depending on the FW's ``v=`` field.
 
-    def map_set(self, pin_map: PinMap) -> None:
-        """``map set`` from a typed PinMap (extended fields zero)."""
-        self.map_set_hex(protocol.map_to_hex(pin_map))
+        v2 headers are followed by 25 ``chN: OUT/IN`` detail lines that
+        populate ``PinMapV2.direction_mask``/``channels``; v1 headers
+        carry no such lines. The command is sent exactly once: the
+        header is read first (deciding the version), and only then, if
+        v2, are the 25 trailing lines pulled from the same response
+        stream (already in flight from the device — no second command).
+        """
+        header = self._transport.command("map get")
+        if protocol.parse_map_version(header) >= 2:
+            lines = self._transport.recv_lines(MAP_V2_CHANNEL_LINES)
+            return protocol.parse_map(header, lines)
+        return protocol.parse_map(header)
+
+    def map_set(self, pin_map: PinMap | PinMapV2) -> None:
+        """``map set`` from a typed PinMap or PinMapV2 (fields not
+        observable over the text protocol default per FW ``parse_map_set_v2``)."""
+        if isinstance(pin_map, PinMapV2):
+            self.map_set_hex(protocol.map_v2_to_hex(pin_map))
+        else:
+            self.map_set_hex(protocol.map_to_hex(pin_map))
 
     def map_set_hex(self, hex_str: str) -> None:
         """``map set <hex>`` — raw 48-char hex map."""

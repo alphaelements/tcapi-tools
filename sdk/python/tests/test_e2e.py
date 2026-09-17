@@ -21,6 +21,7 @@ from pochi.types import (
     PatternState,
     PatternStep,
     PinMap,
+    PinMapV2,
     PullMode,
 )
 
@@ -39,7 +40,9 @@ def connect_mock(fw: MockFw, pre_push: list[str] | None = None):
 
 
 def test_full_command_sweep():
-    conn, _ = connect_mock(MockFw())
+    """v1 FW compatibility sweep (MockFw protocol_version=1) — the SDK
+    must keep working against pre-unified-DIO firmware (R-09)."""
+    conn, _ = connect_mock(MockFw(protocol_version=1))
 
     v = conn.version()
     assert (v.major, v.minor, v.patch, v.protocol_version) == (0, 1, 0, 1)
@@ -189,6 +192,74 @@ def test_ts_overflow_flag_propagates():
     result = conn.ts_get(256)
     assert result.overflow
     assert len(result.events) == 2
+
+
+def test_map_get_v2_returns_pinmapv2_with_channels():
+    conn, _ = connect_mock(MockFw(protocol_version=2))
+    m = conn.map_get()
+    assert isinstance(m, PinMapV2)
+    assert m.version == 2
+    assert m.out_count == 12
+    assert m.in_count == 13
+    assert len(m.channels) == 25
+    assert m.channels[:12] == ["OUT"] * 12
+    assert m.channels[12:] == ["IN"] * 13
+    assert m.direction_mask == 0x00000FFF
+
+
+def test_map_set_v2_round_trips_through_map_get():
+    conn, _ = connect_mock(MockFw(protocol_version=2))
+    conn.map_set(
+        PinMapV2(
+            version=2,
+            flags=0x00,
+            direction_mask=0x03,
+            out_count=2,
+            in_count=23,
+            channels=[],
+        )
+    )
+    m = conn.map_get()
+    assert m.direction_mask == 0x03
+    assert m.out_count == 2
+    assert m.in_count == 23
+
+
+def test_map_default_v2_all_inputs():
+    conn, _ = connect_mock(MockFw(protocol_version=2))
+    conn.map_default()
+    m = conn.map_get()
+    assert m.out_count == 0
+    assert m.in_count == 25
+    assert m.direction_mask == 0
+
+
+def test_map_get_v1_fw_returns_pinmap_unchanged():
+    """v2-aware SDK talking to v1 FW must still get a v1 PinMap back
+    (R-09 backward compatibility)."""
+    conn, _ = connect_mock(MockFw(protocol_version=1))
+    m = conn.map_get()
+    assert isinstance(m, PinMap)
+    assert m.pull is PullMode.UP
+
+
+def test_map_set_v2_hex_rejected_by_v1_fw_surfaces_typed_error():
+    """Sending a v2 (64hex) map_set to v1 FW surfaces the device's
+    ERR BAD_PARAM as a typed SDK error, not a silent failure (R-09)."""
+    from pochi.errors import BadParamError
+
+    conn, _ = connect_mock(MockFw(protocol_version=1))
+    with pytest.raises(BadParamError):
+        conn.map_set(
+            PinMapV2(
+                version=2,
+                flags=0,
+                direction_mask=0x03,
+                out_count=2,
+                in_count=23,
+                channels=[],
+            )
+        )
 
 
 def test_reconcile_pipeline_from_ts_get():

@@ -8,7 +8,7 @@ from pochi.errors import (
     UnknownDeviceError,
     UnsupportedFirmwareError,
 )
-from pochi.types import PatternState, PatternStep, PullMode
+from pochi.types import PatternState, PatternStep, PinMapV2, PullMode
 
 
 class TestParseResponse:
@@ -198,6 +198,124 @@ class TestMap:
         data = bytes.fromhex(hex_str)
         assert list(data[:7]) == [1, 0, 12, 12, 11, 1, 1]
         assert all(b == 0 for b in data[7:])
+
+
+class TestMapV2:
+    HEADER = "v=2 out=4 in=21 flags=0x01"
+
+    def _channel_lines(self, out_channels: set[int]) -> list[str]:
+        return [
+            f"  ch{ch}: {'OUT' if ch in out_channels else 'IN'}" for ch in range(25)
+        ]
+
+    def test_header_only_no_channel_lines(self):
+        m = protocol.parse_map(self.HEADER)
+        assert isinstance(m, PinMapV2)
+        assert m.version == 2
+        assert m.out_count == 4
+        assert m.in_count == 21
+        assert m.flags == 1
+        assert m.direction_mask == 0
+        assert m.channels == []
+
+    def test_with_channel_lines_reconstructs_direction_mask(self):
+        lines = self._channel_lines({0, 1, 2, 3})
+        m = protocol.parse_map(self.HEADER, lines)
+        assert m.direction_mask == 0x0F
+        assert m.channels[0] == "OUT"
+        assert m.channels[24] == "IN"
+
+    def test_ch23_ch24_map_to_gp26_gp27(self):
+        lines = self._channel_lines({23, 24})
+        m = protocol.parse_map("v=2 out=2 in=23 flags=0x00", lines)
+        assert m.direction_mask == (1 << 26) | (1 << 27)
+
+    def test_all_inputs(self):
+        lines = self._channel_lines(set())
+        m = protocol.parse_map("v=2 out=0 in=25 flags=0x00", lines)
+        assert m.direction_mask == 0
+
+    def test_all_outputs(self):
+        lines = self._channel_lines(set(range(25)))
+        m = protocol.parse_map("v=2 out=25 in=0 flags=0x00", lines)
+        from pochi.types import VALID_DIO_MASK
+
+        assert m.direction_mask == VALID_DIO_MASK
+
+    def test_parse_map_v2_channels_directly(self):
+        lines = self._channel_lines({0, 23})
+        mask = protocol.parse_map_v2_channels(lines)
+        assert mask == (1 << 0) | (1 << 26)
+
+    def test_wrong_line_count_rejected(self):
+        with pytest.raises(ParseError):
+            protocol.parse_map_v2_channels(["  ch0: OUT"])
+
+    def test_malformed_channel_line_rejected(self):
+        lines = self._channel_lines(set())
+        lines[3] = "  ch3: SIDEWAYS"
+        with pytest.raises(ParseError):
+            protocol.parse_map_v2_channels(lines)
+
+    def test_missing_v_field_rejected(self):
+        with pytest.raises(ParseError):
+            protocol.parse_map("out=4 in=21 flags=0x01")
+
+    def test_v2_out_without_colon_does_not_crash_range_parse(self):
+        # Regression: v2 `out=N` (no `:count`) must not hit the v1
+        # `parse_range` ParseError path (E-01).
+        m = protocol.parse_map("v=2 out=4 in=21 flags=0x01")
+        assert m.out_count == 4
+
+    def test_v2_missing_pull_field_does_not_crash(self):
+        # Regression: v2 responses have no `pull=` field (E-02).
+        m = protocol.parse_map("v=2 out=4 in=21 flags=0x01")
+        assert isinstance(m, PinMapV2)
+
+
+class TestMapV2ToHex:
+    def test_serializes_32_bytes(self):
+        m = PinMapV2(
+            version=2,
+            flags=0x01,
+            direction_mask=0x0F,
+            out_count=4,
+            in_count=21,
+            channels=[],
+        )
+        hex_str = protocol.map_v2_to_hex(m)
+        assert len(hex_str) == 64
+        data = bytes.fromhex(hex_str)
+        assert data[0] == 2
+        assert data[1] == 0x01
+        assert data[2:4] == b"\x00\x00"
+        assert int.from_bytes(data[4:8], "little") == 0x0F
+
+    def test_defaults_use_valid_dio_mask_complement(self):
+        from pochi.types import VALID_DIO_MASK
+
+        direction_mask = 0x00000FFF
+        m = PinMapV2(
+            version=2,
+            flags=0,
+            direction_mask=direction_mask,
+            out_count=12,
+            in_count=13,
+            channels=[],
+        )
+        data = bytes.fromhex(protocol.map_v2_to_hex(m))
+        pull_up = int.from_bytes(data[8:12], "little")
+        pull_down = int.from_bytes(data[12:16], "little")
+        out_default = int.from_bytes(data[16:20], "little")
+        out_polarity = int.from_bytes(data[20:24], "little")
+        in_polarity = int.from_bytes(data[24:28], "little")
+        edge_mask = int.from_bytes(data[28:32], "little")
+        assert pull_up == 0
+        assert pull_down == (~direction_mask & VALID_DIO_MASK)
+        assert out_default == 0
+        assert out_polarity == 0
+        assert in_polarity == 0
+        assert edge_mask == (~direction_mask & VALID_DIO_MASK)
 
 
 class TestReadState:
