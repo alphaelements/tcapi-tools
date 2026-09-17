@@ -110,6 +110,31 @@ class Transport:
         lines = [self._recv_response(self.timeout) for _ in range(count)]
         return data, lines
 
+    def command_fixed_lines(self, cmd: str, n: int) -> tuple[str, list[str]]:
+        """Send a command whose OK response header is followed by exactly
+        ``n`` additional data lines regardless of any count embedded in
+        the header (``map get`` v2: 25 ``chN: OUT/IN`` detail lines).
+
+        Unlike :meth:`command_counted`, ``n`` is supplied by the caller
+        rather than parsed from the response — the v2 ``map get`` header
+        carries ``out=``/``in=`` counts, not a line count.
+        """
+        self._drain_stale_responses()
+        self._write_line(cmd)
+
+        first = self._recv_response(self.timeout)
+        data = parse_response(first).ok_data()
+
+        lines = self.recv_lines(n)
+        return data, lines
+
+    def recv_lines(self, n: int) -> list[str]:
+        """Read ``n`` more response-queue lines without sending anything.
+        Used after :meth:`command` when the number of trailing detail
+        lines can only be decided from the header just received (``map
+        get`` v2's 25 ``chN: OUT/IN`` lines)."""
+        return [self._recv_response(self.timeout) for _ in range(n)]
+
     def raw(self, cmd: str) -> str:
         """Send an arbitrary command and return the raw first response
         line (OK/ERR as received, unparsed). Stale extra lines are

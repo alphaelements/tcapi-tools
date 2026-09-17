@@ -4,6 +4,7 @@ import pytest
 
 from pochi.errors import (
     BadCommandError,
+    BadParamError,
     DisconnectedError,
     NotArmedError,
     ParseError,
@@ -109,6 +110,42 @@ class TestSyncCountDiscipline:
         start = time.monotonic()
         assert transport.command("sync count") == "count=1000000"
         assert time.monotonic() - start < 1.0
+
+
+class TestCommandFixedLines:
+    def test_reads_header_plus_n_lines(self, setup):
+        transport, port = setup
+        port.on_command = lambda _: port.feed(
+            "OK v=2 out=1 in=24 flags=0x00", *[f"  ch{i}: IN" for i in range(25)]
+        )
+        data, lines = transport.command_fixed_lines("map get", 25)
+        assert data == "v=2 out=1 in=24 flags=0x00"
+        assert len(lines) == 25
+        assert lines[0] == "  ch0: IN"
+
+    def test_zero_lines(self, setup):
+        transport, port = setup
+        port.on_command = lambda _: port.feed("OK count=0")
+        data, lines = transport.command_fixed_lines("noop", 0)
+        assert data == "count=0"
+        assert lines == []
+
+    def test_err_response(self, setup):
+        transport, port = setup
+        port.on_command = lambda _: port.feed("ERR BAD_PARAM")
+        with pytest.raises(BadParamError):
+            transport.command_fixed_lines("map get", 25)
+
+    def test_drains_stale_lines_first(self, setup):
+        transport, port = setup
+        port.feed("stray leftover line")
+        time.sleep(0.15)
+        port.on_command = lambda _: port.feed(
+            "OK v=1 out=0:12 in=12:11 pull=up flags=0x01"
+        )
+        data, lines = transport.command_fixed_lines("map get", 0)
+        assert data == "v=1 out=0:12 in=12:11 pull=up flags=0x01"
+        assert lines == []
 
 
 class TestRaw:

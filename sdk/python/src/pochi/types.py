@@ -77,6 +77,42 @@ class PinMap:
     flags: int
 
 
+#: Number of ``chN: OUT/IN`` detail lines following the ``OK v=2 ...``
+#: header in a v2 ``map get`` response.
+MAP_V2_CHANNEL_LINES = 25
+
+#: Valid DIO pin bitmask for PinMapV2 (GP0-22, GP26, GP27).
+VALID_DIO_MASK = 0x0C7FFFFF
+
+
+def channel_to_gp(ch: int) -> int:
+    """Map a PinMapV2 channel index (0-24) to its GPIO number.
+    ch0-22 -> GP0-22 (1:1), ch23 -> GP26, ch24 -> GP27."""
+    if ch <= 22:
+        return ch
+    if ch == 23:
+        return 26
+    if ch == 24:
+        return 27
+    raise ValueError(f"invalid PinMapV2 channel index: {ch}")
+
+
+@dataclass
+class PinMapV2:
+    """25-channel bitmask pin map (FW unified-DIO v2). Text protocol
+    responses only carry ``direction_mask`` (reconstructed from the
+    ``chN: OUT/IN`` detail lines) — pull/polarity/edge/out_default are
+    not observable over the text protocol and are intentionally absent
+    here (see ``docs/plans`` v2 design doc §3 D2)."""
+
+    version: int
+    flags: int
+    direction_mask: int
+    out_count: int
+    in_count: int
+    channels: list[str]
+
+
 @dataclass
 class PatternStep:
     out_bits: int

@@ -50,6 +50,8 @@ from .transport import BAUD_RATE, DEFAULT_COMMAND_TIMEOUT, Transport
 from .types import (
     FEAT_RESET,
     FEAT_SYNC,
+    MAP_V2_CHANNEL_LINES,
+    VALID_DIO_MASK,
     Capabilities,
     DeviceInfo,
     EdgeMode,
@@ -62,6 +64,7 @@ from .types import (
     PatternStep,
     PatternTimeoutEvent,
     PinMap,
+    PinMapV2,
     PullMode,
     PushEvent,
     SyncDoneEvent,
@@ -71,6 +74,7 @@ from .types import (
     TimestampResult,
     UnknownEvent,
     VersionInfo,
+    channel_to_gp,
 )
 
 __version__ = "0.1.0"
@@ -117,6 +121,9 @@ __all__ = [
     "Transport",
     "FEAT_RESET",
     "FEAT_SYNC",
+    "MAP_V2_CHANNEL_LINES",
+    "VALID_DIO_MASK",
+    "channel_to_gp",
     "Capabilities",
     "DeviceInfo",
     "EdgeMode",
@@ -129,6 +136,7 @@ __all__ = [
     "PatternStep",
     "PatternTimeoutEvent",
     "PinMap",
+    "PinMapV2",
     "PullMode",
     "PushEvent",
     "SyncDoneEvent",

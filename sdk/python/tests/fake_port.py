@@ -57,13 +57,38 @@ class FakePort:
         self._rx.put(data.encode())
 
 
-class MockFw:
-    """Stateful mock firmware implementing the FW Phase 9.6 command set."""
+#: PinMapV2 valid pin bitmask (GP0-22, GP26, GP27) — mirrors
+#: ``pochi.types.VALID_DIO_MASK``. Duplicated here (rather than imported)
+#: so the mock firmware stays a self-contained protocol simulator.
+_VALID_DIO_MASK = 0x0C7FFFFF
 
-    def __init__(self) -> None:
+
+def _v2_channel_lines(direction_mask: int) -> list[str]:
+    """Render the 25 ``chN: OUT/IN`` detail lines for a v2 direction_mask
+    (ch0-22 -> GP0-22, ch23 -> GP26, ch24 -> GP27)."""
+    lines = []
+    for ch in range(25):
+        gp = ch if ch <= 22 else (26 if ch == 23 else 27)
+        direction = "OUT" if direction_mask & (1 << gp) else "IN"
+        lines.append(f"  ch{ch}: {direction}")
+    return lines
+
+
+class MockFw:
+    """Stateful mock firmware implementing the FW Phase 9.6 command set.
+    ``protocol_version`` selects the pin-map protocol dialect: ``1``
+    (legacy base:count/pull model) or ``2`` (unified-DIO bitmask model,
+    the default — matches FW ``feat/unified-dio-pinmap-v2``)."""
+
+    def __init__(self, protocol_version: int = 2) -> None:
+        if protocol_version not in (1, 2):
+            raise ValueError(f"unsupported protocol_version: {protocol_version}")
+        self.protocol_version = protocol_version
         self.outputs = 0
         self.inputs = 0x05
         self.map = "v=1 out=0:12 in=12:11 pull=up flags=0x01"
+        self.map_v2_direction_mask = 0x00000FFF  # ch0-11 OUT, ch12-24 IN
+        self.map_v2_flags = 0x01
         self.pattern_loaded = 0
         self.pattern_state = "idle"
         self.ts_armed = False
@@ -75,6 +100,12 @@ class MockFw:
         self.sync_clocking = False
         self.old_firmware = False
 
+    def _map_v2_response(self) -> list[str]:
+        mask = self.map_v2_direction_mask
+        out_count = bin(mask & _VALID_DIO_MASK).count("1")
+        header = f"OK v=2 out={out_count} in={25 - out_count} flags=0x{self.map_v2_flags:02x}"
+        return [header, *_v2_channel_lines(mask)]
+
     def handle(self, cmd: str) -> list[str]:
         parts = cmd.strip().lower().split()
         key = " ".join(parts)
@@ -82,8 +113,9 @@ class MockFw:
             return ["OK v0.1.0 proto=1"]
         if key == "caps":
             ts_res = 1000 if self.old_firmware else 40
+            dio = 25 if self.protocol_version == 2 else 23
             return [
-                f"OK dio=23 out=12 in=11 ts_res={ts_res}ns pattern=256 ring=256 "
+                f"OK dio={dio} out=12 in=11 ts_res={ts_res}ns pattern=256 ring=256 "
                 "feat=0x00000001"
             ]
         if key == "info":
@@ -103,23 +135,46 @@ class MockFw:
         if key == "state":
             return [f"OK in=0x{self.inputs:06X} out=0x{self.outputs:06X} flags=0x00"]
         if key == "map get":
+            if self.protocol_version == 2:
+                return self._map_v2_response()
             return [f"OK {self.map}"]
         if parts[:2] == ["map", "set"]:
             hex_str = parts[2] if len(parts) > 2 else ""
-            if len(hex_str) != 48:
-                return ["ERR BAD_PARAM"]
-            data = bytes.fromhex(hex_str)
-            if data[2] != 0 and data[4] != 0 and data[3] < data[1] + data[2]:
-                return ["ERR BAD_MAP"]
-            pull = {0: "none", 1: "up", 2: "down"}.get(data[5], "down")
-            self.map = (
-                f"v={data[0]} out={data[1]}:{data[2]} in={data[3]}:{data[4]} "
-                f"pull={pull} flags=0x{data[6]:02x}"
-            )
-            return ["OK"]
+            if len(hex_str) == 48:
+                data = bytes.fromhex(hex_str)
+                if data[2] != 0 and data[4] != 0 and data[3] < data[1] + data[2]:
+                    return ["ERR BAD_MAP"]
+                if self.protocol_version == 2:
+                    # FW v1_to_v2() auto-conversion: v1 base:count -> a
+                    # contiguous direction_mask (out block first).
+                    self.map_v2_direction_mask = (
+                        (1 << data[2]) - 1 << data[1]
+                    ) & _VALID_DIO_MASK
+                    self.map_v2_flags = data[6]
+                    return ["OK"]
+                pull = {0: "none", 1: "up", 2: "down"}.get(data[5], "down")
+                self.map = (
+                    f"v={data[0]} out={data[1]}:{data[2]} in={data[3]}:{data[4]} "
+                    f"pull={pull} flags=0x{data[6]:02x}"
+                )
+                return ["OK"]
+            if len(hex_str) == 64:
+                if self.protocol_version != 2:
+                    return ["ERR BAD_PARAM"]
+                data = bytes.fromhex(hex_str)
+                self.map_v2_direction_mask = (
+                    int.from_bytes(data[4:8], "little") & _VALID_DIO_MASK
+                )
+                self.map_v2_flags = data[1]
+                return ["OK"]
+            return ["ERR BAD_PARAM"]
         if key == "map save":
             return ["OK"]
         if key == "map default":
+            if self.protocol_version == 2:
+                self.map_v2_direction_mask = 0
+                self.map_v2_flags = 0x01
+                return ["OK"]
             self.map = "v=1 out=0:0 in=0:23 pull=down flags=0x01"
             return ["OK"]
         if parts and parts[0] == "subscribe":
