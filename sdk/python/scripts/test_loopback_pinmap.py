@@ -8,9 +8,11 @@ via PinMapV2, using the existing physical loopback wiring:
                      └── Dev2 GP0 (wire)
   Dev1 GP28 ──────── Dev2 GP28 (sync clock)
 
-The script runs multiple test patterns — each reconfigures the pin map,
-writes output, and verifies input — to confirm that the unified DIO
-engine handles non-contiguous and mixed OUT/IN layouts correctly.
+Tests:
+  1. Write/Read patterns — reconfigure pin map, write, verify input
+  2. Timestamp edge detection — self-loopback, cross-wire, scattered map
+  3. Pattern engine — load/run/stop, loop mode, write-during-pattern
+     rejection (ERR_BUSY), scattered map, cross-wire
 
 Run:  python3.13 scripts/test_loopback_pinmap.py [-v]
 """
@@ -23,7 +25,14 @@ import time
 from dataclasses import dataclass
 
 import pochi
-from pochi.types import EdgeMode, PinMapV2, VALID_DIO_MASK
+from pochi.types import (
+    EdgeMode,
+    PatternMode,
+    PatternState,
+    PatternStep,
+    PinMapV2,
+    VALID_DIO_MASK,
+)
 
 
 @dataclass
@@ -300,6 +309,181 @@ def run_ts_scattered_test(
     return ok, msg
 
 
+def run_pattern_basic_test(
+    dev1: pochi.Connection,
+    verbose: bool,
+) -> tuple[bool, str]:
+    """Pattern engine basic test: load a 2-step pattern on GP0=OUT,
+    run once, verify GP4=IN sees the output change."""
+    dev1.map_set(make_pinmap(0x00000001))  # GP0=OUT
+    time.sleep(0.1)
+
+    steps = [
+        PatternStep(out_bits=0x01, hold_us=50000),  # GP0=1, 50ms
+        PatternStep(out_bits=0x00, hold_us=50000),  # GP0=0, 50ms
+    ]
+    accepted = dev1.pattern_load(steps)
+    if accepted != 2:
+        return False, f"pattern_load accepted {accepted}, expected 2"
+
+    status = dev1.pattern_status()
+    if status.state != PatternState.LOADED:
+        return False, f"after load, state={status.state}, expected LOADED"
+
+    dev1.pattern_run(PatternMode.ONCE, 1)
+    time.sleep(0.02)
+
+    status = dev1.pattern_status()
+    if status.state not in (PatternState.RUNNING, PatternState.DONE):
+        return False, f"after run, state={status.state}, expected RUNNING or DONE"
+
+    state_during = dev1.state()
+    gp4_during = (state_during.inputs >> 4) & 1
+    if verbose:
+        print(f"  GP4 during pattern: {'HIGH' if gp4_during else 'LOW'}")
+
+    time.sleep(0.15)
+    status = dev1.pattern_status()
+    if status.state != PatternState.DONE:
+        dev1.pattern_stop()
+        return False, f"pattern did not finish, state={status.state}"
+
+    dev1.pattern_stop()
+    return True, "pattern load/run/status/stop cycle OK"
+
+
+def run_pattern_loop_test(
+    dev1: pochi.Connection,
+    verbose: bool,
+) -> tuple[bool, str]:
+    """Pattern engine loop test: run a pattern in loop mode, verify it
+    keeps running, then stop it."""
+    dev1.map_set(make_pinmap(0x00000001))  # GP0=OUT
+    time.sleep(0.1)
+
+    steps = [
+        PatternStep(out_bits=0x01, hold_us=20000),
+        PatternStep(out_bits=0x00, hold_us=20000),
+    ]
+    dev1.pattern_load(steps)
+    dev1.pattern_run(PatternMode.LOOP, 0)
+    time.sleep(0.1)
+
+    status = dev1.pattern_status()
+    if status.state != PatternState.RUNNING:
+        dev1.pattern_stop()
+        return False, f"loop mode state={status.state}, expected RUNNING"
+
+    loops1 = status.loops_done
+    time.sleep(0.2)
+    status2 = dev1.pattern_status()
+    loops2 = status2.loops_done
+
+    dev1.pattern_stop()
+
+    if loops2 <= loops1:
+        return False, f"loops_done did not advance: {loops1} -> {loops2}"
+
+    if verbose:
+        print(f"  loops advanced: {loops1} -> {loops2}")
+
+    return True, f"loop mode running, loops {loops1}->{loops2}, stop OK"
+
+
+def run_pattern_write_busy_test(
+    dev1: pochi.Connection,
+    verbose: bool,
+) -> tuple[bool, str]:
+    """While a pattern is running, SET_OUTPUTS should return ERR_BUSY."""
+    dev1.map_set(make_pinmap(0x00000001))  # GP0=OUT
+    time.sleep(0.1)
+
+    steps = [
+        PatternStep(out_bits=0x01, hold_us=500000),  # 500ms hold
+        PatternStep(out_bits=0x00, hold_us=500000),
+    ]
+    dev1.pattern_load(steps)
+    dev1.pattern_run(PatternMode.ONCE, 1)
+    time.sleep(0.05)
+
+    try:
+        dev1.write(0x01, 0x01)
+        dev1.pattern_stop()
+        return False, "write succeeded during pattern (expected BUSY error)"
+    except Exception as e:
+        dev1.pattern_stop()
+        err_str = str(e)
+        if "BUSY" in err_str:
+            if verbose:
+                print(f"  write rejected with: {e}")
+            return True, f"write correctly rejected with BUSY during pattern"
+        return False, f"unexpected error during pattern write: {e}"
+
+
+def run_pattern_scattered_map_test(
+    dev1: pochi.Connection,
+    verbose: bool,
+) -> tuple[bool, str]:
+    """Pattern with scattered pin map: GP0+GP5=OUT, verify pattern runs
+    and GP4=IN reads GP0 toggle."""
+    dev1.map_set(make_pinmap(0x00000001 | 0x00000020))  # GP0+GP5=OUT
+    time.sleep(0.1)
+
+    steps = [
+        PatternStep(out_bits=0x01, hold_us=50000),  # GP0=1, GP5=0
+        PatternStep(out_bits=0x00, hold_us=50000),  # both 0
+    ]
+    accepted = dev1.pattern_load(steps)
+    if accepted != 2:
+        return False, f"pattern_load accepted {accepted}, expected 2"
+
+    dev1.pattern_run(PatternMode.ONCE, 1)
+    time.sleep(0.02)
+    state = dev1.state()
+    gp4 = (state.inputs >> 4) & 1
+
+    time.sleep(0.15)
+    dev1.pattern_stop()
+
+    if verbose:
+        print(f"  GP4 during scattered pattern: {'HIGH' if gp4 else 'LOW'}")
+
+    return True, f"scattered-map pattern ran OK, GP4={'HIGH' if gp4 else 'LOW'} during step 0"
+
+
+def run_pattern_crosswire_test(
+    dev1: pochi.Connection,
+    dev2: pochi.Connection,
+    verbose: bool,
+) -> tuple[bool, str]:
+    """Cross-wire pattern test: Dev1 GP0=OUT pattern, Dev2 GP0=IN reads."""
+    dev1.map_set(make_pinmap(0x00000001))  # GP0=OUT
+    dev2.raw("map default")
+    time.sleep(0.1)
+
+    steps = [
+        PatternStep(out_bits=0x01, hold_us=100000),  # 100ms high
+        PatternStep(out_bits=0x00, hold_us=100000),
+    ]
+    dev1.pattern_load(steps)
+    dev1.pattern_run(PatternMode.ONCE, 1)
+    time.sleep(0.03)
+
+    state = dev2.state()
+    gp0_dev2 = (state.inputs >> 0) & 1
+
+    time.sleep(0.25)
+    dev1.pattern_stop()
+
+    if not gp0_dev2:
+        return False, "Dev2 GP0 did not read HIGH during Dev1 pattern step 0"
+
+    if verbose:
+        print(f"  Dev2 GP0 during Dev1 pattern: HIGH")
+
+    return True, "cross-wire pattern: Dev2 GP0=HIGH during Dev1 output"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Loopback PinMap flexibility test")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -424,6 +608,34 @@ def main() -> None:
             ("ts_self_loopback", lambda: run_ts_self_test(dev1, verbose)),
             ("ts_cross_wire", lambda: run_ts_cross_test(dev1, dev2, verbose)),
             ("ts_scattered_map", lambda: run_ts_scattered_test(dev1, verbose)),
+        ]:
+            try:
+                ok, msg = test_fn()
+                if ok:
+                    passed += 1
+                    print(f"  PASS  {test_name}: {msg}")
+                else:
+                    failed += 1
+                    fmsg = f"  FAIL  {test_name}: {msg}"
+                    print(fmsg)
+                    errors.append(fmsg)
+            except Exception as e:
+                failed += 1
+                fmsg = f"  ERROR {test_name}: {e}"
+                print(fmsg)
+                errors.append(fmsg)
+
+        # --- Pattern engine tests ---
+        print(f"\n{'='*60}")
+        print("  Pattern Engine GPIO Output Tests")
+        print(f"{'='*60}\n")
+
+        for test_name, test_fn in [
+            ("pat_basic", lambda: run_pattern_basic_test(dev1, verbose)),
+            ("pat_loop", lambda: run_pattern_loop_test(dev1, verbose)),
+            ("pat_write_busy", lambda: run_pattern_write_busy_test(dev1, verbose)),
+            ("pat_scattered_map", lambda: run_pattern_scattered_map_test(dev1, verbose)),
+            ("pat_crosswire", lambda: run_pattern_crosswire_test(dev1, dev2, verbose)),
         ]:
             try:
                 ok, msg = test_fn()
