@@ -10,8 +10,8 @@
 //! The tests restore the device pin map and device number on completion.
 //!
 //! Edge-capture and push-event delivery need an external signal source.
-//! If the persisted pin map is `out=0:>=4 in=4:>=4` (the loopback rig —
-//! GP0..GP3 wired to GP4..GP7) the smoke runs a full stimulus → capture
+//! If the persisted pin map has GP0..GP3 as outputs and GP4..GP7 as inputs
+//! (the loopback rig — GP0..GP3 wired to GP4..GP7) the smoke runs a full stimulus → capture
 //! → subscribe push pass. Otherwise those steps verify only the
 //! protocol flow (count=0 counted read, subscribe on/off).
 //!
@@ -20,9 +20,15 @@
 //! port order.
 
 use pochi_sdk::{
-    discover, discover_detailed, Connection, EdgeMode, PatternMode, PatternState, PatternStep,
-    PushEvent,
+    discover, discover_detailed, hold_ticks_from_ns, Connection, EdgeMode, PatternMode,
+    PatternState, PatternStep, PinMap, PushEvent, VALID_DIO_MASK,
 };
+
+/// One pattern tick in microseconds is 0.2, so a hold given in whole
+/// microseconds always converts exactly.
+fn ticks_from_us(us: u64) -> u32 {
+    hold_ticks_from_ns(us * 1000).expect("hold is a whole number of ticks")
+}
 
 #[test]
 #[ignore = "requires connected Pochi-DIO hardware"]
@@ -86,8 +92,9 @@ fn hw_full_smoke() {
     );
     let caps = conn.caps().expect("caps");
     println!("caps: {caps:?}");
-    assert_eq!(caps.max_dio, 23);
-    assert_ne!(caps.ts_resolution_ns, 1000, "old firmware");
+    assert_eq!(caps.dio, 25);
+    assert_eq!(caps.ts_res_ns, 40);
+    assert_eq!(caps.tick_ns, 200);
     let info = conn.info().expect("info");
     assert_eq!(info.uid, device.uid);
 
@@ -104,19 +111,13 @@ fn hw_full_smoke() {
     // Only when the persisted map matches the rig wiring. Other devices
     // (no loopback wire) skip this block — `hw_full_smoke` is intended to
     // pass on any healthy Pochi-DIO.
-    let loopback_rig = original_map.out_base == 0
-        && original_map.out_count >= 4
-        && original_map.in_base == 4
-        && original_map.in_count >= 4;
+    let loopback_rig = original_map.direction & 0xFF == 0x0F;
     if loopback_rig {
         run_loopback_edge_capture(&mut conn);
     } else {
         println!(
-            "skipping loopback edge capture (map is {}:{}/{}:{}, expected 0:>=4/4:>=4)",
-            original_map.out_base,
-            original_map.out_count,
-            original_map.in_base,
-            original_map.in_count,
+            "skipping loopback edge capture (dir=0x{:08x}, expected GP0..3 out / GP4..7 in)",
+            original_map.direction
         );
     }
 
@@ -126,20 +127,17 @@ fn hw_full_smoke() {
     conn.set_device_number(original_devnum.unwrap_or(255))
         .expect("devnum restore");
 
-    // --- pin map: 12 out / 11 in ---
-    let work_map = pochi_sdk::PinMap {
-        version: 1,
-        out_base: 0,
-        out_count: 12,
-        in_base: 12,
-        in_count: 11,
-        pull: pochi_sdk::PullMode::Up,
-        flags: 0x01,
+    // --- pin map: GP0..11 out / the rest in with pull-up ---
+    let work_map = PinMap {
+        direction: 0xFFF,
+        pull_up: VALID_DIO_MASK & !0xFFF,
+        pull_down: 0,
+        edge: VALID_DIO_MASK & !0xFFF,
+        ..PinMap::default()
     };
     conn.map_set(&work_map).expect("map set");
     let active = conn.map_get().expect("map get after set");
-    assert_eq!(active.out_count, 12);
-    assert_eq!(active.in_count, 11);
+    assert_eq!(active, work_map);
 
     // --- write / read / state ---
     conn.write(0x0A5, 0xFFF).expect("write");
@@ -155,19 +153,19 @@ fn hw_full_smoke() {
     let steps = vec![
         PatternStep {
             out_bits: 0x00F,
-            hold_us: 1000,
+            hold_ticks: ticks_from_us(1000),
         },
         PatternStep {
             out_bits: 0x000,
-            hold_us: 1000,
+            hold_ticks: ticks_from_us(1000),
         },
         PatternStep {
             out_bits: 0x0F0,
-            hold_us: 1000,
+            hold_ticks: ticks_from_us(1000),
         },
         PatternStep {
             out_bits: 0x000,
-            hold_us: 1000,
+            hold_ticks: ticks_from_us(1000),
         },
     ];
     let accepted = conn.pattern_load(&steps).expect("pattern load");
@@ -234,8 +232,7 @@ fn hw_full_smoke() {
     conn.map_set(&original_map).expect("map restore");
     conn.map_save().expect("map save");
     let restored = conn.map_get().expect("map get final");
-    assert_eq!(restored.out_count, original_map.out_count);
-    assert_eq!(restored.in_count, original_map.in_count);
+    assert_eq!(restored, original_map);
 
     conn.close().expect("close");
     println!("hw_full_smoke: all steps passed");
@@ -266,6 +263,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
     // Also force-stop a possibly running pattern and turn off subscribe,
     // in case a previous test run was aborted mid-flight and the device
     // is still in `state=running step=0 loops=0` or pushing events.
+    let ts_res_ns = conn.caps().expect("caps").ts_res_ns;
     let _ = conn.subscribe(false);
     let _ = conn.pattern_stop();
     let _ = conn.ts_disarm();
@@ -280,7 +278,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
         .iter()
         .map(|&v| PatternStep {
             out_bits: v,
-            hold_us: HOLD_US,
+            hold_ticks: ticks_from_us(u64::from(HOLD_US)),
         })
         .collect::<Vec<_>>();
     let accepted = conn.pattern_load(&steps).expect("pattern load loopback");
@@ -304,7 +302,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
         println!(
             "  [{i}] inputs=0x{:X} ts_ns={}",
             e.inputs & 0xF,
-            e.timestamp_ns
+            e.ns(ts_res_ns)
         );
     }
 
@@ -340,7 +338,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
             "unexpected nibble 0x{n:X} in stream: {nibbles:?}"
         );
     }
-    let ns: Vec<i64> = edges.iter().map(|e| e.timestamp_ns).collect();
+    let ns: Vec<i64> = edges.iter().map(|e| e.ns(ts_res_ns)).collect();
     for w in ns.windows(2) {
         assert!(w[1] > w[0], "ts not monotonic: {ns:?}");
     }
@@ -443,19 +441,19 @@ fn hw_pattern_reset_during_loop() {
     let steps = [
         PatternStep {
             out_bits: 0x1,
-            hold_us: 1_000,
+            hold_ticks: ticks_from_us(1_000),
         },
         PatternStep {
             out_bits: 0x2,
-            hold_us: 1_000,
+            hold_ticks: ticks_from_us(1_000),
         },
         PatternStep {
             out_bits: 0x4,
-            hold_us: 1_000,
+            hold_ticks: ticks_from_us(1_000),
         },
         PatternStep {
             out_bits: 0x8,
-            hold_us: 1_000,
+            hold_ticks: ticks_from_us(1_000),
         },
     ];
     assert_eq!(conn.pattern_load(&steps).expect("load"), 4);
@@ -471,8 +469,8 @@ fn hw_pattern_reset_during_loop() {
     conn.pattern_reset().expect("pattern reset");
     let after = conn.pattern_status().expect("status after reset");
     assert_eq!(after.state, PatternState::Idle, "status: {after:?}");
-    assert_eq!(after.loops_done, 0);
-    assert_eq!(after.current_step, 0);
+    assert_eq!(after.loops, 0);
+    assert_eq!(after.step, 0);
 
     // USB must still be up — a follow-up `version` succeeds without reopen.
     conn.version().expect("USB stayed up after pattern reset");
@@ -530,7 +528,7 @@ fn hw_full_smoke_loop_8_times() {
 
         let steps = [PatternStep {
             out_bits: 0x1,
-            hold_us: 100,
+            hold_ticks: ticks_from_us(100),
         }];
         conn.pattern_load(&steps).expect("load");
         conn.pattern_run(PatternMode::Once, 1).expect("run");

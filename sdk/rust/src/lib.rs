@@ -1,8 +1,8 @@
 //! Rust SDK for Pochi-DIO — RP2350-based high-speed digital I/O unit.
 //!
 //! Talks the USB CDC **text command mode** (`{cmd}\r\n` → `OK ...` /
-//! `ERR ...`, push lines `! ...`). Requires firmware Phase 9.6+; older
-//! firmware (pre-raw-timestamp format) is rejected explicitly.
+//! `ERR ...`, push lines `! ...`). Speaks protocol v2 only (`proto=2`); there is no
+//! compatibility with older firmware.
 //!
 //! # Quick start
 //!
@@ -22,7 +22,6 @@ pub mod discovery;
 pub mod error;
 pub mod protocol;
 pub mod reconcile;
-pub mod toml_config;
 pub mod transport;
 pub mod types;
 
@@ -31,7 +30,8 @@ pub use discovery::{discover, discover_detailed, enumerate_ports, Discovery, Pro
 pub use error::{Result, SdkError};
 pub use transport::{TrafficDirection, TrafficHook};
 pub use types::{
-    Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternState, PatternStatus,
-    PatternStep, PinMap, PullMode, PushEvent, SyncRole, SyncState, TimestampEvent, TimestampResult,
-    VersionInfo, FEAT_RESET, FEAT_SYNC,
+    ch_to_gp, check_dio_mask, gp_to_ch, hold_ticks_from_ns, pin_label, Capabilities, DeviceInfo,
+    EdgeMode, IoState, PatternMode, PatternState, PatternStatus, PatternStep, PinMap, PushEvent,
+    SyncRole, SyncState, TimestampEvent, TimestampResult, TsStatus, VersionInfo, DIO_CHANNELS,
+    FEAT_RESET, FEAT_SYNC, PATTERN_TICK_NS, PROTO_VERSION, VALID_DIO_MASK,
 };

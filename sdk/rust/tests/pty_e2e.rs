@@ -1,9 +1,9 @@
 //! End-to-end tests against a mock firmware running on a PTY.
 //!
-//! The mock implements the FW Phase 9.6 text command set with enough state
+//! The mock implements the v2 text command set with enough state
 //! (outputs, pin map, pattern, ts ring, sync, subscription) to exercise the
 //! full `Connection` API including counted reads, push event multiplexing,
-//! device errors, and old-firmware rejection.
+//! device errors, and pre-v2 firmware rejection.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +12,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use pochi_sdk::{
-    Connection, EdgeMode, PatternMode, PatternState, PatternStep, PullMode, PushEvent, SdkError,
+    Connection, EdgeMode, PatternMode, PatternState, PatternStep, PinMap, PushEvent, SdkError,
+    VALID_DIO_MASK,
 };
 use serialport::{SerialPort, TTYPort};
 
@@ -20,7 +21,7 @@ use serialport::{SerialPort, TTYPort};
 struct MockFw {
     outputs: u32,
     inputs: u32,
-    map: String, // raw `map get` data
+    map: PinMap,
     subscribed: bool,
     pattern_loaded: u16,
     pattern_state: &'static str,
@@ -28,7 +29,7 @@ struct MockFw {
     ts_events: Vec<&'static str>,
     ts_overflow: bool,
     sync_clocking: bool,
-    /// Reply with the pre-Phase 9.6 formats.
+    /// Reply with the pre-v2 (v1) formats.
     old_firmware: bool,
 }
 
@@ -37,14 +38,14 @@ impl MockFw {
         Self {
             outputs: 0,
             inputs: 0x05,
-            map: "v=1 out=0:12 in=12:11 pull=up flags=0x01".to_string(),
+            map: PinMap::default(),
             subscribed: false,
             pattern_loaded: 0,
             pattern_state: "idle",
             ts_armed: false,
             ts_events: vec![
-                "  0x00000005 c=1000 p=7 s=1",
-                "  0x0000000A c=2000 p=12 s=0",
+                "  in=0x00000005 c=1000 p=7 s=1",
+                "  in=0x0000000a c=2000 p=12 s=0",
             ],
             ts_overflow: false,
             sync_clocking: false,
@@ -58,7 +59,7 @@ impl MockFw {
         let lower = cmd.to_lowercase();
         let parts: Vec<&str> = lower.split_whitespace().collect();
         match parts.as_slice() {
-            ["version"] => vec!["OK v0.1.0 proto=1".into()],
+            ["version"] => vec!["OK fw=0.1.3 proto=2".into()],
             ["caps"] => {
                 if self.old_firmware {
                     vec![
@@ -67,7 +68,8 @@ impl MockFw {
                     ]
                 } else {
                     vec![
-                        "OK dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x00000001"
+                        "OK dio=25 out=12 in=13 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 \
+                         feat=0x00000003"
                             .into(),
                     ]
                 }
@@ -77,7 +79,7 @@ impl MockFw {
                 Ok(0..=255) => vec!["OK".into()],
                 _ => vec!["ERR BAD_PARAM".into()],
             },
-            ["read"] => vec![format!("OK 0x{:06X}", self.inputs)],
+            ["read"] => vec![format!("OK in=0x{:08x}", self.inputs)],
             ["write", values, mask] => {
                 let v = parse_num(values);
                 let m = parse_num(mask);
@@ -90,36 +92,26 @@ impl MockFw {
                 }
             }
             ["state"] => vec![format!(
-                "OK in=0x{:06X} out=0x{:06X} flags=0x00",
+                "OK in=0x{:08x} out=0x{:08x}",
                 self.inputs, self.outputs
             )],
-            ["map", "get"] => vec![format!("OK {}", self.map)],
-            ["map", "set", hex] => {
-                if hex.len() != 48 || hex::decode(hex).is_err() {
-                    vec!["ERR BAD_PARAM".into()]
-                } else {
-                    let bytes = hex::decode(hex).unwrap();
-                    if bytes[2] != 0 && bytes[4] != 0 {
-                        let out_end = bytes[1] + bytes[2];
-                        if bytes[3] < out_end && bytes[1] < bytes[3] + bytes[4] {
-                            return vec!["ERR BAD_MAP".into()];
-                        }
+            ["map", "get"] => vec![format!(
+                "OK {}",
+                self.map.to_set_args().expect("mock map is valid")
+            )],
+            ["map", "set", ..] => {
+                let args = lower.strip_prefix("map set ").unwrap_or_default();
+                match pochi_sdk::protocol::parse_map(args) {
+                    Ok(map) => {
+                        self.map = map;
+                        vec!["OK".into()]
                     }
-                    let pull = match bytes[5] {
-                        0 => "none",
-                        1 => "up",
-                        _ => "down",
-                    };
-                    self.map = format!(
-                        "v={} out={}:{} in={}:{} pull={} flags=0x{:02x}",
-                        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], pull, bytes[6]
-                    );
-                    vec!["OK".into()]
+                    Err(_) => vec!["ERR BAD_MAP".into()],
                 }
             }
             ["map", "save"] => vec!["OK".into()],
             ["map", "default"] => {
-                self.map = "v=1 out=0:0 in=0:23 pull=down flags=0x01".to_string();
+                self.map = PinMap::default();
                 vec!["OK".into()]
             }
             ["subscribe", "on"] => {
@@ -130,21 +122,24 @@ impl MockFw {
                 self.subscribed = false;
                 vec!["OK".into()]
             }
-            ["pattern", "load", hex] => match hex::decode(hex) {
-                Ok(bytes) if bytes.len() >= 10 => {
-                    let count = u16::from_le_bytes([bytes[0], bytes[1]]);
-                    if bytes.len() != 2 + count as usize * 8 {
-                        return vec!["ERR BAD_PARAM".into()];
-                    }
-                    if count > 256 {
-                        return vec!["ERR TOO_LONG".into()];
-                    }
-                    self.pattern_loaded = count;
-                    self.pattern_state = "loaded";
-                    vec![format!("OK accepted={count}")]
+            ["pattern", "add", steps @ ..] => {
+                let valid = !steps.is_empty()
+                    && steps.iter().all(|step| {
+                        step.split_once(':').is_some_and(|(bits, ticks)| {
+                            parse_num(bits).is_some() && ticks.parse::<u32>().is_ok_and(|t| t > 0)
+                        })
+                    });
+                if !valid {
+                    return vec!["ERR BAD_PARAM".into()];
                 }
-                _ => vec!["ERR BAD_PARAM".into()],
-            },
+                let total = usize::from(self.pattern_loaded) + steps.len();
+                if total > 256 {
+                    return vec!["ERR TOO_LONG".into()];
+                }
+                self.pattern_loaded = total as u16;
+                self.pattern_state = "loaded";
+                vec![format!("OK total={total}")]
+            }
             ["pattern", "run", _, _] => {
                 if self.pattern_loaded == 0 {
                     vec!["ERR BAD_PARAM".into()]
@@ -168,7 +163,10 @@ impl MockFw {
                 }
             }
             ["pattern", "status"] => {
-                vec![format!("OK state={} step=0 loops=0", self.pattern_state)]
+                vec![format!(
+                    "OK state={} step=0 loops=0 total={}",
+                    self.pattern_state, self.pattern_loaded
+                )]
             }
             ["pattern", "reset"] => {
                 self.pattern_state = "idle";
@@ -193,7 +191,7 @@ impl MockFw {
                 }
                 let max: usize = max.parse().unwrap_or(0);
                 if self.old_firmware {
-                    // Pre-Phase 9.6 omitted overflow= and used `t=` ts format.
+                    // v1 omitted overflow= and used the `t=` ts format.
                     return vec!["OK count=1".into(), "  0x00000005 t=1234567890".into()];
                 }
                 let events: Vec<String> = self
@@ -225,8 +223,8 @@ impl MockFw {
             }
             ["sync", "count"] => {
                 if self.sync_clocking {
-                    // `OK count=N` with NO data lines (unlike `ts get`).
-                    vec!["OK count=1000000".into()]
+                    // Single line `OK clocks=N`; no data lines follow.
+                    vec!["OK clocks=1000000".into()]
                 } else {
                     vec!["ERR SYNC_STATE".into()]
                 }
@@ -335,12 +333,12 @@ fn full_command_sweep() {
             version.patch,
             version.protocol_version
         ),
-        (0, 1, 0, 1)
+        (0, 1, 3, 2)
     );
     let caps = conn.caps().unwrap();
-    assert_eq!(caps.max_dio, 23);
-    assert_eq!(caps.ts_resolution_ns, 40);
-    assert_eq!(caps.protocol_version, 1);
+    assert_eq!(caps.dio, 25);
+    assert_eq!(caps.ts_res_ns, 40);
+    assert_eq!(caps.tick_ns, 200);
     assert!(caps.has_sync());
     let info = conn.info().unwrap();
     assert_eq!(info.uid, "AABBCCDD11223344");
@@ -356,29 +354,29 @@ fn full_command_sweep() {
 
     // Pin map
     let map = conn.map_get().unwrap();
-    assert_eq!(map.out_count, 12);
-    assert_eq!(map.pull, PullMode::Up);
-    let mut new_map = map.clone();
-    new_map.out_count = 8;
-    new_map.in_base = 8;
-    new_map.in_count = 15;
+    assert_eq!(map, PinMap::default());
+    let new_map = PinMap {
+        direction: 0xff,
+        pull_down: VALID_DIO_MASK & !0xff,
+        edge: VALID_DIO_MASK & !0xff,
+        out_default: 0x0f,
+        ..PinMap::default()
+    };
     conn.map_set(&new_map).unwrap();
-    let round_trip = conn.map_get().unwrap();
-    assert_eq!(round_trip.out_count, 8);
-    assert_eq!(round_trip.in_base, 8);
+    assert_eq!(conn.map_get().unwrap(), new_map);
     conn.map_save().unwrap();
     conn.map_default().unwrap();
-    assert_eq!(conn.map_get().unwrap().in_count, 23);
+    assert_eq!(conn.map_get().unwrap(), PinMap::default());
 
     // Pattern
     let steps = vec![
         PatternStep {
             out_bits: 0x0F,
-            hold_us: 100,
+            hold_ticks: 100,
         },
         PatternStep {
             out_bits: 0x00,
-            hold_us: 100,
+            hold_ticks: 100,
         },
     ];
     assert_eq!(conn.pattern_load(&steps).unwrap(), 2);
@@ -392,7 +390,7 @@ fn full_command_sweep() {
     let result = conn.ts_get(256).unwrap();
     assert_eq!(result.events.len(), 2);
     assert_eq!(result.events[0].raw_count, 1000);
-    assert_eq!(result.events[0].timestamp_ns, 1_000_280);
+    assert_eq!(result.events[0].ns(40), 1_000_280);
     assert!(!result.reconciled);
     conn.ts_disarm().unwrap();
 
@@ -406,7 +404,7 @@ fn full_command_sweep() {
     conn.sync_disarm().unwrap();
 
     // Raw escape hatch
-    assert_eq!(conn.raw("version").unwrap(), "OK v0.1.0 proto=1");
+    assert_eq!(conn.raw("version").unwrap(), "OK fw=0.1.3 proto=2");
 
     conn.close().unwrap();
 }
@@ -429,20 +427,18 @@ fn device_errors_are_typed() {
     ));
     // unknown command via raw goes through (raw never errors on ERR)
     assert_eq!(conn.raw("frobnicate").unwrap(), "ERR UNKNOWN_CMD");
-    // overlapping map rejected by device
-    let bad_map = pochi_sdk::PinMap {
-        version: 1,
-        out_base: 0,
-        out_count: 12,
-        in_base: 4,
-        in_count: 11,
-        pull: PullMode::Up,
-        flags: 0,
+    // an invalid map is refused host-side before anything is sent
+    let bad_map = PinMap {
+        pull_up: 0b1,
+        pull_down: 0b1,
+        ..PinMap::default()
     };
     assert!(matches!(
         conn.map_set(&bad_map).unwrap_err(),
-        SdkError::BadMap
+        SdkError::InvalidArgument(_)
     ));
+    // a map the device rejects surfaces as BAD_MAP (raw never errors on ERR)
+    assert_eq!(conn.raw("map set flags=0x01").unwrap(), "ERR BAD_MAP");
     // pattern stop while idle now surfaces ErrNotRunning (FW v0.1.3+)
     assert!(matches!(
         conn.pattern_stop().unwrap_err(),
@@ -455,7 +451,7 @@ fn pattern_reset_returns_engine_to_idle() {
     let (mut conn, _dev) = connect_mock(MockFw::new(), vec![]);
     let steps = [PatternStep {
         out_bits: 0x0F,
-        hold_us: 100,
+        hold_ticks: 100,
     }];
     conn.pattern_load(&steps).unwrap();
     conn.pattern_run(PatternMode::Loop, 1).unwrap();
@@ -489,7 +485,7 @@ fn push_events_interleaved_with_commands() {
     // still parse and pushes must reach the event channel.
     let (mut conn, _dev) = connect_mock(
         MockFw::new(),
-        vec!["! INPUT 0x000001 t=100", "! PATTERN_DONE loops=2"],
+        vec!["! INPUT in=0x00000001 t=100", "! PATTERN_DONE loops=2"],
     );
     let events = conn.subscribe_events();
     conn.subscribe(true).unwrap();
@@ -502,7 +498,7 @@ fn push_events_interleaved_with_commands() {
         match events.recv_timeout(timeout).unwrap() {
             PushEvent::InputChange {
                 inputs: 1,
-                timestamp_us: 100,
+                t_us: 100,
             } => seen_input += 1,
             PushEvent::PatternDone { loops: 2 } => seen_pattern += 1,
             other => panic!("unexpected event: {other:?}"),
@@ -513,23 +509,17 @@ fn push_events_interleaved_with_commands() {
 }
 
 #[test]
-fn old_firmware_fails_loudly() {
+fn pre_v2_firmware_fails_loudly() {
     let mut fw = MockFw::new();
     fw.old_firmware = true;
     let (mut conn, _dev) = connect_mock(fw, vec![]);
 
-    // caps reports ts_res=1000 → UnsupportedFirmware
-    assert!(matches!(
-        conn.caps().unwrap_err(),
-        SdkError::UnsupportedFirmware(_)
-    ));
+    // v1 `caps` (ts_res=1000ns, no tick_ns) is not v2 and must not parse.
+    assert!(matches!(conn.caps().unwrap_err(), SdkError::Parse(_)));
 
-    // ts get returns the old `t=` line format → UnsupportedFirmware
+    // v1 `ts get` header has no overflow= and its lines use `t=`.
     conn.ts_arm(0x01, EdgeMode::Rising).unwrap();
-    assert!(matches!(
-        conn.ts_get(10).unwrap_err(),
-        SdkError::UnsupportedFirmware(_)
-    ));
+    assert!(matches!(conn.ts_get(10).unwrap_err(), SdkError::Parse(_)));
 }
 
 #[test]
@@ -580,7 +570,10 @@ fn reconcile_pipeline_from_ts_get() {
     // Straddle case: one channel latched count after the µs edge (c=1001)
     // while the other latched before (c=1000) at the same phase. Naive ns
     // values differ by 1000ns; reconcile recovers the shared instant.
-    fw.ts_events = vec!["  0x00000001 c=1001 p=2 s=1", "  0x00000003 c=1000 p=2 s=1"];
+    fw.ts_events = vec![
+        "  in=0x00000001 c=1001 p=2 s=1",
+        "  in=0x00000003 c=1000 p=2 s=1",
+    ];
     let (mut conn, _dev) = connect_mock(fw, vec![]);
     conn.ts_arm(0x03, EdgeMode::Rising).unwrap();
     let result = conn.ts_get(256).unwrap();

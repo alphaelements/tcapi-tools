@@ -3,8 +3,8 @@
 
 use pochi_sdk::reconcile::{self, SourceEvent};
 use pochi_sdk::{
-    toml_config, Capabilities, Connection, DeviceInfo, EdgeMode, IoState, PatternMode,
-    PatternStatus, PatternStep, PinMap, PullMode, TimestampResult, VersionInfo,
+    Capabilities, Connection, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus,
+    PatternStep, PinMap, TimestampResult, VersionInfo,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -162,15 +162,6 @@ pub async fn map_set(state: State<'_, SharedState>, map: PinMap) -> Result<(), S
 }
 
 #[tauri::command]
-pub async fn map_set_hex(state: State<'_, SharedState>, hex: String) -> Result<(), String> {
-    let shared = state.inner().clone();
-    with_state(shared, move |inner| {
-        inner.conn()?.map_set_hex(&hex).map_err(err)
-    })
-    .await
-}
-
-#[tauri::command]
 pub async fn map_save(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| inner.conn()?.map_save().map_err(err)).await
@@ -180,44 +171,6 @@ pub async fn map_save(state: State<'_, SharedState>) -> Result<(), String> {
 pub async fn map_default(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| inner.conn()?.map_default().map_err(err)).await
-}
-
-/// Parse a map TOML file into a [`PinMap`] without touching the device;
-/// the frontend reviews it and applies via `map_set`. Extended fields
-/// (out_default, polarities) are not represented in `PinMap`.
-#[tauri::command]
-pub async fn map_load_toml(path: String) -> Result<PinMap, String> {
-    let toml_str = std::fs::read_to_string(&path).map_err(err)?;
-    let hex = toml_config::map_toml_to_hex(&toml_str).map_err(err)?;
-    pin_map_from_hex(&hex)
-}
-
-/// Decode the 48-char `map set` hex blob (bytes: version, out_base,
-/// out_count, in_base, in_count, pull, flags, ...) back into a [`PinMap`].
-fn pin_map_from_hex(hex: &str) -> Result<PinMap, String> {
-    if hex.len() < 14 || !hex.is_char_boundary(14) {
-        return Err(format!("map hex too short: {} chars", hex.len()));
-    }
-    let mut bytes = [0u8; 7];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-            .map_err(|e| format!("invalid map hex at byte {i}: {e}"))?;
-    }
-    let pull = match bytes[5] {
-        0 => PullMode::None,
-        1 => PullMode::Up,
-        2 => PullMode::Down,
-        other => return Err(format!("invalid pull code: {other}")),
-    };
-    Ok(PinMap {
-        version: bytes[0],
-        out_base: bytes[1],
-        out_count: bytes[2],
-        in_base: bytes[3],
-        in_count: bytes[4],
-        pull,
-        flags: bytes[6],
-    })
 }
 
 // --- pattern ---
@@ -230,29 +183,6 @@ pub async fn pattern_load(
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
         inner.conn()?.pattern_load(&steps).map_err(err)
-    })
-    .await
-}
-
-/// Steps parsed from a pattern TOML file plus the device's accepted count,
-/// so the editor can show what was uploaded.
-#[derive(Debug, Clone, Serialize)]
-pub struct PatternTomlPayload {
-    pub steps: Vec<PatternStep>,
-    pub accepted: u16,
-}
-
-#[tauri::command]
-pub async fn pattern_load_toml(
-    state: State<'_, SharedState>,
-    path: String,
-) -> Result<PatternTomlPayload, String> {
-    let shared = state.inner().clone();
-    with_state(shared, move |inner| {
-        let toml_str = std::fs::read_to_string(&path).map_err(err)?;
-        let steps = toml_config::pattern_toml_to_steps(&toml_str).map_err(err)?;
-        let accepted = inner.conn()?.pattern_load(&steps).map_err(err)?;
-        Ok(PatternTomlPayload { steps, accepted })
     })
     .await
 }
@@ -370,7 +300,7 @@ fn as_is_rows(result: &TimestampResult) -> Vec<TsRow> {
             raw_count: e.raw_count,
             raw_phase: e.raw_phase,
             sync_active: e.sync_active,
-            timestamp_ns: e.timestamp_ns,
+            timestamp_ns: reconcile::as_is_ns(e.raw_count, e.raw_phase),
             reconciled: false,
         })
         .collect()
@@ -514,47 +444,6 @@ mod tests {
     use super::*;
     use pochi_sdk::TimestampEvent;
 
-    // --- pin_map_from_hex ---
-
-    #[test]
-    fn pin_map_from_hex_minimal_seven_bytes() {
-        // v=1 out=0:8 in=8:15 pull=down flags=0x03 — exactly 7 bytes
-        let map = pin_map_from_hex("010008080f0203").unwrap();
-        assert_eq!(map.out_count, 8);
-        assert_eq!(map.in_count, 15);
-        assert_eq!(map.pull, PullMode::Down);
-    }
-
-    #[test]
-    fn pin_map_from_hex_round_trip() {
-        let hex = "010008080f02030000000000000000000000000000000000";
-        let map = pin_map_from_hex(hex).unwrap();
-        assert_eq!(map.version, 1);
-        assert_eq!(map.out_base, 0);
-        assert_eq!(map.out_count, 8);
-        assert_eq!(map.in_base, 8);
-        assert_eq!(map.in_count, 15);
-        assert_eq!(map.pull, PullMode::Down);
-        assert_eq!(map.flags, 0x03);
-    }
-
-    #[test]
-    fn pin_map_from_hex_rejects_short_input() {
-        assert!(pin_map_from_hex("0100").unwrap_err().contains("too short"));
-    }
-
-    #[test]
-    fn pin_map_from_hex_rejects_bad_pull() {
-        let hex = "010008080f07030000000000000000000000000000000000";
-        assert!(pin_map_from_hex(hex).unwrap_err().contains("pull"));
-    }
-
-    #[test]
-    fn pin_map_from_hex_rejects_non_hex() {
-        let hex = "zz0008080f02030000000000000000000000000000000000";
-        assert!(pin_map_from_hex(hex).unwrap_err().contains("byte 0"));
-    }
-
     // --- reconcile_rows ---
 
     fn ev(raw_count: u32, raw_phase: u8) -> TimestampEvent {
@@ -563,7 +452,6 @@ mod tests {
             raw_count,
             raw_phase,
             sync_active: true,
-            timestamp_ns: reconcile::as_is_ns(raw_count, raw_phase),
         }
     }
 

@@ -4,12 +4,12 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use crate::discovery;
-use crate::error::Result;
+use crate::error::{Result, SdkError};
 use crate::protocol;
 use crate::transport::{TrafficHook, Transport};
 use crate::types::{
     Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus, PatternStep, PinMap,
-    PushEvent, TimestampResult, VersionInfo,
+    PushEvent, TimestampResult, TsStatus, VersionInfo,
 };
 
 /// An open connection to a Pochi-DIO device.
@@ -81,16 +81,10 @@ impl Connection {
         protocol::parse_version(&data)
     }
 
-    /// `caps` — device capabilities. The protocol version is filled in
-    /// from `version` so the struct is complete.
-    ///
-    /// Fails with `UnsupportedFirmware` on pre-Phase 9.6 firmware
-    /// (`ts_res=1000`).
+    /// `caps` — device capabilities. Pre-v2 firmware fails to parse.
     pub fn caps(&mut self) -> Result<Capabilities> {
         let data = self.transport.command("caps")?;
-        let mut caps = protocol::parse_caps(&data)?;
-        caps.protocol_version = self.version()?.protocol_version;
-        Ok(caps)
+        protocol::parse_caps(&data)
     }
 
     /// `info` — device identification (UID, device number).
@@ -122,7 +116,7 @@ impl Connection {
     /// `write <values> <mask>` — set outputs (only masked bits change).
     pub fn write(&mut self, values: u32, mask: u32) -> Result<()> {
         self.transport
-            .command(&format!("write {values:#x} {mask:#x}"))?;
+            .command(&protocol::write_command(values, mask)?)?;
         Ok(())
     }
 
@@ -140,16 +134,9 @@ impl Connection {
         protocol::parse_map(&data)
     }
 
-    /// `map set` from a typed [`PinMap`]. Extended fields (out_default,
-    /// polarities) are zero; use [`Connection::map_set_hex`] to control them.
+    /// `map set` from a typed [`PinMap`]; validated (R-M1) before sending.
     pub fn map_set(&mut self, map: &PinMap) -> Result<()> {
-        self.map_set_hex(&protocol::map_to_hex(map))
-    }
-
-    /// `map set <hex>` — raw 48-char hex map (see `toml` module for TOML
-    /// conversion).
-    pub fn map_set_hex(&mut self, hex: &str) -> Result<()> {
-        self.transport.command(&format!("map set {hex}"))?;
+        self.transport.command(&protocol::map_set_command(map)?)?;
         Ok(())
     }
 
@@ -167,16 +154,24 @@ impl Connection {
 
     // --- pattern ---
 
-    /// `pattern load` from typed steps. Returns the accepted step count.
-    pub fn pattern_load(&mut self, steps: &[PatternStep]) -> Result<u16> {
-        let hex = protocol::pattern_to_hex(steps)?;
-        self.pattern_load_hex(&hex)
+    /// `pattern add` — append steps to the pattern buffer, split into as many
+    /// lines as the 256-byte line limit requires. Returns the total step
+    /// count after the last line.
+    pub fn pattern_add(&mut self, steps: &[PatternStep]) -> Result<u16> {
+        let mut total = 0;
+        for line in protocol::pattern_add_commands(steps)? {
+            let data = self.transport.command(&line)?;
+            total = protocol::parse_pattern_total(&data)?;
+        }
+        Ok(total)
     }
 
-    /// `pattern load <hex>` — raw count-prefixed step data.
-    pub fn pattern_load_hex(&mut self, hex: &str) -> Result<u16> {
-        let data = self.transport.command(&format!("pattern load {hex}"))?;
-        protocol::parse_accepted(&data)
+    /// Replace the pattern buffer: `pattern reset`, then [`Self::pattern_add`].
+    /// Returns the total step count.
+    pub fn pattern_load(&mut self, steps: &[PatternStep]) -> Result<u16> {
+        protocol::pattern_add_commands(steps)?;
+        self.pattern_reset()?;
+        self.pattern_add(steps)
     }
 
     /// `pattern run <mode> <repeat>` — start playback.
@@ -239,12 +234,18 @@ impl Connection {
     /// `ts arm <mask> <mode>` — arm timestamp capture.
     pub fn ts_arm(&mut self, mask: u32, mode: EdgeMode) -> Result<()> {
         self.transport
-            .command(&protocol::ts_arm_command(mask, mode))?;
+            .command(&protocol::ts_arm_command(mask, mode)?)?;
         Ok(())
     }
 
+    /// `ts status` — capture state and pending event count.
+    pub fn ts_status(&mut self) -> Result<TsStatus> {
+        let data = self.transport.command("ts status")?;
+        protocol::parse_ts_status(&data)
+    }
+
     /// `ts get <max>` — retrieve captured events (counted multi-line read).
-    /// `timestamp_ns` is the host-computed as-is value; apply
+    /// Use [`crate::TimestampEvent::ns`] for the nanosecond value and
     /// [`crate::reconcile`] for straddle correction across events.
     ///
     /// The returned [`TimestampResult::overflow`] is `true` if the FW
@@ -256,7 +257,13 @@ impl Connection {
         let (data, lines) = self
             .transport
             .command_counted(&format!("ts get {max_events}"))?;
-        let (_, overflow) = protocol::parse_count_overflow_field(&data)?;
+        let (count, overflow) = protocol::parse_ts_get_header(&data)?;
+        if count as usize != lines.len() {
+            return Err(SdkError::Parse(format!(
+                "ts get header announced {count} events but {} lines were read",
+                lines.len()
+            )));
+        }
         let events = lines
             .iter()
             .map(|line| protocol::parse_ts_event_line(line))

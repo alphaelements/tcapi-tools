@@ -1,0 +1,207 @@
+# proto=2
+# generated_by=hand
+# fw_commit=f376234f2f93
+
+# Map B used below: GP0-GP3 outputs (default level 0x5), GP4.. inputs.
+#   map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+
+# --- read: default map, undriven inputs read 0 ---
+> read
+< OK in=0x00000000
+
+# --- read: follows the driven input pins ---
+~ in=0x0000000a
+> read
+< OK in=0x0000000a
+~ in=0x00000000
+> read
+< OK in=0x00000000
+
+# --- read: bits that are not DIO pins never appear ---
+~ in=0xffffffff
+> read
+< OK in=0x0c7fffff
+
+# --- read: output pins are not part of in= ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+~ in=0x000000ff
+> read
+< OK in=0x000000f0
+
+# --- read: ipol inverts the input pins (logical = physical XOR ipol) ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+~ in=0x000000f0
+> read
+< OK in=0x000001f0
+~ in=0x0000000f
+> read
+< OK in=0x00000100
+
+# --- read: no input pins configured ---
+> map set flags=0x00 dir=0x0c7fffff pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> read
+< ERR NO_RESOURCE
+
+# --- read: command name is case-insensitive ---
+~ in=0x00000001
+> READ
+< OK in=0x00000001
+
+# --- state: default map ---
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- state: combines inputs and the output latch (map def is the initial output) ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+~ in=0x00000030
+> state
+< OK in=0x00000030 out=0x00000005
+
+# --- state: with no inputs configured it still answers ---
+# ASSUMPTION: state answers OK (in=0) when there are no inputs, unlike read which is NO_RESOURCE
+> map set flags=0x00 dir=0x0c7fffff pu=0x00000000 pd=0x00000000 def=0x00000001 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> state
+< OK in=0x00000000 out=0x00000001
+
+# --- write: full-mask write ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0xa 0xf
+< OK
+> state
+< OK in=0x00000000 out=0x0000000a
+
+# --- write: only the masked pins change ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x2 0x3
+< OK
+> state
+< OK in=0x00000000 out=0x00000006
+
+# --- write: val bits outside the mask are ignored, including bits that are not outputs ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0xff 0x3
+< OK
+> state
+< OK in=0x00000000 out=0x00000007
+> write 0xfc 0x3
+< OK
+> state
+< OK in=0x00000000 out=0x00000004
+> write 0xffffffff 0x8
+< OK
+> state
+< OK in=0x00000000 out=0x0000000c
+
+# --- write: decimal arguments, mask 0 changes nothing ---
+# ASSUMPTION: an empty mask is accepted and is a no-op
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 10 15
+< OK
+> write 0 0
+< OK
+> state
+< OK in=0x00000000 out=0x0000000a
+
+# --- write: every output pin of the full DIO set ---
+> map set flags=0x00 dir=0x0c7fffff pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> write 0x0c7fffff 0x0c7fffff
+< OK
+> state
+< OK in=0x00000000 out=0x0c7fffff
+
+# --- write: mask covers a pin that is not an output ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x10 0x10
+< ERR BAD_PARAM
+> write 0xf 0x1f
+< ERR BAD_PARAM
+> state
+< OK in=0x00000000 out=0x00000005
+
+# --- write: mask with bits outside the DIO pins ---
+> map set flags=0x00 dir=0x0c7fffff pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> write 0xffffffff 0xffffffff
+< ERR BAD_PARAM
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- write: no output pins configured (default map) ---
+# ASSUMPTION: NO_RESOURCE takes precedence over the mask-subset BAD_PARAM (mask 0x1 is not an output here)
+> write 0x1 0x1
+< ERR NO_RESOURCE
+
+# --- write: malformed arguments ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write
+< ERR BAD_PARAM
+> write 0x1
+< ERR BAD_PARAM
+> write 0x1 0x1 0x1
+< ERR BAD_PARAM
+> write xyz 0x1
+< ERR BAD_PARAM
+> write 0x1 xyz
+< ERR BAD_PARAM
+> write 0x100000000 0x1
+< ERR BAD_PARAM
+> write 0x1 0x100000000
+< ERR BAD_PARAM
+> write -1 0x1
+< ERR BAD_PARAM
+> state
+< OK in=0x00000000 out=0x00000005
+
+# --- opol: write and state use logical values, the output pins are driven with logical XOR opol ---
+# R-PT4
+# ASSUMPTION: state out= is the logical output latch; the physical pin level is out XOR opol
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000003 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x1 0x3
+< OK
+> state
+< OK in=0x00000000 out=0x00000001
+~ expect_pins out=0x00000002
+> write 0x2 0x3
+< OK
+> state
+< OK in=0x00000000 out=0x00000002
+~ expect_pins out=0x00000001
+
+# --- opol: a partial-mask write keeps the other logical bits, the physical level follows opol of every output ---
+# R-PT4
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x0000000f ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0x5
+< OK
+> state
+< OK in=0x00000000 out=0x00000005
+~ expect_pins out=0x0000000a
+> write 0x0 0x1
+< OK
+> state
+< OK in=0x00000000 out=0x00000004
+~ expect_pins out=0x0000000b
+
+# --- opol: write does not touch input polarity, ipol only inverts the input word ---
+# R-PT4
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7fff00 def=0x00000000 opol=0x00000003 ipol=0x00000010 edge=0x0c7fffe0
+< OK
+> write 0x3 0x3
+< OK
+~ in=0x00000000
+> state
+< OK in=0x00000010 out=0x00000003
+~ expect_pins out=0x00000000

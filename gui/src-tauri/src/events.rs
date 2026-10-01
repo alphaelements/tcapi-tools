@@ -40,25 +40,14 @@ pub fn traffic_hook(app: AppHandle) -> TrafficHook {
 /// Map one push event to its Tauri event name and JSON payload.
 pub fn route(event: &PushEvent) -> (&'static str, Value) {
     match event {
-        PushEvent::InputChange {
-            inputs,
-            timestamp_us,
-        } => (
+        PushEvent::InputChange { inputs, t_us } => (
             "pochi://input",
-            json!({ "inputs": inputs, "timestampUs": timestamp_us }),
+            json!({ "inputs": inputs, "timestampUs": t_us }),
         ),
         PushEvent::PatternDone { loops } => ("pochi://pattern-done", json!({ "loops": loops })),
         PushEvent::PatternTimeout { loops } => {
             ("pochi://pattern-timeout", json!({ "loops": loops }))
         }
-        PushEvent::SyncDone {
-            status,
-            devnum,
-            timestamp,
-        } => (
-            "pochi://sync-done",
-            json!({ "status": status, "devnum": devnum, "timestamp": timestamp }),
-        ),
         PushEvent::Unknown { raw } => ("pochi://unknown-event", json!({ "raw": raw })),
     }
 }
@@ -82,7 +71,7 @@ mod tests {
     fn input_change_routes_to_input_event() {
         let (name, payload) = route(&PushEvent::InputChange {
             inputs: 0x1F00,
-            timestamp_us: 1_234_567,
+            t_us: 1_234_567,
         });
         assert_eq!(name, "pochi://input");
         assert_eq!(payload["inputs"], 0x1F00);
@@ -101,18 +90,6 @@ mod tests {
         let (name, payload) = route(&PushEvent::PatternTimeout { loops: 7 });
         assert_eq!(name, "pochi://pattern-timeout");
         assert_eq!(payload["loops"], 7);
-    }
-
-    #[test]
-    fn sync_done_routes_with_fields() {
-        let (name, payload) = route(&PushEvent::SyncDone {
-            status: "ok".to_string(),
-            devnum: 2,
-            timestamp: 99,
-        });
-        assert_eq!(name, "pochi://sync-done");
-        assert_eq!(payload["status"], "ok");
-        assert_eq!(payload["devnum"], 2);
     }
 
     #[test]

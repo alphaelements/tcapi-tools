@@ -1,0 +1,144 @@
+# proto=2
+# generated_by=hand
+# fw_commit=f376234f2f93
+
+# --- reset: acknowledges, the device then reboots and answers again ---
+> reset
+< OK
+> version
+< OK fw=0.1.3 proto=2
+
+# --- reset: command name is case-insensitive ---
+> RESET
+< OK
+> ping 1
+< OK pong=1
+
+# --- reset: RAM state returns to defaults ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0xa 0xf
+< OK
+> reset
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- reset: flash state (saved map, device number) survives ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> devnum 3
+< OK
+> reset
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+> info
+< OK uid=0000000000000000 devnum=3
+
+# --- reset: a running pattern is aborted, nothing is reported ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 10
+< OK
+~ advance ns=1133
+> reset
+< OK
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+~ advance us=1000
+
+# --- reset: timestamp is disarmed and its ring is empty ---
+> ts arm 0x1 both
+< OK
+~ advance us=1
+~ in=0x00000001
+> reset
+< OK
+> ts status
+< OK armed=0 pending=0 overflow=0
+> ts get 1
+< ERR NOT_ARMED
+
+# --- reset: subscribe is off again, input changes are silent ---
+> subscribe on
+< OK
+> reset
+< OK
+~ in=0x00000001
+~ advance us=10
+> read
+< OK in=0x00000001
+
+# --- bootsel: acknowledges, then the device re-enumerates as the USB bootloader ---
+# No further request can be sent to the firmware after this response.
+> bootsel
+< OK
+
+# --- bootsel: command name is case-insensitive ---
+> BOOTSEL
+< OK
+
+# --- help: counted response, one line per command family ---
+> help
+< OK count=16
+<   version                                  Get firmware version
+<   caps                                     Get device capabilities
+<   info                                     Get device UID and number
+<   devnum <n>                               Set device number (0-254, 255=clear)
+<   ping <u32>                               Echo a number
+<   map get|set|save|default                 Pin map operations
+<   read                                     Read all inputs
+<   write <val> <mask>                       Set outputs
+<   state                                    Get inputs and outputs
+<   pattern add|run|stop|reset|status        Output pattern operations
+<   ts arm|disarm|get|status                 Timestamp operations
+<   subscribe on|off                         Input change events
+<   sync arm|master|start|stop|disarm|count  Multi-device clock sync
+<   reset                                    Reboot the device
+<   bootsel                                  Reboot into the USB bootloader
+<   help                                     Show this help
+
+# --- help: command name is case-insensitive and repeatable ---
+> HELP
+< OK count=16
+<   version                                  Get firmware version
+<   caps                                     Get device capabilities
+<   info                                     Get device UID and number
+<   devnum <n>                               Set device number (0-254, 255=clear)
+<   ping <u32>                               Echo a number
+<   map get|set|save|default                 Pin map operations
+<   read                                     Read all inputs
+<   write <val> <mask>                       Set outputs
+<   state                                    Get inputs and outputs
+<   pattern add|run|stop|reset|status        Output pattern operations
+<   ts arm|disarm|get|status                 Timestamp operations
+<   subscribe on|off                         Input change events
+<   sync arm|master|start|stop|disarm|count  Multi-device clock sync
+<   reset                                    Reboot the device
+<   bootsel                                  Reboot into the USB bootloader
+<   help                                     Show this help
+> Help
+< OK count=16
+<   version                                  Get firmware version
+<   caps                                     Get device capabilities
+<   info                                     Get device UID and number
+<   devnum <n>                               Set device number (0-254, 255=clear)
+<   ping <u32>                               Echo a number
+<   map get|set|save|default                 Pin map operations
+<   read                                     Read all inputs
+<   write <val> <mask>                       Set outputs
+<   state                                    Get inputs and outputs
+<   pattern add|run|stop|reset|status        Output pattern operations
+<   ts arm|disarm|get|status                 Timestamp operations
+<   subscribe on|off                         Input change events
+<   sync arm|master|start|stop|disarm|count  Multi-device clock sync
+<   reset                                    Reboot the device
+<   bootsel                                  Reboot into the USB bootloader
+<   help                                     Show this help

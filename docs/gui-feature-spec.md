@@ -140,7 +140,7 @@ The features needed for the first usable release.
 |---|---|---|
 | Device discovery | DevicePanel | Scan for connected devices, show list |
 | Device connection | DevicePanel | Connect/disconnect, show status |
-| GPIO state display | GpioMonitor | Show all 23 pins with direction and state |
+| GPIO state display | GpioMonitor | Show all 25 channels (ch0-ch24) with direction and state |
 | Input reading | GpioMonitor | Poll and display current input values |
 | Output control | OutputControl | Toggle individual output pins |
 | Pin map display | PinMapEditor | Show current pin configuration |
@@ -155,7 +155,7 @@ The features needed for the first usable release.
 | Waveform display | WaveformViewer | Plot input state over time (Canvas 2D) |
 | Pin map editing | PinMapEditor | Visual editor for pin assignment |
 | Pin map save/load | PinMapEditor | Save to device flash, load from TOML file |
-| Pattern loading | PatternEditor | Load patterns from TOML, send to device |
+| Pattern upload | PatternEditor | Load patterns from TOML, send to device |
 | Pattern playback | PatternEditor | Run/stop/status controls |
 | Device info display | DevicePanel | Show version, capabilities, UID |
 | JSON export | Global | Export current state/timestamps as JSON |
@@ -227,15 +227,16 @@ fn disconnect() -> Result<(), String>
 
 ### GpioMonitor
 
-**Purpose**: Display real-time state of all 23 GPIO pins.
+**Purpose**: Display real-time state of all 25 DIO channels (ch0-ch24; ch23 = GP26,
+ch24 = GP27, see `protocol-reference.md` section 10).
 
 **Visual Design**:
-- Grid of 23 pin indicators arranged in a single row or 2 rows
+- Grid of 25 channel indicators arranged in a single row or 2 rows
   (configurable).
-- Each pin shows: GP number, direction (IN/OUT/--), current state
+- Each pin shows: channel and GP label (`pin_label`), direction (IN/OUT/--), current state
   (filled circle = HIGH, empty circle = LOW).
 - Color: HIGH = `#22c55e`, LOW = `#64748b`, unassigned = `#374151`.
-- Tooltip on hover shows full pin info (GP number, direction, pull mode,
+- Tooltip on hover shows full pin info (GP number, direction, pull,
   current value, last change timestamp).
 
 **State**:
@@ -314,10 +315,11 @@ interface OutputPin {
 **Purpose**: View and edit the GPIO pin map configuration.
 
 **Visual Design**:
-- Visual representation of GP0-GP22 as a horizontal strip.
-- Drag a boundary marker to set output/input split point.
-- Dropdown for pull mode (up/down/none).
-- Checkboxes for flags (timestamp enable, change notify default).
+- Visual representation of ch0-ch24 (GP0-GP22, GP26, GP27) as a horizontal strip.
+- Per channel: direction toggle (in/out), pull (none/up/down, inputs only),
+  default level and polarity.
+- Per input channel: edge-event checkbox (the `edge` mask that raises
+  `! INPUT` events).
 - "Apply" button sends `map set`, "Save to Flash" sends `map save`.
 - "Reset to Default" sends `map default`.
 - "Load from File" opens a file dialog for TOML map files.
@@ -338,17 +340,15 @@ interface PinMapEditorState {
 - Visual feedback: green border on applied map, yellow on unsaved edits.
 - Validation: prevent overlapping ranges, out-of-bound pins.
 
-**Hardware-imposed scope (editable surface)**:
-The RP2350 + current FW fix `out_base = 0` and derive `in_base` from
-`out_base + out_count` (see `map_to_hex` in `sdk/rust/src/protocol.rs`).
-The only degree of freedom is the **split point** (`out_count`); `in_count`
-follows as `caps.max_dio - out_count`. So the editor surfaces:
-- the **split slider** (out/in boundary),
-- the **pull mode** dropdown,
-- the **flags** checkboxes.
-Separate numeric fields for `out_base` / `in_base` / `in_count` would be
-semantically redundant and a misinput hazard. If a future FW supports
-non-zero `out_base`, extend the editor then.
+**Editable surface**:
+The v2 map is per channel: the editor edits the eight map values `flags`
+(reserved, always 0), `dir`, `pu`, `pd`, `def`, `opol`, `ipol` and `edge`
+(see `protocol-reference.md`, `map set`). There is no split point and no
+global pull mode. All masks use physical GP bit positions; the editor goes
+through the SDK helpers (`ch_to_gp`, `gp_to_ch`, `VALID_DIO_MASK`) and never
+does its own bit arithmetic. Validation mirrors the device: a channel cannot
+be both output and input, pull-up and pull-down are exclusive and inputs
+only, and `def`/`opol` apply to outputs only.
 
 ### PatternEditor
 
@@ -359,7 +359,8 @@ non-zero `out_base`, extend the editor then.
 - "Add Step" / "Remove Step" buttons.
 - Waveform preview showing the pattern as a timing diagram.
 - "Load from File" for TOML pattern files.
-- "Upload to Device" sends `pattern load`.
+- "Upload to Device" sends `pattern reset`, then `pattern add` in as many
+  lines as the 256-byte line limit requires (SDK `pattern_load`).
 - Playback controls: Play (once), Loop, Stop, Status indicator.
 - Repeat count input for loop mode.
 
@@ -498,7 +499,7 @@ interface TimestampViewerState {
 
 ```
 1. Device detects input change
-2. Device sends: "! INPUT 0x000005 t=1234567890\r\n"
+2. Device sends: "! INPUT in=0x00000005 t=1234567\r\n"
 3. pochi-sdk background reader receives the line
 4. Rust backend parses the push event
 5. Backend calls: app.emit("input-change", payload)
@@ -730,7 +731,7 @@ fn write_text_file(path: String, contents: String) -> Result<(), String>
 | `pochi://log` | `{ direction: "sent"\|"received"\|"event"\|"error", line }` | SDK traffic hook (every wire line) + scan probe failures |
 | `pochi://input` | `{ inputs, timestampUs }` | `! INPUT` push |
 | `pochi://pattern-done` | `{ loops }` | `! PATTERN_DONE` push |
-| `pochi://sync-done` | `{ status, devnum, timestamp }` | `! SYNC_DONE` push |
+| `pochi://pattern-timeout` | `{ loops }` | `! PATTERN_TIMEOUT` push |
 | `pochi://unknown-event` | `{ raw }` | unrecognized push lines |
 
 ## 10. Backend State Management

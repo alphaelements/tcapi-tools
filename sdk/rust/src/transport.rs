@@ -375,7 +375,11 @@ mod tests {
         t.set_traffic_hook(Some(Arc::new(move |dir, line: &str| {
             hook_seen.lock().unwrap().push((dir, line.to_string()));
         })));
-        let responder = respond_once(master, "read", &["! INPUT 0x000005 t=111", "OK 0x000003"]);
+        let responder = respond_once(
+            master,
+            "read",
+            &["! INPUT in=0x00000005 t=111", "OK 0x00000003"],
+        );
         t.command("read").unwrap();
         responder.join().unwrap();
         // The event line arrives on the reader thread; wait for it to land.
@@ -387,9 +391,9 @@ mod tests {
         assert!(seen.contains(&(TrafficDirection::Sent, "read".to_string())));
         assert!(seen.contains(&(
             TrafficDirection::Event,
-            "! INPUT 0x000005 t=111".to_string()
+            "! INPUT in=0x00000005 t=111".to_string()
         )));
-        assert!(seen.contains(&(TrafficDirection::Received, "OK 0x000003".to_string())));
+        assert!(seen.contains(&(TrafficDirection::Received, "OK 0x00000003".to_string())));
     }
 
     #[test]
@@ -412,15 +416,19 @@ mod tests {
         // A push line arriving before the response must not break parsing.
         let (mut t, master) = pty_transport();
         let events = t.subscribe_events();
-        let responder = respond_once(master, "read", &["! INPUT 0x000005 t=111", "OK 0x000003"]);
+        let responder = respond_once(
+            master,
+            "read",
+            &["! INPUT in=0x00000005 t=111", "OK 0x00000003"],
+        );
         let data = t.command("read").unwrap();
-        assert_eq!(data, "0x000003");
+        assert_eq!(data, "0x00000003");
         let ev = events.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(
             ev,
             PushEvent::InputChange {
                 inputs: 5,
-                timestamp_us: 111
+                t_us: 111
             }
         );
         responder.join().unwrap();
@@ -522,11 +530,11 @@ mod tests {
     fn push_events_stream() {
         let (mut t, mut master) = pty_transport();
         let events = t.subscribe_events();
-        master.write_all(b"! INPUT 0x000001 t=100\r\n").unwrap();
-        master.write_all(b"! PATTERN_DONE loops=3\r\n").unwrap();
         master
-            .write_all(b"! SYNC_DONE status=ready devnum=1 ts=42\r\n")
+            .write_all(b"! INPUT in=0x00000001 t=100\r\n")
             .unwrap();
+        master.write_all(b"! PATTERN_DONE loops=3\r\n").unwrap();
+        master.write_all(b"! FUTURE_EVENT x=1\r\n").unwrap();
         master.flush().unwrap();
 
         let timeout = Duration::from_secs(1);
@@ -534,7 +542,7 @@ mod tests {
             events.recv_timeout(timeout).unwrap(),
             PushEvent::InputChange {
                 inputs: 1,
-                timestamp_us: 100
+                t_us: 100
             }
         );
         assert_eq!(
@@ -543,10 +551,8 @@ mod tests {
         );
         assert_eq!(
             events.recv_timeout(timeout).unwrap(),
-            PushEvent::SyncDone {
-                status: "ready".into(),
-                devnum: 1,
-                timestamp: 42
+            PushEvent::Unknown {
+                raw: "FUTURE_EVENT x=1".into()
             }
         );
     }

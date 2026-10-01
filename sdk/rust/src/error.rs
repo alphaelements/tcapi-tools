@@ -47,6 +47,10 @@ pub enum SdkError {
     #[error("parse error: {0}")]
     Parse(String),
 
+    /// A value was rejected by host-side validation before anything was sent.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
     #[error("timeout waiting for response")]
     Timeout,
 

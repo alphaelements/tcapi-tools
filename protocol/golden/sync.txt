@@ -1,0 +1,222 @@
+# proto=2
+# generated_by=hand
+# fw_commit=f376234f2f93
+# Sync state machine (idle at the start of every case):
+#   idle --arm--> slave-armed --sync_edge--> clocking (slave)
+#   idle --master--> master-armed --start--> clocking (master) --stop--> idle
+#   disarm: any state -> idle, always OK
+# `sync count` is only valid while clocking. The clock counts sync edges in
+# microseconds from the instant of the sync edge, and is a u64.
+
+# --- sync arm: slave-armed state, every other transition is refused ---
+> sync arm
+< OK
+> sync arm
+< ERR SYNC_STATE
+> sync master
+< ERR SYNC_STATE
+> sync start
+< ERR SYNC_STATE
+> sync stop
+< ERR SYNC_STATE
+> sync count
+< ERR SYNC_STATE
+
+# --- sync disarm leaves slave-armed state ---
+> sync arm
+< OK
+> sync disarm
+< OK
+> sync master
+< OK
+
+# --- sync master: master-armed state, every other transition is refused ---
+> sync master
+< OK
+> sync master
+< ERR SYNC_STATE
+> sync arm
+< ERR SYNC_STATE
+> sync stop
+< ERR SYNC_STATE
+> sync count
+< ERR SYNC_STATE
+
+# --- sync master -> start -> count -> stop ---
+> sync master
+< OK
+> sync start
+< OK
+> sync count
+< OK clocks=0
+~ advance us=1000
+> sync count
+< OK clocks=1000
+~ advance ns=999
+> sync count
+< OK clocks=1000
+~ advance ns=1
+> sync count
+< OK clocks=1001
+> sync stop
+< OK
+> sync count
+< ERR SYNC_STATE
+
+# --- clocking master: start, master, arm are refused ---
+> sync master
+< OK
+> sync start
+< OK
+> sync start
+< ERR SYNC_STATE
+> sync master
+< ERR SYNC_STATE
+> sync arm
+< ERR SYNC_STATE
+> sync stop
+< OK
+
+# --- stop is only valid while clocking ---
+> sync stop
+< ERR SYNC_STATE
+> sync master
+< OK
+> sync stop
+< ERR SYNC_STATE
+> sync start
+< OK
+> sync stop
+< OK
+> sync stop
+< ERR SYNC_STATE
+
+# --- sync start needs sync master first ---
+> sync start
+< ERR SYNC_STATE
+
+# --- after stop the device is idle: the cycle can run again ---
+> sync master
+< OK
+> sync start
+< OK
+~ advance us=50
+> sync stop
+< OK
+> sync master
+< OK
+> sync start
+< OK
+> sync count
+< OK clocks=0
+
+# --- sync count is a u64 ---
+> sync master
+< OK
+> sync start
+< OK
+~ advance us=4294967297
+> sync count
+< OK clocks=4294967297
+
+# --- sync count is zeroed by the sync edge, not by boot ---
+~ advance us=100
+> sync master
+< OK
+> sync start
+< OK
+~ advance us=7
+> sync count
+< OK clocks=7
+
+# --- slave: sync edge starts the clock ---
+~ advance us=10
+> sync arm
+< OK
+~ advance us=20
+~ sync_edge
+> sync count
+< OK clocks=0
+~ advance us=5
+> sync count
+< OK clocks=5
+
+# --- clocking slave: start and master are refused, arm is refused ---
+> sync arm
+< OK
+~ sync_edge
+> sync start
+< ERR SYNC_STATE
+> sync master
+< ERR SYNC_STATE
+> sync arm
+< ERR SYNC_STATE
+> sync count
+< OK clocks=0
+
+# --- slave armed but no edge yet: count is refused ---
+> sync arm
+< OK
+~ advance us=1000
+> sync count
+< ERR SYNC_STATE
+
+# --- sync disarm stops a clocking slave ---
+> sync arm
+< OK
+~ sync_edge
+~ advance us=3
+> sync count
+< OK clocks=3
+> sync disarm
+< OK
+> sync count
+< ERR SYNC_STATE
+> sync arm
+< OK
+
+# --- sync disarm stops a clocking master ---
+> sync master
+< OK
+> sync start
+< OK
+> sync disarm
+< OK
+> sync count
+< ERR SYNC_STATE
+> sync stop
+< ERR SYNC_STATE
+
+# --- sync disarm from master-armed ---
+> sync master
+< OK
+> sync disarm
+< OK
+> sync start
+< ERR SYNC_STATE
+
+# --- sync disarm is always OK, also when idle ---
+> sync disarm
+< OK
+> sync disarm
+< OK
+
+# --- reset drops the sync state ---
+> sync master
+< OK
+> reset
+< OK
+> sync start
+< ERR SYNC_STATE
+> sync master
+< OK
+
+# --- case-insensitive ---
+> SYNC MASTER
+< OK
+> Sync Start
+< OK
+> SYNC COUNT
+< OK clocks=0
+> sync STOP
+< OK
