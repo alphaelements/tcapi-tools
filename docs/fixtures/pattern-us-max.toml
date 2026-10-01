@@ -1,0 +1,8 @@
+# Largest accepted hold in microseconds: 858993459 us = 4294967295 ticks (u32::MAX).
+# expected_step: out_bits=0x00000001 hold_ticks=4294967295
+version = 2
+unit = "us"
+
+[[step]]
+out = ["GP0"]
+hold = 858993459

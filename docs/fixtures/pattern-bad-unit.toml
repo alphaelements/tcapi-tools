@@ -1,5 +1,6 @@
 # Unknown unit (allowed: "tick", "ns", "us").
 # expected_error: invalid unit "ms": expected "tick", "ns" or "us"
+# expected_line: 5
 version = 2
 unit = "ms"
 

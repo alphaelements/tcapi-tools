@@ -1,0 +1,7 @@
+# `edge` must be a boolean.
+# expected_error: GP4: edge must be a boolean
+# expected_line: 7
+version = 2
+
+[pins]
+GP4 = { dir = "in", edge = 1 }

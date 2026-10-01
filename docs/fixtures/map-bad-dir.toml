@@ -1,0 +1,7 @@
+# `dir` accepts only "in" or "out".
+# expected_error: GP0: dir must be "in" or "out"
+# expected_line: 7
+version = 2
+
+[pins]
+GP0 = { dir = "output" }

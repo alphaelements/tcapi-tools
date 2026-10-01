@@ -1,0 +1,7 @@
+# Pin names are case-sensitive: "gp1" is not a pin.
+# expected_error: invalid pin gp1: valid pins are GP0-GP22, GP26, GP27
+# expected_line: 7
+version = 2
+
+[pins]
+gp1 = { dir = "out" }

@@ -1,0 +1,5 @@
+# `step` must be an array of tables ([[step]]); a scalar is not a step list.
+# expected_error: step must be an array of tables
+# expected_line: 5
+version = 2
+step = 5

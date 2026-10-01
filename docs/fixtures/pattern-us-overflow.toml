@@ -1,5 +1,6 @@
 # 858993460 us = 4294967300 ticks, which exceeds u32::MAX ticks.
 # expected_error: step 1: hold 858993460 us exceeds the u32 tick range
+# expected_line: 9
 version = 2
 unit = "us"
 

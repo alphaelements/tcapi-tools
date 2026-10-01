@@ -1,5 +1,7 @@
 # `out` and `out_bits` in the same step contradict each other.
+# Reported on the line of the step header.
 # expected_error: step 1: out and out_bits are mutually exclusive
+# expected_line: 8
 version = 2
 unit = "tick"
 

@@ -1,0 +1,12 @@
+# Pins written as sub-tables ([pins.GPn]) are equivalent to inline tables.
+# GP3 = {} is identical to an unlisted pin (input, pull-down, edge enabled).
+# expected: dir=0x00000001 pull_up=0x00000000 pull_down=0x0c7ffffe out_default=0x00000001 out_polarity=0x00000001 in_polarity=0x00000000 edge=0x0c7ffffe
+version = 2
+
+[pins.GP0]
+dir = "out"
+default = 1
+invert = true
+
+[pins]
+GP3 = {}

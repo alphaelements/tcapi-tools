@@ -1,5 +1,6 @@
 # A step must hold for at least one tick.
 # expected_error: step 1: hold must be at least 1 tick
+# expected_line: 9
 version = 2
 unit = "tick"
 

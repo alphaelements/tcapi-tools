@@ -1,5 +1,6 @@
 # 250 ns is not a multiple of the 200 ns tick.
 # expected_error: step 1: hold 250 ns is not a multiple of 200 ns
+# expected_line: 9
 version = 2
 unit = "ns"
 

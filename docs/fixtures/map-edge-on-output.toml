@@ -1,5 +1,6 @@
 # Edge detection on an output pin is a contradiction.
 # expected_error: GP6: edge is not allowed on an output pin
+# expected_line: 7
 version = 2
 
 [pins]

@@ -1,0 +1,7 @@
+# `pull` accepts only "up", "down" or "none".
+# expected_error: GP4: pull must be "up", "down" or "none"
+# expected_line: 7
+version = 2
+
+[pins]
+GP4 = { dir = "in", pull = "middle" }

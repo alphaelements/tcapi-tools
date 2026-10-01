@@ -1,0 +1,12 @@
+# Largest accepted hold in ticks (u32::MAX), and smallest (1).
+# expected_step: out_bits=0x00000001 hold_ticks=4294967295
+# expected_step: out_bits=0x00000000 hold_ticks=1
+version = 2
+
+[[step]]
+out = ["GP0"]
+hold = 4294967295
+
+[[step]]
+out = []
+hold = 1

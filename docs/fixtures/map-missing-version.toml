@@ -1,0 +1,5 @@
+# `version` is mandatory. Whole-file error: reported on line 1.
+# expected_error: missing key "version"
+# expected_line: 1
+[pins]
+GP0 = { dir = "out" }

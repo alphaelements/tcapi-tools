@@ -1,5 +1,6 @@
-# Unknown keys are errors (R-TOML1), both at pin level and top level.
+# Unknown keys are errors (R-TOML1); here at pin level.
 # expected_error: unknown key "pul" in GP2
+# expected_line: 7
 version = 2
 
 [pins]
