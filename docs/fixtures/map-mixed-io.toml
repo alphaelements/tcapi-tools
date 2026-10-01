@@ -1,0 +1,13 @@
+# Mixed I/O map. GP0/GP1 are outputs (GP0 inverted, GP1 idles high),
+# GP2 is an inverted pull-up input, GP3 is a floating input without edge
+# detection, GP26 is a pull-up input. All other pins keep the defaults
+# (input, pull-down, edge enabled).
+# expected: dir=0x00000003 pull_up=0x04000004 pull_down=0x087ffff0 out_default=0x00000002 out_polarity=0x00000001 in_polarity=0x00000004 edge=0x0c7ffff4
+version = 2
+
+[pins]
+GP0  = { dir = "out", default = 0, invert = true }
+GP1  = { dir = "out", default = 1 }
+GP2  = { dir = "in", pull = "up", invert = true }
+GP3  = { dir = "in", pull = "none", edge = false }
+GP26 = { dir = "in", pull = "up" }

@@ -1,0 +1,18 @@
+# Nanosecond pattern: hold must be a multiple of 200 ns (1 tick).
+# expected_step: out_bits=0x00000001 hold_ticks=5
+# expected_step: out_bits=0x00000002 hold_ticks=1
+# expected_step: out_bits=0x00000000 hold_ticks=50000
+version = 2
+unit = "ns"
+
+[[step]]
+out = ["GP0"]
+hold = 1000
+
+[[step]]
+out_bits = 0x2
+hold = 200
+
+[[step]]
+out = []
+hold = 10000000

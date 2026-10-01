@@ -1,0 +1,9 @@
+# `out` and `out_bits` in the same step contradict each other.
+# expected_error: step 1: out and out_bits are mutually exclusive
+version = 2
+unit = "tick"
+
+[[step]]
+out = ["GP0"]
+out_bits = 0x1
+hold = 5

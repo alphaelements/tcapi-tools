@@ -1,0 +1,6 @@
+# Edge detection on an output pin is a contradiction.
+# expected_error: GP6: edge is not allowed on an output pin
+version = 2
+
+[pins]
+GP6 = { dir = "out", edge = true }

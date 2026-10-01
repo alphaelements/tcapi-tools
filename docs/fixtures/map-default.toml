@@ -1,0 +1,6 @@
+# Default map: every valid DIO pin is an input with pull-down and edge detection.
+# Equivalent to an empty [pins] table (unlisted pins take the defaults).
+# expected: dir=0x00000000 pull_up=0x00000000 pull_down=0x0c7fffff out_default=0x00000000 out_polarity=0x00000000 in_polarity=0x00000000 edge=0x0c7fffff
+version = 2
+
+[pins]
