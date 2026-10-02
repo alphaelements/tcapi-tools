@@ -29,8 +29,12 @@ struct MockFw {
     ts_events: Vec<&'static str>,
     ts_overflow: bool,
     sync_clocking: bool,
-    /// Reply with the pre-v2 (v1) formats.
+    /// Reply with the pre-v2 (v1) formats for `caps` and `ts get`.
     old_firmware: bool,
+    /// Protocol number reported by `version`.
+    proto: u8,
+    /// Commands that are ignored the first time they arrive (timeout tests).
+    silent_once: Vec<&'static str>,
 }
 
 impl MockFw {
@@ -50,16 +54,23 @@ impl MockFw {
             ts_overflow: false,
             sync_clocking: false,
             old_firmware: false,
+            proto: 2,
+            silent_once: Vec::new(),
         }
     }
 
     /// Process one command line, returning response lines to send.
     fn handle(&mut self, cmd: &str) -> Vec<String> {
         let cmd = cmd.trim();
+        if let Some(at) = self.silent_once.iter().position(|c| *c == cmd) {
+            self.silent_once.remove(at);
+            return vec![];
+        }
         let lower = cmd.to_lowercase();
         let parts: Vec<&str> = lower.split_whitespace().collect();
         match parts.as_slice() {
-            ["version"] => vec!["OK fw=0.1.3 proto=2".into()],
+            ["version"] => vec![format!("OK fw=0.1.3 proto={}", self.proto)],
+            ["ping", n] => vec![format!("OK pong={n}")],
             ["caps"] => {
                 if self.old_firmware {
                     vec![
@@ -311,11 +322,18 @@ impl Drop for MockDevice {
     }
 }
 
-fn connect_mock(fw: MockFw, pre_push: Vec<&'static str>) -> (Connection, MockDevice) {
+fn try_connect_mock(
+    fw: MockFw,
+    pre_push: Vec<&'static str>,
+) -> (Result<Connection, SdkError>, MockDevice) {
     let (master, slave) = TTYPort::pair().expect("PTY pair");
     let device = MockDevice::spawn(master, fw, pre_push);
-    let conn = Connection::from_port(Box::new(slave)).expect("connect");
-    (conn, device)
+    (Connection::from_port(Box::new(slave)), device)
+}
+
+fn connect_mock(fw: MockFw, pre_push: Vec<&'static str>) -> (Connection, MockDevice) {
+    let (conn, device) = try_connect_mock(fw, pre_push);
+    (conn.expect("connect"), device)
 }
 
 // --- scenarios ---
@@ -403,8 +421,9 @@ fn full_command_sweep() {
     conn.sync_stop().unwrap();
     conn.sync_disarm().unwrap();
 
-    // Raw escape hatch
-    assert_eq!(conn.raw("version").unwrap(), "OK fw=0.1.3 proto=2");
+    // Raw escape hatch (returns every line)
+    assert_eq!(conn.raw("version").unwrap(), ["OK fw=0.1.3 proto=2"]);
+    assert_eq!(conn.ping(4_000_000_000).unwrap(), 4_000_000_000);
 
     conn.close().unwrap();
 }
@@ -426,7 +445,7 @@ fn device_errors_are_typed() {
         SdkError::BadParam
     ));
     // unknown command via raw goes through (raw never errors on ERR)
-    assert_eq!(conn.raw("frobnicate").unwrap(), "ERR UNKNOWN_CMD");
+    assert_eq!(conn.raw("frobnicate").unwrap(), ["ERR UNKNOWN_CMD"]);
     // an invalid map is refused host-side before anything is sent
     let bad_map = PinMap {
         pull_up: 0b1,
@@ -438,7 +457,12 @@ fn device_errors_are_typed() {
         SdkError::InvalidArgument(_)
     ));
     // a map the device rejects surfaces as BAD_MAP (raw never errors on ERR)
-    assert_eq!(conn.raw("map set flags=0x01").unwrap(), "ERR BAD_MAP");
+    assert_eq!(conn.raw("map set flags=0x01").unwrap(), ["ERR BAD_MAP"]);
+    // the SDK owns `subscribe`; raw refuses it without touching the device
+    assert!(matches!(
+        conn.raw("subscribe on").unwrap_err(),
+        SdkError::InvalidArgument(_)
+    ));
     // pattern stop while idle now surfaces ErrNotRunning (FW v0.1.3+)
     assert!(matches!(
         conn.pattern_stop().unwrap_err(),
@@ -487,8 +511,7 @@ fn push_events_interleaved_with_commands() {
         MockFw::new(),
         vec!["! INPUT in=0x00000001 t=100", "! PATTERN_DONE loops=2"],
     );
-    let events = conn.subscribe_events();
-    conn.subscribe(true).unwrap();
+    let events = conn.subscribe_events().unwrap();
     assert_eq!(conn.read().unwrap(), 0x05);
 
     let timeout = Duration::from_secs(1);
@@ -509,7 +532,7 @@ fn push_events_interleaved_with_commands() {
 }
 
 #[test]
-fn pre_v2_firmware_fails_loudly() {
+fn v1_shaped_replies_fail_loudly() {
     let mut fw = MockFw::new();
     fw.old_firmware = true;
     let (mut conn, _dev) = connect_mock(fw, vec![]);
@@ -523,19 +546,30 @@ fn pre_v2_firmware_fails_loudly() {
 }
 
 #[test]
-fn timeout_then_recovery() {
-    // A command the mock never answers (it answers everything, so simulate
-    // by stopping the mock), then verify Timeout surfaces.
-    let (master, slave) = TTYPort::pair().expect("PTY pair");
-    let mut conn = Connection::from_port(Box::new(slave)).expect("connect");
-    conn.set_timeout(Duration::from_millis(200));
-    let err = conn.version().unwrap_err();
-    assert!(matches!(err, SdkError::Timeout));
+fn proto_other_than_2_fails_the_connection() {
+    for proto in [1, 3] {
+        let mut fw = MockFw::new();
+        fw.proto = proto;
+        let (conn, _dev) = try_connect_mock(fw, vec![]);
+        assert!(
+            matches!(conn.err(), Some(SdkError::UnsupportedFirmware(_))),
+            "proto={proto} must be refused"
+        );
+    }
+}
 
-    // The same connection recovers once the device starts answering.
-    let _dev = MockDevice::spawn(master, MockFw::new(), vec![]);
-    let version = conn.version().unwrap();
-    assert_eq!(version.minor, 1);
+#[test]
+fn timeout_then_ping_resync_recovers() {
+    let mut fw = MockFw::new();
+    fw.silent_once = vec!["read"];
+    let (mut conn, _dev) = connect_mock(fw, vec![]);
+    conn.set_timeout(Duration::from_millis(200));
+    assert!(matches!(conn.read().unwrap_err(), SdkError::Timeout));
+
+    // The same connection recovers: the next command resyncs with `ping`
+    // first and then works.
+    assert_eq!(conn.read().unwrap(), 0x05);
+    assert_eq!(conn.version().unwrap().minor, 1);
 }
 
 #[test]

@@ -28,7 +28,7 @@ import time
 from dataclasses import asdict, dataclass
 
 import pochi
-from pochi.reconcile import SourceEvent, group_events, pair_stats
+from pochi.reconcile import SourceEvent, group_events
 
 
 @dataclass
@@ -73,7 +73,13 @@ def run_benchmark(
     try:
         return _run(dev1, dev2, rounds, toggles_per_round, toggle_interval_s, verbose)
     finally:
-        for cmd in ["pattern stop", "ts disarm", "sync stop", "sync disarm", "map default"]:
+        for cmd in [
+            "pattern stop",
+            "ts disarm",
+            "sync stop",
+            "sync disarm",
+            "map default",
+        ]:
             for d in [dev1, dev2]:
                 try:
                     d.raw(cmd)
@@ -91,17 +97,21 @@ def _run(
     toggle_interval_s: float,
     verbose: bool,
 ) -> BenchResult:
-    out_map = pochi.PinMapV2(
-        version=2,
+    inputs = pochi.VALID_DIO_MASK & ~0x1
+    out_map = pochi.PinMap(
         flags=0,
-        direction_mask=0x00000001,
-        out_count=1,
-        in_count=24,
-        channels=["OUT"] + ["IN"] * 24,
+        direction=0x1,  # GP0 output
+        pull_up=0,
+        pull_down=inputs,
+        out_default=0,
+        out_polarity=0,
+        in_polarity=0,
+        edge=inputs,
     )
     dev1.map_set(out_map)
     m = dev1.map_get()
-    assert m.out_count == 1, f"map set failed: out={m.out_count}"
+    assert m.direction == 0x1, f"map set failed: dir={m.direction:#x}"
+    ts_res_ns = dev1.caps().ts_res_ns
 
     dev1.sync_master()
     dev2.sync_arm()
@@ -111,7 +121,7 @@ def _run(
     c1 = dev1.sync_count()
     c2 = dev2.sync_count()
     if verbose:
-        print(f"Sync counts: Dev1={c1} Dev2={c2} diff={abs(c1-c2)}")
+        print(f"Sync counts: Dev1={c1} Dev2={c2} diff={abs(c1 - c2)}")
 
     dev1.ts_arm(0x10, pochi.EdgeMode.RISING)
     dev2.ts_arm(0x01, pochi.EdgeMode.RISING)
@@ -135,15 +145,17 @@ def _run(
                 break
 
         if verbose:
-            print(f"  Round {r+1}/{rounds}: Dev1={len(all_dev1)} Dev2={len(all_dev2)}")
+            print(
+                f"  Round {r + 1}/{rounds}: Dev1={len(all_dev1)} Dev2={len(all_dev2)}"
+            )
 
     all_src: list[SourceEvent] = []
     for e in all_dev1:
         all_src.append(
             SourceEvent(
                 device="Dev1",
-                channel="GP4",
-                inputs=f"0x{e.inputs:08x}",
+                channel=pochi.pin_label(4),
+                inputs=e.inputs,
                 raw_count=e.raw_count,
                 raw_phase=e.raw_phase,
                 sync_active=e.sync_active,
@@ -153,15 +165,15 @@ def _run(
         all_src.append(
             SourceEvent(
                 device="Dev2",
-                channel="GP0",
-                inputs=f"0x{e.inputs:08x}",
+                channel=pochi.pin_label(0),
+                inputs=e.inputs,
                 raw_count=e.raw_count,
                 raw_phase=e.raw_phase,
                 sync_active=e.sync_active,
             )
         )
 
-    groups = group_events(all_src)
+    groups = group_events(all_src, ts_res_ns)
     paired = [g for g in groups if len(g.events) == 2]
 
     diffs_ns: list[int] = []
@@ -198,7 +210,9 @@ def _run(
         )
 
     abs_diffs = [abs(d) for d in diffs_ns]
-    within_500 = sum(1 for d in abs_diffs if d <= SPEC_MAX_DIFF_NS) / len(abs_diffs) * 100
+    within_500 = (
+        sum(1 for d in abs_diffs if d <= SPEC_MAX_DIFF_NS) / len(abs_diffs) * 100
+    )
 
     pass_all_within = within_500 >= 99.9
     pass_max = max(abs_diffs) <= SPEC_MAX_DIFF_NS
@@ -233,10 +247,21 @@ def _run(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="2-device timestamp precision benchmark")
-    parser.add_argument("--rounds", type=int, default=10, help="number of toggle rounds (default 10)")
-    parser.add_argument("--toggles", type=int, default=50, help="toggles per round (default 50)")
-    parser.add_argument("--interval", type=float, default=0.02, help="toggle interval in seconds (default 0.02)")
+    parser = argparse.ArgumentParser(
+        description="2-device timestamp precision benchmark"
+    )
+    parser.add_argument(
+        "--rounds", type=int, default=10, help="number of toggle rounds (default 10)"
+    )
+    parser.add_argument(
+        "--toggles", type=int, default=50, help="toggles per round (default 50)"
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.02,
+        help="toggle interval in seconds (default 0.02)",
+    )
     parser.add_argument("--json", action="store_true", help="output result as JSON")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     args = parser.parse_args()
@@ -251,9 +276,9 @@ def main() -> None:
     if args.json:
         print(json.dumps(asdict(result), indent=2))
     else:
-        print(f"\n{'='*50}")
-        print(f"  2-Device Timestamp Precision Benchmark")
-        print(f"{'='*50}")
+        print(f"\n{'=' * 50}")
+        print("  2-Device Timestamp Precision Benchmark")
+        print(f"{'=' * 50}")
         print(f"  Events:        Dev1={result.dev1_events}  Dev2={result.dev2_events}")
         print(f"  Matched pairs: {result.pairs} ({result.reconciled_count} reconciled)")
         print(f"  Mean diff:     {result.mean_diff_ns:+.1f} ns")
@@ -261,10 +286,10 @@ def main() -> None:
         print(f"  Max |diff|:    {result.max_abs_diff_ns} ns")
         print(f"  Range:         [{result.range_low_ns}, {result.range_high_ns}] ns")
         print(f"  |diff|<=500ns: {result.within_500ns_pct:.1f}%")
-        print(f"{'='*50}")
-        print(f"  Spec:    |diff|<=500ns 100%, range ±320ns")
+        print(f"{'=' * 50}")
+        print("  Spec:    |diff|<=500ns 100%, range ±320ns")
         print(f"  VERDICT: {result.verdict}")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
 
     sys.exit(0 if result.verdict == "PASS" else 1)
 

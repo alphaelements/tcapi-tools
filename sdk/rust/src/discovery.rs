@@ -2,9 +2,8 @@
 
 use serialport::SerialPortType;
 
+use crate::connection::Connection;
 use crate::error::{Result, SdkError};
-use crate::protocol;
-use crate::transport::Transport;
 use crate::types::DeviceInfo;
 
 const POCHI_VID: u16 = 0x2E8A;
@@ -26,21 +25,19 @@ pub struct Discovery {
     pub failures: Vec<ProbeFailure>,
 }
 
-/// Return true if the USB descriptor identifies a Pochi-DIO.
-///
-/// The legacy "Tachyon" product string is accepted: devices in the field
-/// may still run pre-rename firmware.
+/// Return true if the USB descriptor identifies a Pochi-DIO (R-U1: the
+/// product string must start with "Pochi"; no other name is accepted).
 fn matches_pochi(info: &serialport::UsbPortInfo) -> bool {
     info.vid == POCHI_VID
         && info.pid == POCHI_PID
         && info
             .product
             .as_ref()
-            .is_some_and(|p| p.starts_with("Pochi") || p.starts_with("Tachyon"))
+            .is_some_and(|p| p.starts_with("Pochi"))
 }
 
 /// List serial port paths whose USB descriptors match a Pochi-DIO
-/// (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy "Tachyon*").
+/// (VID 0x2E8A / PID 0x000A / product "Pochi*").
 /// No ports are opened. Results are sorted by port path: the OS
 /// enumeration order is unspecified, and callers rely on a deterministic
 /// device order.
@@ -57,25 +54,11 @@ pub fn enumerate_ports() -> Result<Vec<String>> {
     Ok(matched)
 }
 
-/// Probe one port: open it and query `info` (and best-effort `version`).
+/// Probe one port: open it (asserting DTR and requiring `proto=2`) and query
+/// `info`. A device that does not speak proto 2 fails here: the USB filter
+/// alone never proves a device is usable.
 pub fn probe(port_path: &str) -> Result<DeviceInfo> {
-    let mut transport = Transport::open(port_path)?;
-    let data = transport.command("info")?;
-    let (uid, device_number) = protocol::parse_info(&data)?;
-
-    // Version is informational; an old or odd firmware should not make the
-    // device invisible to discovery.
-    let version = transport
-        .command("version")
-        .ok()
-        .and_then(|d| d.split_whitespace().next().map(str::to_string));
-
-    Ok(DeviceInfo {
-        uid,
-        device_number,
-        port: port_path.to_string(),
-        version,
-    })
+    Connection::open(port_path)?.info()
 }
 
 /// Enumerate and probe all connected Pochi-DIO devices, reporting probe
@@ -162,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn usb_filter_accepts_pochi_and_tachyon() {
+    fn usb_filter_accepts_pochi_only() {
         let info = |vid, pid, product: Option<&str>| serialport::UsbPortInfo {
             vid,
             pid,
@@ -171,7 +154,8 @@ mod tests {
             product: product.map(str::to_string),
         };
         assert!(matches_pochi(&info(0x2E8A, 0x000A, Some("Pochi-DIO"))));
-        assert!(matches_pochi(&info(0x2E8A, 0x000A, Some("Tachyon-DIO"))));
+        // The pre-rename product name is no longer accepted (R-U1).
+        assert!(!matches_pochi(&info(0x2E8A, 0x000A, Some("Tachyon-DIO"))));
         // Debugprobe: same VID, different PID — must NOT match.
         assert!(!matches_pochi(&info(0x2E8A, 0x000C, Some("Debugprobe"))));
         assert!(!matches_pochi(&info(0x2E8A, 0x000A, Some("Other"))));

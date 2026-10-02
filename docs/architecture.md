@@ -117,7 +117,7 @@ implementation is language-specific:
 |---|---|
 | Rust | `std::sync::mpsc::Receiver` (no async runtime) |
 | TypeScript | `EventEmitter` / async iterator |
-| Python | `asyncio.Queue` |
+| Python | `EventSubscription` (thread-safe `queue.Queue`, context manager) |
 | C# | `IObservable<T>` (Reactive Extensions pattern) |
 
 ### Host-Side Processing

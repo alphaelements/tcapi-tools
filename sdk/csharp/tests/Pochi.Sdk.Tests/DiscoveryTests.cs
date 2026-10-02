@@ -6,8 +6,11 @@ public class MatchesPochiTests
 {
     [Theory]
     [InlineData(0x2E8A, 0x000A, "Pochi-DIO", true)]
-    [InlineData(0x2E8A, 0x000A, "Tachyon-DIO", true)] // legacy pre-rename FW
+    [InlineData(0x2E8A, 0x000A, "Pochi", true)]
+    [InlineData(0x2E8A, 0x000A, "pochi-dio", false)] // the prefix is case-sensitive
+    [InlineData(0x2E8A, 0x000A, "My Pochi-DIO", false)] // a prefix, not a substring
     [InlineData(0x2E8A, 0x000A, "Picotool", false)]
+    [InlineData(0x2E8A, 0x000A, "", false)]
     [InlineData(0x2E8A, 0x000C, "Pochi-DIO", false)] // Debugprobe PID
     [InlineData(0x1234, 0x000A, "Pochi-DIO", false)]
     [InlineData(0x2E8A, 0x000A, null, false)]
@@ -75,8 +78,9 @@ public class SysfsEnumerationTests : IDisposable
     public void FindsPochiAndIgnoresOthers()
     {
         AddTty("ttyACM0", "2e8a", "000a", "Pochi-DIO");
-        AddTty("ttyACM1", "2e8a", "000a", "Tachyon-DIO");
+        AddTty("ttyACM1", "2e8a", "000a", "Pochi-DIO v2");
         AddTty("ttyACM2", "2e8a", "000c", "Debugprobe (CMSIS-DAP)");
+        AddTty("ttyACM4", "2e8a", "000a", "Picotool");
         AddTty("ttyUSB0", "0403", "6001", "FT232R USB UART");
         AddBareTty("ttyS0"); // non-USB tty: no device link
         AddTty("ttyACM3", "2e8a", "000a", null); // no product string
@@ -146,5 +150,72 @@ public class SelectionTests
             Dev("F", 2, "p5"),
         };
         Assert.Equal([(byte)2], Discovery.FindDuplicateNumbers(devices));
+    }
+}
+
+public class ProbeTests
+{
+    /// <summary>A device that answers every request with the response the
+    /// golden transcripts record for it; <paramref name="overrides"/> replace
+    /// single responses (negative tests).</summary>
+    private static FakePort Device(Dictionary<string, string>? overrides = null)
+    {
+        var port = new FakePort();
+        port.OnCommand = line =>
+        {
+            if (overrides is not null && overrides.TryGetValue(line, out var answer))
+            {
+                port.Feed(answer);
+            }
+            else
+            {
+                port.Feed(GoldenCorpus.FirstResponse(line).ToArray());
+            }
+        };
+        return port;
+    }
+
+    [Fact]
+    public void ProbeReportsUidDeviceNumberAndFirmwareVersion()
+    {
+        var port = Device();
+        using var transport = new Transport(port);
+        var info = Discovery.Probe(transport, "/dev/ttyACM9");
+        Assert.Equal(new DeviceInfo("0000000000000000", null, "/dev/ttyACM9", "0.1.3"), info);
+        Assert.Equal(["version", "info"], port.Written);
+    }
+
+    [Theory]
+    [InlineData("OK fw=0.1.3 proto=3")]
+    [InlineData("OK fw=0.1.3 proto=0")]
+    [InlineData("OK v0.1.0 proto=7")] // legacy line shape on another protocol
+    [Trait("Category", "Negative")]
+    public void ProbeRefusesAnotherProtocolBeforeAskingForInfo(string version)
+    {
+        var port = Device(new() { ["version"] = version });
+        using var transport = new Transport(port);
+        TestHelpers.AssertSdkThrows(
+            ErrorCode.UnsupportedFirmware, () => Discovery.Probe(transport, "/dev/ttyACM9"));
+        Assert.Equal(["version"], port.Written);
+    }
+
+    [Fact]
+    [Trait("Category", "Negative")]
+    public void ProbeOfAnUnreadableVersionLineIsAParseError()
+    {
+        var port = Device(new() { ["version"] = "OK nonsense" });
+        using var transport = new Transport(port);
+        TestHelpers.AssertSdkThrows(
+            ErrorCode.Parse, () => Discovery.Probe(transport, "/dev/ttyACM9"));
+    }
+
+    [Fact]
+    [Trait("Category", "Negative")]
+    public void ProbeOfAMalformedInfoIsAParseError()
+    {
+        var port = Device(new() { ["info"] = "OK uid=short devnum=1" });
+        using var transport = new Transport(port);
+        TestHelpers.AssertSdkThrows(
+            ErrorCode.Parse, () => Discovery.Probe(transport, "/dev/ttyACM9"));
     }
 }

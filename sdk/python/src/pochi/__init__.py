@@ -1,15 +1,18 @@
 """Python SDK for Pochi-DIO — RP2350-based high-speed digital I/O unit.
 
-Talks the USB CDC text command mode (``{cmd}\\r\\n`` → ``OK ...`` /
-``ERR ...``, push lines ``! ...``). Requires firmware Phase 9.6+; older
-firmware is rejected explicitly (never parsed silently).
+Talks the v2 USB CDC text command mode (``{cmd}\\r\\n`` -> ``OK ...`` /
+``ERR ...``, push lines ``! ...``). Only ``proto=2`` is accepted: opening a
+connection asserts DTR and requires ``version`` to report it, and any other
+protocol version is refused with an explicit error (never parsed leniently).
 
 The Rust SDK (``sdk/rust``) is the reference implementation; this SDK
-mirrors its behavior and JSON wire format exactly.
+mirrors its behavior and JSON wire format exactly. Every mask is a physical
+GP bit position; use :func:`ch_to_gp`, :func:`gp_to_ch`, :func:`pin_label`
+and :data:`VALID_DIO_MASK` to convert to and from logical channels.
 """
 
 from . import protocol, reconcile
-from .connection import Connection
+from .connection import Connection, EventSubscription
 from .discovery import (
     Discovery,
     ProbeFailure,
@@ -31,7 +34,9 @@ from .errors import (
     ConnectionError_,
     DisconnectedError,
     FlashError,
+    InvalidArgumentError,
     IoError,
+    LineTooLongError,
     MultipleDevicesError,
     NoDeviceError,
     NoResourceError,
@@ -40,17 +45,21 @@ from .errors import (
     ParseError,
     SdkError,
     SyncStateError,
-    SyncTimeoutError,
     TimeoutError_,
     TooLongError,
+    TransportNotSupportedError,
+    UnknownCmdError,
     UnknownDeviceError,
+    UnknownEventError,
     UnsupportedFirmwareError,
 )
 from .transport import BAUD_RATE, DEFAULT_COMMAND_TIMEOUT, Transport
 from .types import (
+    DIO_CHANNELS,
     FEAT_RESET,
     FEAT_SYNC,
-    MAP_V2_CHANNEL_LINES,
+    PATTERN_TICK_NS,
+    PROTO_VERSION,
     VALID_DIO_MASK,
     Capabilities,
     DeviceInfo,
@@ -64,17 +73,18 @@ from .types import (
     PatternStep,
     PatternTimeoutEvent,
     PinMap,
-    PinMapV2,
-    PullMode,
     PushEvent,
-    SyncDoneEvent,
     SyncRole,
     SyncState,
     TimestampEvent,
     TimestampResult,
-    UnknownEvent,
+    TsStatus,
     VersionInfo,
-    channel_to_gp,
+    ch_to_gp,
+    check_dio_mask,
+    gp_to_ch,
+    hold_ticks_from_ns,
+    pin_label,
 )
 
 __version__ = "0.1.0"
@@ -84,6 +94,7 @@ __all__ = [
     "protocol",
     "reconcile",
     "Connection",
+    "EventSubscription",
     "Discovery",
     "ProbeFailure",
     "discover",
@@ -102,7 +113,9 @@ __all__ = [
     "ConnectionError_",
     "DisconnectedError",
     "FlashError",
+    "InvalidArgumentError",
     "IoError",
+    "LineTooLongError",
     "MultipleDevicesError",
     "NoDeviceError",
     "NoResourceError",
@@ -111,19 +124,22 @@ __all__ = [
     "ParseError",
     "SdkError",
     "SyncStateError",
-    "SyncTimeoutError",
     "TimeoutError_",
     "TooLongError",
+    "TransportNotSupportedError",
+    "UnknownCmdError",
     "UnknownDeviceError",
+    "UnknownEventError",
     "UnsupportedFirmwareError",
     "BAUD_RATE",
     "DEFAULT_COMMAND_TIMEOUT",
     "Transport",
+    "DIO_CHANNELS",
     "FEAT_RESET",
     "FEAT_SYNC",
-    "MAP_V2_CHANNEL_LINES",
+    "PATTERN_TICK_NS",
+    "PROTO_VERSION",
     "VALID_DIO_MASK",
-    "channel_to_gp",
     "Capabilities",
     "DeviceInfo",
     "EdgeMode",
@@ -136,14 +152,16 @@ __all__ = [
     "PatternStep",
     "PatternTimeoutEvent",
     "PinMap",
-    "PinMapV2",
-    "PullMode",
     "PushEvent",
-    "SyncDoneEvent",
     "SyncRole",
     "SyncState",
     "TimestampEvent",
     "TimestampResult",
-    "UnknownEvent",
+    "TsStatus",
     "VersionInfo",
+    "ch_to_gp",
+    "check_dio_mask",
+    "gp_to_ch",
+    "hold_ticks_from_ns",
+    "pin_label",
 ]

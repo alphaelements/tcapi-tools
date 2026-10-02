@@ -1,25 +1,46 @@
 /**
- * Command builders and typed response parsers for the CDC text protocol.
- * Pure functions (no I/O) — every parser is unit-testable without a
- * device. Mirrors `sdk/rust/src/protocol.rs`.
+ * Command builders and typed response parsers for the v2 CDC text protocol.
+ * Pure functions (no I/O) — every parser is unit-testable without a device.
+ * Mirrors `sdk/rust/src/protocol.rs`.
+ *
+ * Parsers are strict (R-P6): a response must carry exactly the documented
+ * keys, no more and no fewer, and numbers must be in range. Anything else is
+ * an `SdkError` with code `Parse`, never a silently defaulted value.
  */
 
 import { SdkError } from "./errors.js";
-import { asIsNs } from "./reconcile.js";
-import type {
-  Capabilities,
-  EdgeMode,
-  IoState,
-  PatternMode,
-  PatternState,
-  PatternStatus,
-  PatternStep,
-  PinMap,
-  PullMode,
-  PushEvent,
-  TimestampEvent,
-  VersionInfo,
+import {
+  PROTO_VERSION,
+  checkDioMask,
+  patternStepToText,
+  pinMapToSetArgs,
+  validatePinMap,
+  type Capabilities,
+  type EdgeMode,
+  type IoState,
+  type PatternMode,
+  type PatternState,
+  type PatternStatus,
+  type PatternStep,
+  type PinMap,
+  type PushEvent,
+  type TimestampEvent,
+  type TsStatus,
+  type VersionInfo,
 } from "./types.js";
+
+/** Longest request line the device accepts, excluding the CR/LF terminator (R-T1). */
+export const MAX_LINE_BYTES = 256;
+
+/** Most events one `ts get` response carries (the device clamps larger values). */
+export const MAX_TS_GET_EVENTS = 85;
+
+/** Highest valid `p=` (raw phase) value of a timestamp event. */
+const MAX_RAW_PHASE = 24;
+
+const U8_MAX = 0xff;
+const U16_MAX = 0xffff;
+const U32_MAX = 0xffffffff;
 
 /** A single response line, classified. */
 export type Response =
@@ -37,7 +58,7 @@ export function parseResponse(line: string): Response {
   throw SdkError.parse(`unexpected response line: ${trimmed}`);
 }
 
-/** Extract the data of an `ok` response, mapping `err` codes to typed errors. */
+/** Extract the data of an `ok` response, mapping `err` names to typed errors. */
 export function okData(response: Response): string {
   switch (response.kind) {
     case "ok":
@@ -51,355 +72,401 @@ export function okData(response: Response): string {
   }
 }
 
-/** Extract `count=N` from an OK data string (`ts get` / `sync count`). */
-export function parseCountField(okDataStr: string): number {
+/**
+ * Extract `count=N` from the header of a counted multi-line response
+ * (`ts get`, `help`). Returns `null` when the response carries no `count=`
+ * (a single-line response); an invalid value is a parse error.
+ */
+export function parseCountField(okDataStr: string): number | null {
   const part = okDataStr.split(/\s+/).find((p) => p.startsWith("count="));
-  if (!part) throw SdkError.parse(`missing count= field: ${okDataStr}`);
-  const value = Number(part.slice(6));
-  if (!Number.isInteger(value) || value < 0) {
+  if (part === undefined) return null;
+  const value = part.slice("count=".length);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
     throw SdkError.parse(`invalid count= value: ${okDataStr}`);
   }
-  return value;
+  return Number(value);
 }
+
+// --- key=value field parsing ---
 
 /**
- * Extract `count=N overflow=B` from a `ts get` OK data string.
- *
- * `overflow=B` was added in FW v0.1.2 (Pochi-DIO `fix/cdc-tx-buffer-truncation`)
- * and signals that the ring buffer overflowed since the last `ts get`
- * (read-then-clear on the FW side). A missing `overflow=` (older FW) is
- * treated as `overflow=0`.
+ * The `key=value` fields of one response, checked against the exact key set
+ * the protocol documents for it.
  */
-export function parseCountOverflowField(
-  okDataStr: string,
-): { count: number; overflow: boolean } {
-  const count = parseCountField(okDataStr);
-  const part = okDataStr.split(/\s+/).find((p) => p.startsWith("overflow="));
-  if (!part) return { count, overflow: false };
-  const value = part.slice("overflow=".length);
-  if (value !== "0" && value !== "1") {
-    throw SdkError.parse(`invalid overflow= value: ${value}`);
-  }
-  return { count, overflow: value === "1" };
-}
+class Fields {
+  private readonly pairs = new Map<string, string>();
 
-function parseU32(s: string): number {
-  if (!/^(0[xX][0-9a-fA-F]+|\d+)$/.test(s)) {
-    throw SdkError.parse(`invalid number: ${s}`);
+  /**
+   * Split `data` into `key=value` tokens. Every key in `keys` must be present
+   * exactly once and no other key may appear (order is free).
+   */
+  constructor(
+    private readonly ctx: string,
+    private readonly data: string,
+    keys: readonly string[],
+  ) {
+    for (const token of data.split(/\s+/).filter((t) => t.length > 0)) {
+      const idx = token.indexOf("=");
+      if (idx < 0) throw this.error(`token without '=' (${token})`);
+      const key = token.slice(0, idx);
+      if (!keys.includes(key)) throw this.error(`unexpected key ${key}=`);
+      if (this.pairs.has(key)) throw this.error(`duplicate key ${key}=`);
+      this.pairs.set(key, token.slice(idx + 1));
+    }
+    const missing = keys.find((k) => !this.pairs.has(k));
+    if (missing !== undefined) throw this.error(`missing ${missing}= field`);
   }
-  const value = Number(s);
-  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
-    throw SdkError.parse(`invalid number: ${s}`);
-  }
-  return value;
-}
 
-function fields(data: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const part of data.split(/\s+/)) {
-    const idx = part.indexOf("=");
-    if (idx > 0) map.set(part.slice(0, idx), part.slice(idx + 1));
+  private error(msg: string): SdkError {
+    return SdkError.parse(`${msg} in ${this.ctx}: ${this.data}`);
   }
-  return map;
-}
 
-function requireField(map: Map<string, string>, key: string, ctx: string): string {
-  const value = map.get(key);
-  if (value === undefined) {
-    throw SdkError.parse(`missing ${key}= field in ${ctx}`);
+  private invalid(key: string): SdkError {
+    return SdkError.parse(`invalid ${key}= value in ${this.ctx}: ${this.data}`);
   }
-  return value;
-}
 
-function parseIntStrict(s: string, ctx: string): number {
-  if (!/^\d+$/.test(s)) throw SdkError.parse(`invalid number in ${ctx}: ${s}`);
-  return Number(s);
+  raw(key: string): string {
+    const value = this.pairs.get(key);
+    if (value === undefined) throw this.invalid(key);
+    return value;
+  }
+
+  /** Plain decimal integer in `0..=max`. */
+  dec(key: string, max: number = Number.MAX_SAFE_INTEGER): number {
+    const raw = this.raw(key);
+    if (!/^\d+$/.test(raw)) throw this.invalid(key);
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value > max) throw this.invalid(key);
+    return value;
+  }
+
+  /** Mask or bit value: `0x` hex (canonical) or decimal, as a u32. */
+  mask(key: string): number {
+    const raw = this.raw(key);
+    const ok = /^0[xX][0-9a-fA-F]+$/.test(raw) || /^\d+$/.test(raw);
+    const value = ok ? Number(raw) : Number.NaN;
+    if (!Number.isInteger(value) || value > U32_MAX) throw this.invalid(key);
+    return value;
+  }
+
+  /** `0` or `1`. */
+  flag(key: string): boolean {
+    switch (this.raw(key)) {
+      case "0":
+        return false;
+      case "1":
+        return true;
+      default:
+        throw this.invalid(key);
+    }
+  }
 }
 
 // --- version ---
 
-/** Parse `v0.1.0 proto=1`. */
+/**
+ * Parse `fw=0.1.3 proto=2`. The protocol number is returned as reported;
+ * callers decide whether it is supported (`PROTO_VERSION`).
+ */
 export function parseVersion(data: string): VersionInfo {
-  const verPart = data.split(/\s+/).find((p) => /^v\d+\.\d+\.\d+$/.test(p));
-  if (!verPart) throw SdkError.parse(`missing version in: ${data}`);
-  const [major, minor, patch] = verPart.slice(1).split(".").map(Number);
-  const proto = fields(data).get("proto");
-  if (proto === undefined) throw SdkError.parse(`missing proto= in: ${data}`);
-  return {
-    major,
-    minor,
-    patch,
-    protocolVersion: parseIntStrict(proto, "version"),
-  };
+  const f = new Fields("version", data, ["fw", "proto"]);
+  const fw = f.raw("fw");
+  const nums = fw.split(".");
+  if (nums.length !== 3 || !nums.every((n) => /^\d+$/.test(n) && Number(n) <= U8_MAX)) {
+    throw SdkError.parse(`invalid fw= value in version: ${data}`);
+  }
+  const [major, minor, patch] = nums.map(Number);
+  return { major, minor, patch, protocolVersion: f.dec("proto", U8_MAX) };
+}
+
+/**
+ * Fail with UnsupportedFirmware unless the device speaks the one protocol this
+ * SDK is built for (`proto=2`).
+ */
+export function assertSupportedProtocol(version: VersionInfo): void {
+  if (version.protocolVersion !== PROTO_VERSION) {
+    throw SdkError.unsupportedFirmware(
+      `unsupported protocol proto=${version.protocolVersion} (this SDK speaks proto=${PROTO_VERSION})`,
+    );
+  }
 }
 
 // --- caps ---
 
 /**
- * Parse `dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256 feat=0x...`.
- * Old firmware (`ts_res=1000`) fails loudly as UnsupportedFirmware.
+ * Parse `dio=25 out=2 in=23 ts_res_ns=40 tick_ns=200 pattern=256 ring=256
+ * feat=0x00000003`.
  */
 export function parseCaps(data: string): Capabilities {
-  const f = fields(data);
-  const ctx = `caps: ${data}`;
-  const tsRes = parseIntStrict(
-    requireField(f, "ts_res", ctx).replace(/ns$/, ""),
-    ctx,
-  );
-  const caps: Capabilities = {
-    protocolVersion: 0, // populated by the caller from `version`
-    maxDio: parseIntStrict(requireField(f, "dio", ctx), ctx),
-    outCount: parseIntStrict(requireField(f, "out", ctx), ctx),
-    inCount: parseIntStrict(requireField(f, "in", ctx), ctx),
-    tsResolutionNs: tsRes,
-    maxPatternSteps: parseIntStrict(requireField(f, "pattern", ctx), ctx),
-    tsRingEvents: parseIntStrict(requireField(f, "ring", ctx), ctx),
-    features: parseU32(requireField(f, "feat", ctx)),
+  const f = new Fields("caps", data, [
+    "dio",
+    "out",
+    "in",
+    "ts_res_ns",
+    "tick_ns",
+    "pattern",
+    "ring",
+    "feat",
+  ]);
+  return {
+    dio: f.dec("dio", U8_MAX),
+    out: f.dec("out", U8_MAX),
+    in: f.dec("in", U8_MAX),
+    tsResNs: f.dec("ts_res_ns", U32_MAX),
+    tickNs: f.dec("tick_ns", U32_MAX),
+    patternMax: f.dec("pattern", U16_MAX),
+    ring: f.dec("ring", U16_MAX),
+    features: f.mask("feat"),
   };
-  if (caps.tsResolutionNs === 1000) {
-    throw SdkError.unsupportedFirmware(
-      "caps reports ts_res=1000ns (pre-Phase 9.6 timestamp format)",
-    );
-  }
-  return caps;
 }
 
-// --- info ---
+// --- info / ping ---
 
-/** Parse `uid=AABBCCDD11223344 devnum=42`. devnum 255 maps to null. */
+/** Parse `uid=0123456789ABCDEF devnum=42`. devnum 255 (unassigned) maps to `null`. */
 export function parseInfo(data: string): { uid: string; deviceNumber: number | null } {
-  const f = fields(data);
-  const uid = f.get("uid");
-  if (!uid) throw SdkError.parse(`missing uid in info response: ${data}`);
-  let deviceNumber: number | null = null;
-  const devnum = f.get("devnum");
-  if (devnum !== undefined) {
-    const n = parseIntStrict(devnum, `info: ${data}`);
-    deviceNumber = n === 255 ? null : n;
+  const f = new Fields("info", data, ["uid", "devnum"]);
+  const uid = f.raw("uid");
+  if (!/^[0-9a-fA-F]{16}$/.test(uid)) {
+    throw SdkError.parse(`invalid uid= value in info: ${data}`);
   }
-  return { uid, deviceNumber };
+  const devnum = f.dec("devnum", U8_MAX);
+  return { uid, deviceNumber: devnum === 255 ? null : devnum };
+}
+
+/** Parse the `ping` response `pong=<u32>`. */
+export function parsePong(data: string): number {
+  return new Fields("ping", data, ["pong"]).dec("pong", U32_MAX);
 }
 
 // --- map ---
 
-/** Parse `v=1 out=0:12 in=12:11 pull=up flags=0x01`. */
+/**
+ * Parse the `map get` response `v=2 flags=0x00 dir=... edge=...` and validate
+ * it (R-M1): a device reporting an invalid or non-v2 map is an error, not a
+ * value.
+ */
 export function parseMap(data: string): PinMap {
-  const f = fields(data);
-  const ctx = `map: ${data}`;
-  const range = (key: string): [number, number] => {
-    const value = requireField(f, key, ctx);
-    const idx = value.indexOf(":");
-    if (idx < 0) throw SdkError.parse(`invalid ${key}= range in ${ctx}`);
-    return [
-      parseIntStrict(value.slice(0, idx), ctx),
-      parseIntStrict(value.slice(idx + 1), ctx),
-    ];
-  };
-  const [outBase, outCount] = range("out");
-  const [inBase, inCount] = range("in");
-  const pull = requireField(f, "pull", ctx);
-  if (pull !== "none" && pull !== "up" && pull !== "down") {
-    throw SdkError.parse(`invalid pull mode in map: ${pull}`);
+  const f = new Fields("map", data, [
+    "v",
+    "flags",
+    "dir",
+    "pu",
+    "pd",
+    "def",
+    "opol",
+    "ipol",
+    "edge",
+  ]);
+  const version = f.dec("v", U8_MAX);
+  if (version !== PROTO_VERSION) {
+    throw SdkError.parse(`unsupported map version v=${version} in map: ${data}`);
   }
-  return {
-    version: parseIntStrict(requireField(f, "v", ctx), ctx),
-    outBase,
-    outCount,
-    inBase,
-    inCount,
-    pull: pull as PullMode,
-    flags: parseU32(requireField(f, "flags", ctx)),
+  const flags = f.mask("flags");
+  if (flags > U8_MAX) throw SdkError.parse(`invalid flags= value in map: ${data}`);
+  const map: PinMap = {
+    flags,
+    direction: f.mask("dir"),
+    pullUp: f.mask("pu"),
+    pullDown: f.mask("pd"),
+    outDefault: f.mask("def"),
+    outPolarity: f.mask("opol"),
+    inPolarity: f.mask("ipol"),
+    edge: f.mask("edge"),
   };
+  try {
+    validatePinMap(map);
+  } catch (err) {
+    throw SdkError.parse(
+      `device reported an invalid map (${err instanceof Error ? err.message : err}): ${data}`,
+    );
+  }
+  return map;
 }
 
-/**
- * Encode a PinMap as the 48-char hex string for `map set`. Extended
- * fields not in PinMap (out_default, polarities) are zero.
- */
-export function mapToHex(map: PinMap): string {
-  const buf = new Uint8Array(24);
-  buf[0] = map.version;
-  buf[1] = map.outBase;
-  buf[2] = map.outCount;
-  buf[3] = map.inBase;
-  buf[4] = map.inCount;
-  buf[5] = map.pull === "none" ? 0 : map.pull === "up" ? 1 : 2;
-  buf[6] = map.flags;
-  return Buffer.from(buf).toString("hex");
+/** Build the `map set` command for `map` (validated first). */
+export function mapSetCommand(map: PinMap): string {
+  return `map set ${pinMapToSetArgs(map)}`;
 }
 
 // --- read / write / state ---
 
-/** Parse the `read` response data: `0x000005`. */
+/** Parse the `read` response `in=0x00000005`. */
 export function parseRead(data: string): number {
-  return parseU32(data.trim());
+  return new Fields("read", data, ["in"]).mask("in");
 }
 
-/** Parse `in=0x000005 out=0x00000A flags=0x00`. */
+/** Parse the `state` response `in=0x00000000 out=0x00000005`. */
 export function parseState(data: string): IoState {
-  const f = fields(data);
-  const ctx = `state: ${data}`;
-  return {
-    inputs: parseU32(requireField(f, "in", ctx)),
-    outputs: parseU32(requireField(f, "out", ctx)),
-    flags: parseU32(requireField(f, "flags", ctx)),
-  };
+  const f = new Fields("state", data, ["in", "out"]);
+  return { inputs: f.mask("in"), outputs: f.mask("out") };
+}
+
+/**
+ * Build the `write <values> <mask>` command. The mask must stay within the DIO
+ * pins (R-PIN2); value bits outside the mask are ignored by the device (golden
+ * io.txt), so `values` only has to be a u32.
+ */
+export function writeCommand(values: number, mask: number): string {
+  if (!Number.isInteger(values) || values < 0 || values > U32_MAX) {
+    throw SdkError.invalidArgument(`write values ${values} is not an unsigned 32-bit integer`);
+  }
+  checkDioMask("write mask", mask);
+  return `write 0x${values.toString(16)} 0x${mask.toString(16)}`;
 }
 
 // --- pattern ---
 
 /**
- * Encode pattern steps for `pattern load`: step count (u16 LE) followed
- * by 8 bytes per step (out_bits u32 LE + hold_us u32 LE), hex-encoded.
+ * Build the `pattern add` command lines for `steps`. Steps are packed
+ * greedily so every line stays within `MAX_LINE_BYTES`; each line is applied
+ * atomically by the device (R-PT3). Every step is validated first, so nothing
+ * is produced for a bad pattern.
  */
-export function patternToHex(steps: PatternStep[]): string {
+export function patternAddCommands(steps: readonly PatternStep[]): string[] {
   if (steps.length === 0) {
-    throw SdkError.parse("pattern must have at least one step");
+    throw SdkError.invalidArgument("pattern must have at least one step");
   }
-  if (steps.length > 0xffff) {
-    throw SdkError.parse(`too many pattern steps: ${steps.length}`);
+  const prefix = "pattern add";
+  const texts = steps.map(patternStepToText);
+  const lines: string[] = [];
+  let line = prefix;
+  for (const text of texts) {
+    // +1 for the separating space.
+    if (line.length + 1 + text.length > MAX_LINE_BYTES) {
+      lines.push(line);
+      line = prefix;
+    }
+    line += ` ${text}`;
   }
-  const buf = Buffer.alloc(2 + steps.length * 8);
-  buf.writeUInt16LE(steps.length, 0);
-  steps.forEach((step, i) => {
-    buf.writeUInt32LE(step.outBits >>> 0, 2 + i * 8);
-    buf.writeUInt32LE(step.holdUs >>> 0, 6 + i * 8);
-  });
-  return buf.toString("hex");
+  lines.push(line);
+  return lines;
 }
 
-/** Parse `accepted=4` from the `pattern load` response. */
-export function parseAccepted(data: string): number {
-  const part = data.split(/\s+/).find((p) => p.startsWith("accepted="));
-  if (!part) throw SdkError.parse(`missing accepted= field: ${data}`);
-  return parseIntStrict(part.slice(9), `accepted: ${data}`);
+/** Parse the `pattern add` response `total=<n>`: steps now in the buffer. */
+export function parsePatternTotal(data: string): number {
+  return new Fields("pattern add", data, ["total"]).dec("total", U16_MAX);
 }
 
-/** Build the `pattern run` command string. */
+/**
+ * Build the `pattern run` command string. `once` plays one pass (the repeat is
+ * ignored); `loop` requires a repeat of 1-65535.
+ */
 export function patternRunCommand(mode: PatternMode, repeat: number): string {
-  return mode === "once" ? "pattern run once 1" : `pattern run loop ${repeat}`;
+  if (mode === "once") return "pattern run once";
+  if (!Number.isInteger(repeat) || repeat < 1 || repeat > U16_MAX) {
+    throw SdkError.invalidArgument(`loop repeat ${repeat} is outside 1-${U16_MAX}`);
+  }
+  return `pattern run loop ${repeat}`;
 }
 
-/** Parse `state=running step=5 loops=3`. */
+const PATTERN_STATES: readonly PatternState[] = ["idle", "loaded", "running", "done"];
+
+/** Parse `state=running step=5 loops=3 total=40`. */
 export function parsePatternStatus(data: string): PatternStatus {
-  const f = fields(data);
-  const ctx = `pattern status: ${data}`;
-  const state = requireField(f, "state", ctx);
-  if (!["idle", "loaded", "running", "done"].includes(state)) {
-    throw SdkError.parse(`unknown pattern state: ${state}`);
-  }
+  const f = new Fields("pattern status", data, ["state", "step", "loops", "total"]);
+  const state = PATTERN_STATES.find((s) => s === f.raw("state"));
+  if (state === undefined) throw SdkError.parse(`unknown pattern state: ${f.raw("state")}`);
   return {
-    state: state as PatternState,
-    currentStep: parseIntStrict(requireField(f, "step", ctx), ctx),
-    loopsDone: parseIntStrict(requireField(f, "loops", ctx), ctx),
+    state,
+    step: f.dec("step", U16_MAX),
+    loops: f.dec("loops", U16_MAX),
+    total: f.dec("total", U16_MAX),
   };
 }
 
 // --- timestamp ---
 
-/** Build the `ts arm` command string. */
+/** Build the `ts arm` command: a non-zero mask within the DIO pins (R-PIN2). */
 export function tsArmCommand(mask: number, mode: EdgeMode): string {
-  return `ts arm 0x${(mask >>> 0).toString(16)} ${mode}`;
+  checkDioMask("ts arm mask", mask);
+  if (mask === 0) throw SdkError.invalidArgument("ts arm mask must not be 0");
+  return `ts arm 0x${mask.toString(16)} ${mode}`;
+}
+
+/** Build the `ts get <max>` command; `max` is 1-85 (R-TS3). */
+export function tsGetCommand(maxEvents: number): string {
+  if (!Number.isInteger(maxEvents) || maxEvents < 1 || maxEvents > MAX_TS_GET_EVENTS) {
+    throw SdkError.invalidArgument(`ts get max ${maxEvents} is outside 1-${MAX_TS_GET_EVENTS}`);
+  }
+  return `ts get ${maxEvents}`;
+}
+
+/** Parse the `ts status` response `armed=1 pending=2 overflow=0`. */
+export function parseTsStatus(data: string): TsStatus {
+  const f = new Fields("ts status", data, ["armed", "pending", "overflow"]);
+  return {
+    armed: f.flag("armed"),
+    pending: f.dec("pending", U32_MAX),
+    overflow: f.flag("overflow"),
+  };
 }
 
 /**
- * Parse one `ts get` event line (FW Phase 9.6): `0x00000005 c=1000 p=7 s=1`.
- * The pre-9.6 `t=` format is rejected as UnsupportedFirmware — never
- * parsed silently.
+ * Parse the header of a `ts get` response, `count=3 overflow=0`, into the
+ * number of event lines that follow and the ring-overflow flag.
+ */
+export function parseTsGetHeader(data: string): { count: number; overflow: boolean } {
+  const f = new Fields("ts get", data, ["count", "overflow"]);
+  return { count: f.dec("count", U32_MAX), overflow: f.flag("overflow") };
+}
+
+/**
+ * Parse one `ts get` event line: `in=0x00000001 c=1000 p=7 s=1` (surrounding
+ * whitespace, including the two leading spaces of a continuation line, is
+ * ignored).
  */
 export function parseTsEventLine(line: string): TimestampEvent {
-  const trimmed = line.trim();
-  const parts = trimmed.split(/\s+/);
-  const inputsPart = parts.find((p) => p.startsWith("0x") || p.startsWith("0X"));
-  const f = fields(trimmed);
-
-  if (f.has("t") && !f.has("c")) {
-    throw SdkError.unsupportedFirmware(
-      `ts event uses pre-Phase 9.6 \`t=\` format: ${trimmed}`,
-    );
-  }
-  if (!inputsPart) {
-    throw SdkError.parse(`missing inputs (0x...) field in ts event: ${trimmed}`);
-  }
-  const ctx = `ts event: ${trimmed}`;
-  const rawCount = parseIntStrict(requireField(f, "c", ctx), ctx);
-  const rawPhase = parseIntStrict(requireField(f, "p", ctx), ctx);
-  const s = requireField(f, "s", ctx);
-  if (s !== "0" && s !== "1") {
-    throw SdkError.parse(`invalid s= in ts event: ${s}`);
-  }
+  const f = new Fields("ts event", line.trim(), ["in", "c", "p", "s"]);
   return {
-    inputs: parseU32(inputsPart),
-    rawCount,
-    rawPhase,
-    syncActive: s === "1",
-    timestampNs: asIsNs(rawCount, rawPhase),
+    inputs: f.mask("in"),
+    rawCount: f.dec("c", U32_MAX),
+    rawPhase: f.dec("p", MAX_RAW_PHASE),
+    syncActive: f.flag("s"),
   };
 }
 
 // --- sync ---
 
-/** Parse the `sync count` response data: `count=1000000`. */
+/** Parse the `sync count` response `clocks=1000000`. */
 export function parseSyncCount(data: string): number {
-  return parseCountField(data);
+  return new Fields("sync count", data, ["clocks"]).dec("clocks");
 }
 
 // --- push events ---
 
+/** A push line of a name this SDK does not know. */
+export interface UnknownPushEvent {
+  type: "unknown";
+  raw: string;
+}
+
 /**
- * Parse the payload of a push line (after `! `). Unknown event types are
- * preserved as `{ type: "unknown" }` rather than dropped.
+ * Parse the payload of a push line (after `! `). A recognized event with
+ * malformed fields is an error. Unknown event names are returned as
+ * `{ type: "unknown" }` so the caller decides how to surface them (the
+ * transport logs and discards them).
  */
-export function parsePushEvent(payload: string): PushEvent {
+export function parsePushEvent(payload: string): PushEvent | UnknownPushEvent {
   const trimmed = payload.trim();
   const spaceIdx = trimmed.indexOf(" ");
   const kind = spaceIdx < 0 ? trimmed : trimmed.slice(0, spaceIdx);
   const rest = spaceIdx < 0 ? "" : trimmed.slice(spaceIdx + 1);
-  const f = fields(rest);
 
   switch (kind) {
     case "INPUT": {
-      const inputsPart = rest
-        .split(/\s+/)
-        .find((p) => p.startsWith("0x") || p.startsWith("0X"));
-      if (!inputsPart) {
-        throw SdkError.parse(`missing inputs (0x...) in INPUT event: ${trimmed}`);
-      }
-      const t = f.get("t");
-      if (t === undefined || !/^\d+$/.test(t)) {
-        throw SdkError.parse(`missing or invalid t= in INPUT event: ${trimmed}`);
-      }
-      return { type: "input_change", inputs: parseU32(inputsPart), timestampUs: Number(t) };
+      const f = new Fields("INPUT event", rest, ["in", "t"]);
+      return { type: "input_change", inputs: f.mask("in"), timestampUs: f.dec("t") };
     }
-    case "PATTERN_DONE": {
-      const loops = f.get("loops");
-      if (loops === undefined || !/^\d+$/.test(loops)) {
-        throw SdkError.parse(`missing or invalid loops= in PATTERN_DONE event: ${trimmed}`);
-      }
-      return { type: "pattern_done", loops: Number(loops) };
-    }
-    case "PATTERN_TIMEOUT": {
-      const loops = f.get("loops");
-      if (loops === undefined || !/^\d+$/.test(loops)) {
-        throw SdkError.parse(`missing or invalid loops= in PATTERN_TIMEOUT event: ${trimmed}`);
-      }
-      return { type: "pattern_timeout", loops: Number(loops) };
-    }
-    case "SYNC_DONE": {
-      const status = f.get("status");
-      const devnum = f.get("devnum");
-      const ts = f.get("ts");
-      if (
-        status === undefined ||
-        devnum === undefined ||
-        !/^\d+$/.test(devnum) ||
-        ts === undefined ||
-        !/^\d+$/.test(ts)
-      ) {
-        throw SdkError.parse(`missing field in SYNC_DONE event: ${trimmed}`);
-      }
-      return { type: "sync_done", status, devnum: Number(devnum), timestamp: Number(ts) };
-    }
+    case "PATTERN_DONE":
+      return {
+        type: "pattern_done",
+        loops: new Fields("PATTERN_DONE event", rest, ["loops"]).dec("loops", U16_MAX),
+      };
+    case "PATTERN_TIMEOUT":
+      return {
+        type: "pattern_timeout",
+        loops: new Fields("PATTERN_TIMEOUT event", rest, ["loops"]).dec("loops", U16_MAX),
+      };
     default:
       return { type: "unknown", raw: trimmed };
   }

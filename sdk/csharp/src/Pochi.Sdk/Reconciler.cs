@@ -6,9 +6,10 @@ namespace Pochi.Sdk;
 public sealed record SourceEvent(
     // Device identifier (UID or "local" for single-device use).
     string Device,
-    // Channel label, e.g. "GP0" (best-effort, derived from inputs diff).
+    // Channel label, e.g. "GP26 (ch23)" (see Pins.PinLabel).
     string Channel,
-    string Inputs,
+    // Logical levels, physical GP bits.
+    uint Inputs,
     uint RawCount,
     byte RawPhase,
     bool SyncActive
@@ -40,7 +41,7 @@ public sealed record PairStats(
 );
 
 /// <summary>
-/// Host-side timestamp reconciliation (FW Phase 9.6). Direct port of
+/// Host-side timestamp reconciliation. Direct port of
 /// <c>sdk/rust/src/reconcile.rs</c> (itself from pochi-cli); must produce
 /// identical results for the shared test vectors.
 ///
@@ -55,23 +56,31 @@ public static class Reconciler
     /// <summary>Exhaustive search limit: 3^8 = 6561 combinations.</summary>
     public const int MaxExhaustiveK = 8;
 
-    /// <summary>Nanoseconds per raw_phase step.</summary>
-    public const int PhaseStepNs = 40;
-
     /// <summary>
     /// The three physically possible ns values for one event:
     /// (as-is, count-1, count+1). Always all three — boundary-band
     /// filtering is wrong (±1 count drift occurs even at mid-range phases).
+    /// <paramref name="tsResNs"/> is <see cref="Capabilities.TsResNs"/>; the SDK
+    /// has no phase-step constant.
     /// </summary>
-    public static long[] Candidates(uint count, byte phase)
+    public static long[] Candidates(uint count, byte phase, uint tsResNs)
     {
-        var baseNs = AsIsNs(count, phase);
+        var baseNs = AsIsNs(count, phase, tsResNs);
         return [baseNs, baseNs - 1000, baseNs + 1000];
     }
 
-    /// <summary>Naive (uncorrected) ns value for one event.</summary>
-    public static long AsIsNs(uint count, byte phase) =>
-        count * 1000L + phase * (long)PhaseStepNs;
+    /// <summary>Naive (uncorrected) ns value for one event:
+    /// <c>count * 1000 + phase * tsResNs</c>.</summary>
+    public static long AsIsNs(uint count, byte phase, uint tsResNs) =>
+        count * 1000L + phase * (long)tsResNs;
+
+    /// <summary>
+    /// The single definition of an event's nanosecond timestamp (R-TS1). With
+    /// the sync clock running it is <see cref="AsIsNs"/>; free running, the
+    /// count is TIMER0 microseconds and the phase is ignored.
+    /// </summary>
+    public static long EventNs(uint count, byte phase, bool syncActive, uint tsResNs) =>
+        syncActive ? AsIsNs(count, phase, tsResNs) : count * 1000L;
 
     private static long PairwiseScore(long[] values)
     {
@@ -93,7 +102,8 @@ public static class Reconciler
     /// return as-is values. Ties prefer as-is candidates (combination 0
     /// wins on equality).
     /// </summary>
-    public static List<long> Reconcile(IReadOnlyList<(uint Count, byte Phase)> events)
+    public static List<long> Reconcile(
+        IReadOnlyList<(uint Count, byte Phase)> events, uint tsResNs)
     {
         var k = events.Count;
         if (k == 0)
@@ -101,7 +111,7 @@ public static class Reconciler
             return [];
         }
 
-        var cands = events.Select(e => Candidates(e.Count, e.Phase)).ToArray();
+        var cands = events.Select(e => Candidates(e.Count, e.Phase, tsResNs)).ToArray();
         if (k == 1 || k > MaxExhaustiveK)
         {
             return cands.Select(c => c[0]).ToList();
@@ -145,7 +155,8 @@ public static class Reconciler
     /// mixed sync_active, sync_active=0 across devices, K too large) keep
     /// as-is values with a warning.
     /// </summary>
-    public static List<ReconcileGroup> GroupEvents(IReadOnlyList<SourceEvent> events)
+    public static List<ReconcileGroup> GroupEvents(
+        IReadOnlyList<SourceEvent> events, uint tsResNs)
     {
         var sorted = events.OrderBy(e => e.RawCount).ThenBy(e => e.RawPhase).ToList();
 
@@ -155,7 +166,7 @@ public static class Reconciler
         {
             if (current.Count > 0 && ev.RawCount - current[0].RawCount >= 2)
             {
-                groups.Add(FinishGroup(current));
+                groups.Add(FinishGroup(current, tsResNs));
                 current = [];
             }
 
@@ -164,17 +175,19 @@ public static class Reconciler
 
         if (current.Count > 0)
         {
-            groups.Add(FinishGroup(current));
+            groups.Add(FinishGroup(current, tsResNs));
         }
 
         return groups;
     }
 
-    private static ReconcileGroup FinishGroup(List<SourceEvent> events)
+    private static ReconcileGroup FinishGroup(List<SourceEvent> events, uint tsResNs)
     {
         var approxCount = events.Count > 0 ? events[0].RawCount : 0;
         var k = events.Count;
-        var asIs = events.Select(e => AsIsNs(e.RawCount, e.RawPhase)).ToList();
+        var asIs = events
+            .Select(e => EventNs(e.RawCount, e.RawPhase, e.SyncActive, tsResNs))
+            .ToList();
         var syncStates = events.Select(e => e.SyncActive).Distinct().Count();
         var devices = events.Select(e => e.Device).Distinct().Count();
 
@@ -213,8 +226,12 @@ public static class Reconciler
         }
         else
         {
-            var pairs = events.Select(e => (e.RawCount, e.RawPhase)).ToList();
-            (reconciledNs, reconciled, warning) = (Reconcile(pairs), true, null);
+            // Free-running events carry no phase; feed 0 so every candidate
+            // set matches EventNs.
+            var pairs = events
+                .Select(e => (e.RawCount, e.SyncActive ? e.RawPhase : (byte)0))
+                .ToList();
+            (reconciledNs, reconciled, warning) = (Reconcile(pairs, tsResNs), true, null);
         }
 
         return new ReconcileGroup(approxCount, events, reconciledNs, reconciled, warning);

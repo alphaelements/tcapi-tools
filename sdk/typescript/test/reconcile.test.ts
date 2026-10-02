@@ -1,9 +1,13 @@
 /**
- * Reconcile test vectors ported verbatim from the Rust reference
+ * Reconcile test vectors ported from the Rust reference
  * (`sdk/rust/src/reconcile.rs`); all SDKs must produce identical results.
+ * The phase resolution is an argument (`Capabilities.tsResNs`), never a
+ * constant of the SDK.
  */
 import { describe, expect, it } from "vitest";
+import * as reconcileModule from "../src/reconcile.js";
 import {
+  asIsNs,
   candidates,
   CountExtender,
   groupEvents,
@@ -11,6 +15,8 @@ import {
   reconcile,
   type SourceEvent,
 } from "../src/reconcile.js";
+
+const TS_RES = 40;
 
 function ev(
   device: string,
@@ -22,100 +28,149 @@ function ev(
   return {
     device,
     channel,
-    inputs: "0x00000001",
+    inputs: 1,
     rawCount: count,
     rawPhase: phase,
     syncActive: sync,
   };
 }
 
-describe("candidates", () => {
+describe("no phase-step constant", () => {
+  it("the module exports no resolution constant", () => {
+    expect(Object.keys(reconcileModule).filter((name) => /^[A-Z_]*NS$/.test(name))).toEqual([]);
+  });
+});
+
+describe("candidates / asIsNs", () => {
   it("basic", () => {
-    expect(candidates(1000, 7)).toEqual([1000280, 999280, 1001280]);
+    expect(candidates(1000, 7, TS_RES)).toEqual([1000280, 999280, 1001280]);
   });
   it("count zero (negative candidate, no crash)", () => {
-    expect(candidates(0, 7)).toEqual([280, -720, 1280]);
+    expect(candidates(0, 7, TS_RES)).toEqual([280, -720, 1280]);
   });
   it("phase zero / max", () => {
-    expect(candidates(1000, 0)).toEqual([1000000, 999000, 1001000]);
-    expect(candidates(1000, 24)).toEqual([1000960, 999960, 1001960]);
+    expect(candidates(1000, 0, TS_RES)).toEqual([1000000, 999000, 1001000]);
+    expect(candidates(1000, 24, TS_RES)).toEqual([1000960, 999960, 1001960]);
+  });
+  it("uses the given resolution", () => {
+    expect(candidates(1000, 7, 50)).toEqual([1000350, 999350, 1001350]);
+    expect(asIsNs(1000, 7, 50)).toBe(1000350);
+    expect(asIsNs(1000, 7, TS_RES)).toBe(1000280);
   });
 });
 
 describe("reconcile", () => {
+  it("K=0 is empty", () => {
+    expect(reconcile([], TS_RES)).toEqual([]);
+  });
   it("K=1 returns as-is", () => {
-    expect(reconcile([[1000, 7]])).toEqual([1000280]);
+    expect(reconcile([[1000, 7]], TS_RES)).toEqual([1000280]);
   });
   it("K=2 no crossing keeps as-is", () => {
     expect(
-      reconcile([
-        [1000, 7],
-        [1000, 9],
-      ]),
+      reconcile(
+        [
+          [1000, 7],
+          [1000, 9],
+        ],
+        TS_RES,
+      ),
     ).toEqual([1000280, 1000360]);
   });
   it("K=2 count-1 correction", () => {
     expect(
-      reconcile([
-        [1001, 2],
-        [1000, 2],
-      ]),
+      reconcile(
+        [
+          [1001, 2],
+          [1000, 2],
+        ],
+        TS_RES,
+      ),
     ).toEqual([1000080, 1000080]);
   });
   it("K=2 count+1 correction", () => {
     expect(
-      reconcile([
-        [999, 23],
-        [1000, 23],
-      ]),
+      reconcile(
+        [
+          [999, 23],
+          [1000, 23],
+        ],
+        TS_RES,
+      ),
     ).toEqual([1000920, 1000920]);
   });
   it("K=2 both shifted around boundary", () => {
-    const r = reconcile([
-      [1001, 1],
-      [999, 24],
-    ]);
+    const r = reconcile(
+      [
+        [1001, 1],
+        [999, 24],
+      ],
+      TS_RES,
+    );
     expect(r).toEqual([1000040, 999960]);
     expect(Math.abs(r[0] - r[1])).toBeLessThanOrEqual(100);
   });
   it("K=3 three sources", () => {
     expect(
-      reconcile([
-        [1000, 1],
-        [1001, 1],
-        [1000, 2],
-      ]),
+      reconcile(
+        [
+          [1000, 1],
+          [1001, 1],
+          [1000, 2],
+        ],
+        TS_RES,
+      ),
     ).toEqual([1000040, 1000040, 1000080]);
   });
   it("K=4 four sources", () => {
     expect(
-      reconcile([
-        [1000, 23],
-        [1001, 1],
-        [1000, 24],
-        [1000, 22],
-      ]),
+      reconcile(
+        [
+          [1000, 23],
+          [1001, 1],
+          [1000, 24],
+          [1000, 22],
+        ],
+        TS_RES,
+      ),
     ).toEqual([1000920, 1001040, 1000960, 1000880]);
     expect(
-      reconcile([
-        [999, 24],
-        [1000, 24],
-        [999, 23],
-        [999, 22],
-      ]),
+      reconcile(
+        [
+          [999, 24],
+          [1000, 24],
+          [999, 23],
+          [999, 22],
+        ],
+        TS_RES,
+      ),
     ).toEqual([999960, 999960, 999920, 999880]);
   });
   it("ties prefer as-is", () => {
     expect(
-      reconcile([
-        [1000, 7],
-        [1000, 7],
-      ]),
+      reconcile(
+        [
+          [1000, 7],
+          [1000, 7],
+        ],
+        TS_RES,
+      ),
     ).toEqual([1000280, 1000280]);
   });
   it("K>8 falls back to as-is", () => {
     const events: Array<[number, number]> = Array.from({ length: 9 }, () => [1000, 7]);
-    expect(reconcile(events)).toEqual(Array(9).fill(1000280));
+    expect(reconcile(events, TS_RES)).toEqual(Array(9).fill(1000280));
+  });
+  it("applies the resolution argument to the phase", () => {
+    expect(
+      reconcile(
+        [
+          [1000, 7],
+          [1000, 9],
+        ],
+        50,
+      ),
+    ).toEqual([1000350, 1000450]);
   });
 });
 
@@ -136,71 +191,87 @@ describe("CountExtender", () => {
 
 describe("groupEvents", () => {
   it("same device 2ch reconciles", () => {
-    const groups = groupEvents([
-      ev("local", "GP0", 1000, 23, true),
-      ev("local", "GP1", 1001, 2, true),
-    ]);
+    const groups = groupEvents(
+      [ev("local", "GP0", 1000, 23, true), ev("local", "GP1", 1001, 2, true)],
+      TS_RES,
+    );
     expect(groups).toHaveLength(1);
     expect(groups[0].reconciled).toBe(true);
     expect(groups[0].events).toHaveLength(2);
   });
   it("2 devices 1ch reconciles", () => {
-    const groups = groupEvents([
-      ev("devA", "GP0", 1000, 17, true),
-      ev("devB", "GP0", 1000, 5, true),
-    ]);
+    const groups = groupEvents(
+      [ev("devA", "GP0", 1000, 17, true), ev("devB", "GP0", 1000, 5, true)],
+      TS_RES,
+    );
     expect(groups[0].reconciled).toBe(true);
   });
   it("count gap >= 2 splits groups", () => {
-    const groups = groupEvents([
-      ev("devA", "GP0", 1000, 17, true),
-      ev("devB", "GP0", 1000, 5, true),
-      ev("devA", "GP0", 5000, 3, true),
-      ev("devB", "GP0", 5001, 0, true),
-      ev("devA", "GP0", 9000, 8, true),
-    ]);
+    const groups = groupEvents(
+      [
+        ev("devA", "GP0", 1000, 17, true),
+        ev("devB", "GP0", 1000, 5, true),
+        ev("devA", "GP0", 5000, 3, true),
+        ev("devB", "GP0", 5001, 0, true),
+        ev("devA", "GP0", 9000, 8, true),
+      ],
+      TS_RES,
+    );
     expect(groups.map((g) => g.events.length)).toEqual([2, 2, 1]);
     expect(groups[2].reconciled).toBe(false); // K=1
   });
   it("mixed sync_active is uncorrected with warning", () => {
-    const groups = groupEvents([
-      ev("devA", "GP0", 1000, 17, true),
-      ev("devB", "GP0", 1000, 0, false),
-    ]);
+    const groups = groupEvents(
+      [ev("devA", "GP0", 1000, 17, true), ev("devB", "GP0", 1000, 0, false)],
+      TS_RES,
+    );
     expect(groups[0].reconciled).toBe(false);
     expect(groups[0].warning).toContain("mixed sync_active");
   });
   it("timer0 across devices is uncorrected", () => {
-    const groups = groupEvents([
-      ev("devA", "GP0", 1000, 0, false),
-      ev("devB", "GP0", 1000, 0, false),
-    ]);
+    const groups = groupEvents(
+      [ev("devA", "GP0", 1000, 0, false), ev("devB", "GP0", 1000, 0, false)],
+      TS_RES,
+    );
     expect(groups[0].reconciled).toBe(false);
     expect(groups[0].warning).not.toBeNull();
   });
   it("timer0 same device reconciles", () => {
-    const groups = groupEvents([
-      ev("local", "GP0", 1000, 0, false),
-      ev("local", "GP1", 1001, 0, false),
-    ]);
+    const groups = groupEvents(
+      [ev("local", "GP0", 1000, 0, false), ev("local", "GP1", 1001, 0, false)],
+      TS_RES,
+    );
     expect(groups[0].reconciled).toBe(true);
   });
+  it("group larger than the exhaustive limit is uncorrected with warning", () => {
+    const events = Array.from({ length: 9 }, (_, i) => ev(`dev${i}`, "GP0", 1000, 7, true));
+    const groups = groupEvents(events, TS_RES);
+    expect(groups[0].reconciled).toBe(false);
+    expect(groups[0].warning).toContain("exceeds");
+  });
   it("basic ns values", () => {
-    const groups = groupEvents([
-      ev("devA", "GP0", 100, 5, true),
-      ev("devB", "GP0", 100, 9, true),
-    ]);
+    const groups = groupEvents(
+      [ev("devA", "GP0", 100, 5, true), ev("devB", "GP0", 100, 9, true)],
+      TS_RES,
+    );
     expect(groups[0].approxCount).toBe(100);
     expect(groups[0].reconciledNs).toEqual([100200, 100360]);
+  });
+  it("converts the phase with the resolution argument", () => {
+    const groups = groupEvents(
+      [ev("devA", "GP0", 100, 5, true), ev("devB", "GP0", 100, 9, true)],
+      50,
+    );
+    expect(groups[0].reconciledNs).toEqual([100250, 100450]);
   });
 });
 
 describe("pairStats", () => {
   it("computes per-pair stats", () => {
-    const groups = groupEvents([
-      ev("devA", "GP0", 1000, 10, true),
-      ev("devB", "GP0", 1000, 5, true),
-    ]);
+    const groups = groupEvents(
+      [ev("devA", "GP0", 1000, 10, true), ev("devB", "GP0", 1000, 5, true)],
+      TS_RES,
+    );
     const stats = pairStats(groups);
     expect(stats).toHaveLength(1);
     expect(stats[0].n).toBe(1);

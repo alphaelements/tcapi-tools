@@ -864,7 +864,9 @@ impl Connection {
     /// Attach a push event subscriber on the existing reader thread.
     /// Returns a receiver that yields events as they arrive (including
     /// while commands are in flight). The first subscriber sends
-    /// `subscribe on`; dropping the last one sends `subscribe off`.
+    /// `subscribe on`; once the last receiver is dropped, `subscribe off`
+    /// is sent before the next operation (the drop is noticed when the
+    /// reader next fails to deliver an event, so the switch-off is lazy).
     /// No async runtime dependency.
     pub fn subscribe_events(&mut self) -> Result<mpsc::Receiver<PushEvent>>
 }
@@ -904,12 +906,16 @@ connection.on("input-change", (event) => {
 ### Python
 
 ```python
-import asyncio
-
 class Connection:
-    async def subscribe_events(self) -> asyncio.Queue[PushEvent]:
-        """Start background reader, return queue of push events."""
+    def subscribe_events(self) -> EventSubscription:
+        """Attach a subscriber. The first one sends `subscribe on`."""
         ...
+
+class EventSubscription:
+    def get(self, timeout: float | None = None) -> PushEvent: ...  # queue.Empty on timeout
+    def get_nowait(self) -> PushEvent: ...
+    def close(self) -> None: ...   # the last one to close sends `subscribe off`
+    # context manager: `with conn.subscribe_events() as events: ...`
 
 @dataclass
 class InputChangeEvent:

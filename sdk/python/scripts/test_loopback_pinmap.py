@@ -2,7 +2,7 @@
 """Loopback + PinMap flexibility test.
 
 Verifies that input/output ports can be assigned to arbitrary GPIO pins
-via PinMapV2, using the existing physical loopback wiring:
+via the v2 PinMap, using the existing physical loopback wiring:
 
   Dev1 GP0 (wire) ──┬── Dev1 GP4 (wire)
                      └── Dev2 GP0 (wire)
@@ -26,12 +26,13 @@ from dataclasses import dataclass
 
 import pochi
 from pochi.types import (
+    VALID_DIO_MASK,
     EdgeMode,
     PatternMode,
     PatternState,
     PatternStep,
-    PinMapV2,
-    VALID_DIO_MASK,
+    PinMap,
+    hold_ticks_from_ns,
 )
 
 
@@ -51,24 +52,25 @@ class TestPattern:
     clear_mask: int
 
 
-def make_pinmap(direction_mask: int) -> PinMapV2:
-    out_count = bin(direction_mask & VALID_DIO_MASK).count("1")
-    in_count = 25 - out_count
-    channels: list[str] = []
-    for ch in range(25):
-        gp = ch if ch <= 22 else (26 if ch == 23 else 27)
-        if direction_mask & (1 << gp):
-            channels.append("OUT")
-        else:
-            channels.append("IN")
-    return PinMapV2(
-        version=2,
+def make_pinmap(direction_mask: int) -> PinMap:
+    """v2 map with the given outputs; every other DIO pin is an input with
+    pull-down and edge events (R-M1 compliant)."""
+    inputs = VALID_DIO_MASK & ~direction_mask
+    return PinMap(
         flags=0,
-        direction_mask=direction_mask,
-        out_count=out_count,
-        in_count=in_count,
-        channels=channels,
+        direction=direction_mask,
+        pull_up=0,
+        pull_down=inputs,
+        out_default=0,
+        out_polarity=0,
+        in_polarity=0,
+        edge=inputs,
     )
+
+
+def ms(milliseconds: int) -> int:
+    """Pattern ticks (200 ns) for a hold time in milliseconds."""
+    return hold_ticks_from_ns(milliseconds * 1_000_000)
 
 
 PATTERNS: list[TestPattern] = [
@@ -96,7 +98,7 @@ PATTERNS: list[TestPattern] = [
         dev2_direction_mask=None,
         write_dev=1,
         write_values=0x01,  # GP0=1, GP5=0
-        write_mask=0x21,    # mask GP0+GP5
+        write_mask=0x21,  # mask GP0+GP5
         check_dev=1,
         check_bit=4,  # GP4 should read 1 (wired to GP0)
         expect_high=True,
@@ -319,8 +321,8 @@ def run_pattern_basic_test(
     time.sleep(0.1)
 
     steps = [
-        PatternStep(out_bits=0x01, hold_us=50000),  # GP0=1, 50ms
-        PatternStep(out_bits=0x00, hold_us=50000),  # GP0=0, 50ms
+        PatternStep(out_bits=0x01, hold_ticks=ms(50)),  # GP0=1, 50ms
+        PatternStep(out_bits=0x00, hold_ticks=ms(50)),  # GP0=0, 50ms
     ]
     accepted = dev1.pattern_load(steps)
     if accepted != 2:
@@ -362,8 +364,8 @@ def run_pattern_loop_test(
     time.sleep(0.1)
 
     steps = [
-        PatternStep(out_bits=0x01, hold_us=20000),
-        PatternStep(out_bits=0x00, hold_us=20000),
+        PatternStep(out_bits=0x01, hold_ticks=ms(20)),
+        PatternStep(out_bits=0x00, hold_ticks=ms(20)),
     ]
     dev1.pattern_load(steps)
     dev1.pattern_run(PatternMode.LOOP, 0)
@@ -374,15 +376,15 @@ def run_pattern_loop_test(
         dev1.pattern_stop()
         return False, f"loop mode state={status.state}, expected RUNNING"
 
-    loops1 = status.loops_done
+    loops1 = status.loops
     time.sleep(0.2)
     status2 = dev1.pattern_status()
-    loops2 = status2.loops_done
+    loops2 = status2.loops
 
     dev1.pattern_stop()
 
     if loops2 <= loops1:
-        return False, f"loops_done did not advance: {loops1} -> {loops2}"
+        return False, f"loops did not advance: {loops1} -> {loops2}"
 
     if verbose:
         print(f"  loops advanced: {loops1} -> {loops2}")
@@ -399,8 +401,8 @@ def run_pattern_write_busy_test(
     time.sleep(0.1)
 
     steps = [
-        PatternStep(out_bits=0x01, hold_us=500000),  # 500ms hold
-        PatternStep(out_bits=0x00, hold_us=500000),
+        PatternStep(out_bits=0x01, hold_ticks=ms(500)),  # 500ms hold
+        PatternStep(out_bits=0x00, hold_ticks=ms(500)),
     ]
     dev1.pattern_load(steps)
     dev1.pattern_run(PatternMode.ONCE, 1)
@@ -416,7 +418,7 @@ def run_pattern_write_busy_test(
         if "BUSY" in err_str:
             if verbose:
                 print(f"  write rejected with: {e}")
-            return True, f"write correctly rejected with BUSY during pattern"
+            return True, "write correctly rejected with BUSY during pattern"
         return False, f"unexpected error during pattern write: {e}"
 
 
@@ -430,8 +432,8 @@ def run_pattern_scattered_map_test(
     time.sleep(0.1)
 
     steps = [
-        PatternStep(out_bits=0x01, hold_us=50000),  # GP0=1, GP5=0
-        PatternStep(out_bits=0x00, hold_us=50000),  # both 0
+        PatternStep(out_bits=0x01, hold_ticks=ms(50)),  # GP0=1, GP5=0
+        PatternStep(out_bits=0x00, hold_ticks=ms(50)),  # both 0
     ]
     accepted = dev1.pattern_load(steps)
     if accepted != 2:
@@ -448,7 +450,10 @@ def run_pattern_scattered_map_test(
     if verbose:
         print(f"  GP4 during scattered pattern: {'HIGH' if gp4 else 'LOW'}")
 
-    return True, f"scattered-map pattern ran OK, GP4={'HIGH' if gp4 else 'LOW'} during step 0"
+    return (
+        True,
+        f"scattered-map pattern ran OK, GP4={'HIGH' if gp4 else 'LOW'} during step 0",
+    )
 
 
 def run_pattern_crosswire_test(
@@ -462,8 +467,8 @@ def run_pattern_crosswire_test(
     time.sleep(0.1)
 
     steps = [
-        PatternStep(out_bits=0x01, hold_us=100000),  # 100ms high
-        PatternStep(out_bits=0x00, hold_us=100000),
+        PatternStep(out_bits=0x01, hold_ticks=ms(100)),  # 100ms high
+        PatternStep(out_bits=0x00, hold_ticks=ms(100)),
     ]
     dev1.pattern_load(steps)
     dev1.pattern_run(PatternMode.ONCE, 1)
@@ -479,7 +484,7 @@ def run_pattern_crosswire_test(
         return False, "Dev2 GP0 did not read HIGH during Dev1 pattern step 0"
 
     if verbose:
-        print(f"  Dev2 GP0 during Dev1 pattern: HIGH")
+        print("  Dev2 GP0 during Dev1 pattern: HIGH")
 
     return True, "cross-wire pattern: Dev2 GP0=HIGH during Dev1 output"
 
@@ -509,13 +514,13 @@ def main() -> None:
 
     try:
         # --- Pin Map + Write/Read patterns ---
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("  Loopback PinMap Flexibility Test")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"  Dev1: {dev1_info.port} (devnum={dev1_info.device_number})")
         print(f"  Dev2: {dev2_info.port} (devnum={dev2_info.device_number})")
-        print(f"  Wiring: Dev1 GP0 → Dev1 GP4 + Dev2 GP0")
-        print(f"{'='*60}\n")
+        print("  Wiring: Dev1 GP0 → Dev1 GP4 + Dev2 GP0")
+        print(f"{'=' * 60}\n")
 
         for pat in PATTERNS:
             if verbose:
@@ -525,15 +530,19 @@ def main() -> None:
                 dev1.map_set(make_pinmap(pat.dev1_direction_mask))
                 m1 = dev1.map_get()
                 if verbose:
-                    print(f"  Dev1 map: out={m1.out_count} in={m1.in_count} "
-                          f"dir=0x{m1.direction_mask:08x}")
+                    print(
+                        f"  Dev1 map: out={m1.direction.bit_count()} "
+                        f"dir=0x{m1.direction:08x}"
+                    )
 
                 if pat.dev2_direction_mask is not None:
                     dev2.map_set(make_pinmap(pat.dev2_direction_mask))
                     m2 = dev2.map_get()
                     if verbose:
-                        print(f"  Dev2 map: out={m2.out_count} in={m2.in_count} "
-                              f"dir=0x{m2.direction_mask:08x}")
+                        print(
+                            f"  Dev2 map: out={m2.direction.bit_count()} "
+                            f"dir=0x{m2.direction:08x}"
+                        )
 
                 wd = dev1 if pat.write_dev == 1 else dev2
                 cd = dev1 if pat.check_dev == 1 else dev2
@@ -544,10 +553,12 @@ def main() -> None:
                 bit_val = (state.inputs >> pat.check_bit) & 1
 
                 if verbose:
-                    print(f"  write(0x{pat.write_values:x}, 0x{pat.write_mask:x}) "
-                          f"→ check dev{pat.check_dev} GP{pat.check_bit}: "
-                          f"{'HIGH' if bit_val else 'LOW'} "
-                          f"(expect {'HIGH' if pat.expect_high else 'LOW'})")
+                    print(
+                        f"  write(0x{pat.write_values:x}, 0x{pat.write_mask:x}) "
+                        f"→ check dev{pat.check_dev} GP{pat.check_bit}: "
+                        f"{'HIGH' if bit_val else 'LOW'} "
+                        f"(expect {'HIGH' if pat.expect_high else 'LOW'})"
+                    )
 
                 ok = (bit_val == 1) == pat.expect_high
                 if ok:
@@ -557,8 +568,10 @@ def main() -> None:
                     failed += 1
                     expected = "HIGH" if pat.expect_high else "LOW"
                     actual = "HIGH" if bit_val else "LOW"
-                    msg = (f"  FAIL  {pat.name}: GP{pat.check_bit} "
-                           f"expected {expected}, got {actual}")
+                    msg = (
+                        f"  FAIL  {pat.name}: GP{pat.check_bit} "
+                        f"expected {expected}, got {actual}"
+                    )
                     print(msg)
                     errors.append(msg)
 
@@ -600,9 +613,9 @@ def main() -> None:
         dev1.raw("map default")
 
         # --- Timestamp tests ---
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("  Timestamp Edge Detection Tests")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
         for test_name, test_fn in [
             ("ts_self_loopback", lambda: run_ts_self_test(dev1, verbose)),
@@ -626,15 +639,18 @@ def main() -> None:
                 errors.append(fmsg)
 
         # --- Pattern engine tests ---
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("  Pattern Engine GPIO Output Tests")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
         for test_name, test_fn in [
             ("pat_basic", lambda: run_pattern_basic_test(dev1, verbose)),
             ("pat_loop", lambda: run_pattern_loop_test(dev1, verbose)),
             ("pat_write_busy", lambda: run_pattern_write_busy_test(dev1, verbose)),
-            ("pat_scattered_map", lambda: run_pattern_scattered_map_test(dev1, verbose)),
+            (
+                "pat_scattered_map",
+                lambda: run_pattern_scattered_map_test(dev1, verbose),
+            ),
             ("pat_crosswire", lambda: run_pattern_crosswire_test(dev1, dev2, verbose)),
         ]:
             try:
@@ -665,13 +681,13 @@ def main() -> None:
 
     # --- Summary ---
     total = passed + failed
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Results: {passed}/{total} PASS, {failed}/{total} FAIL")
     if errors:
-        print(f"\n  Failures:")
+        print("\n  Failures:")
         for e in errors:
             print(f"    {e}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     sys.exit(0 if failed == 0 else 1)
 

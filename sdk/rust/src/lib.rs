@@ -25,6 +25,9 @@ pub mod reconcile;
 pub mod transport;
 pub mod types;
 
+#[cfg(test)]
+mod testutil;
+
 pub use connection::Connection;
 pub use discovery::{discover, discover_detailed, enumerate_ports, Discovery, ProbeFailure};
 pub use error::{Result, SdkError};

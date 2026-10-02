@@ -1,5 +1,11 @@
 """Device discovery: USB enumeration, probing, and selection.
-Mirrors ``sdk/rust/src/discovery.rs``."""
+Mirrors ``sdk/rust/src/discovery.rs``.
+
+A port matches when VID is 0x2E8A, PID is 0x000A and, if the operating
+system provides a product string, it starts with ``Pochi``. Each matching
+port is then probed with ``version`` (``proto=2`` required) followed by
+``info``; a device on another protocol version is reported among the
+failures, never listed as usable."""
 
 from __future__ import annotations
 
@@ -8,8 +14,6 @@ from dataclasses import dataclass, field
 from serial.tools import list_ports
 
 from .errors import MultipleDevicesError, NoDeviceError, SdkError
-from .protocol import parse_info
-from .transport import Transport
 from .types import DeviceInfo
 
 _POCHI_VID = 0x2E8A
@@ -35,20 +39,17 @@ class Discovery:
 
 
 def matches_pochi(vid: int | None, pid: int | None, product: str | None) -> bool:
-    """True if the USB descriptor identifies a Pochi-DIO. The legacy
-    "Tachyon" product string is accepted: devices in the field may still
-    run pre-rename firmware."""
+    """True if the USB descriptor identifies a Pochi-DIO: VID/PID match
+    and, when the OS provides a product string, it starts with ``Pochi``.
+    No other product name is accepted."""
     if vid != _POCHI_VID or pid != _POCHI_PID:
         return False
-    if product is None:
-        return False
-    return product.startswith(("Pochi", "Tachyon"))
+    return product is None or product.startswith("Pochi")
 
 
 def enumerate_ports() -> list[str]:
     """List serial port paths whose USB descriptors match a Pochi-DIO
-    (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy "Tachyon*").
-    No ports are opened. Results are sorted by port path: the OS
+    (VID 0x2E8A / PID 0x000A / product "Pochi*"). No ports are opened. Results are sorted by port path: the OS
     enumeration order is unspecified, and callers rely on a deterministic
     device order."""
     return sorted(
@@ -59,21 +60,14 @@ def enumerate_ports() -> list[str]:
 
 
 def probe(port_path: str) -> DeviceInfo:
-    """Probe one port: open it and query ``info`` (best-effort ``version``)."""
-    with Transport.open(port_path) as transport:
-        uid, device_number = parse_info(transport.command("info"))
+    """Probe one port: open it (asserting DTR, requiring ``proto=2`` from
+    ``version``) and query ``info``."""
+    # Imported here: connection.py imports this module for the open_by_*
+    # helpers.
+    from .connection import Connection
 
-        # Version is informational; an old or odd firmware should not make
-        # the device invisible to discovery.
-        version: str | None
-        try:
-            version = transport.command("version").split()[0]
-        except (SdkError, IndexError):
-            version = None
-
-        return DeviceInfo(
-            uid=uid, device_number=device_number, port=port_path, version=version
-        )
+    with Connection.open(port_path) as conn:
+        return conn.info()
 
 
 def discover_detailed() -> Discovery:

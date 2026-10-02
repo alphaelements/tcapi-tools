@@ -1,7 +1,9 @@
 //! Push event and traffic-log forwarding: SDK channels → Tauri events.
 
-use std::sync::mpsc::Receiver;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
+use std::time::Duration;
 
 use pochi_sdk::{PushEvent, TrafficDirection, TrafficHook};
 use serde::Serialize;
@@ -52,15 +54,31 @@ pub fn route(event: &PushEvent) -> (&'static str, Value) {
     }
 }
 
+/// How often the forwarder checks its stop flag while no event arrives.
+const FORWARDER_POLL: Duration = Duration::from_millis(100);
+
 /// Forward push events to the webview until the connection (and with it the
-/// sending side of the channel) is dropped.
-pub fn spawn_forwarder(app: AppHandle, rx: Receiver<PushEvent>) {
-    std::thread::spawn(move || {
-        while let Ok(event) = rx.recv() {
-            let (name, payload) = route(&event);
-            let _ = app.emit(name, payload);
+/// sending side of the channel) is dropped or the returned flag is set.
+/// Ending the forwarder drops `rx`, which tells the SDK this subscriber is
+/// gone.
+pub fn spawn_forwarder(app: AppHandle, rx: Receiver<PushEvent>) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    std::thread::spawn({
+        let stop = Arc::clone(&stop);
+        move || {
+            while !stop.load(Ordering::Relaxed) {
+                match rx.recv_timeout(FORWARDER_POLL) {
+                    Ok(event) => {
+                        let (name, payload) = route(&event);
+                        let _ = app.emit(name, payload);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
         }
     });
+    stop
 }
 
 #[cfg(test)]

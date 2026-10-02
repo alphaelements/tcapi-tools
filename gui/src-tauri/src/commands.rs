@@ -53,12 +53,11 @@ pub async fn connect(
         // Release any previous connection first: the port is opened
         // exclusively, so a stale handle (e.g. after a webview reload)
         // would make reopening fail with EBUSY.
+        inner.stop_events();
         inner.connection = None;
         inner.device_info = None;
         let mut conn = Connection::open(&port).map_err(err)?;
-        conn.set_traffic_hook(Some(events::traffic_hook(app.clone())));
-        let rx = conn.subscribe_events();
-        events::spawn_forwarder(app, rx);
+        conn.set_traffic_hook(Some(events::traffic_hook(app)));
         let info = conn.info().map_err(err)?;
         inner.connection = Some(conn);
         inner.device_info = Some(info.clone());
@@ -71,7 +70,8 @@ pub async fn connect(
 pub async fn disconnect(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| {
-        // Dropping the connection closes the port and stops the forwarder.
+        // Dropping the connection closes the port; stop the forwarder too.
+        inner.stop_events();
         inner.connection = None;
         inner.device_info = None;
         Ok(())
@@ -135,11 +135,26 @@ pub async fn read_state(state: State<'_, SharedState>) -> Result<IoState, String
     with_state(shared, |inner| inner.conn()?.state().map_err(err)).await
 }
 
+/// Start or stop forwarding push events to the webview. The SDK owns the
+/// device `subscribe` state: it follows the forwarder's receiver.
 #[tauri::command]
-pub async fn subscribe(state: State<'_, SharedState>, enable: bool) -> Result<(), String> {
+pub async fn subscribe(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    enable: bool,
+) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        inner.conn()?.subscribe(enable).map_err(err)
+        if !enable {
+            inner.stop_events();
+            return Ok(());
+        }
+        if inner.event_stop.is_some() {
+            return Ok(());
+        }
+        let rx = inner.conn()?.subscribe_events().map_err(err)?;
+        inner.event_stop = Some(events::spawn_forwarder(app, rx));
+        Ok(())
     })
     .await
 }
@@ -427,7 +442,11 @@ pub async fn sync_disarm(state: State<'_, SharedState>) -> Result<(), String> {
 #[tauri::command]
 pub async fn raw_command(state: State<'_, SharedState>, text: String) -> Result<String, String> {
     let shared = state.inner().clone();
-    with_state(shared, move |inner| inner.conn()?.raw(&text).map_err(err)).await
+    with_state(shared, move |inner| {
+        let lines = inner.conn()?.raw(&text).map_err(err)?;
+        Ok(lines.join("\n"))
+    })
+    .await
 }
 
 /// Write export payloads (CSV/JSON built by the frontend) to a path chosen

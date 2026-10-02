@@ -2,13 +2,13 @@ namespace Pochi.Sdk;
 
 /// <summary>
 /// Error category carried by <see cref="SdkException"/>. Mirrors
-/// <c>sdk/rust/src/error.rs</c>; every device error code and SDK-level
-/// condition has a distinct value (docs/sdk-api-design.md §4).
+/// <c>sdk/rust/src/error.rs</c>; every error name the device can answer and
+/// every SDK-level condition has a distinct value (docs/sdk-api-design.md
+/// section 4).
 /// </summary>
 public enum ErrorCode
 {
     // Device errors (from ERR responses)
-    BadCommand,
     BadParam,
     BadMap,
     Busy,
@@ -16,15 +16,27 @@ public enum ErrorCode
     TooLong,
     NotArmed,
     SyncState,
-    SyncTimeout,
     NoResource,
     NotRunning,
+    UnknownCmd,
+    LineTooLong,
+
+    /// <summary>Binary transport only; a text device never answers it.</summary>
+    BadCommand,
+
+    /// <summary>HID transport only; a text device never answers it.</summary>
+    TransportNotSupported,
+
+    /// <summary>Any other <c>ERR &lt;NAME&gt;</c>; the raw name is in the message.</summary>
     UnknownDevice,
 
     // SDK errors
     Connection,
     Io,
     Parse,
+
+    /// <summary>Rejected by host-side validation; nothing was sent.</summary>
+    InvalidArgument,
     Timeout,
     NoDevice,
     MultipleDevices,
@@ -50,26 +62,35 @@ public class SdkException : Exception
         Code = code;
     }
 
-    /// <summary>Map an <c>ERR &lt;code&gt;</c> response to a typed error.</summary>
-    public static SdkException FromDeviceError(string code) => code switch
+    /// <summary>Map an <c>ERR &lt;NAME&gt;</c> response to a typed error. A
+    /// name the SDK does not know is <see cref="ErrorCode.UnknownDevice"/> with
+    /// the raw name preserved; it is never mapped to a default.</summary>
+    public static SdkException FromDeviceError(string name) => name switch
     {
-        "BAD_CMD" => new(ErrorCode.BadCommand, "device error: BAD_CMD (unknown command)"),
-        "UNKNOWN_CMD" => new(ErrorCode.BadCommand, "device error: UNKNOWN_CMD (unknown text command)"),
         "BAD_PARAM" => new(ErrorCode.BadParam, "device error: BAD_PARAM (invalid parameter)"),
         "BAD_MAP" => new(ErrorCode.BadMap, "device error: BAD_MAP (map validation failed)"),
         "BUSY" => new(ErrorCode.Busy, "device error: BUSY (device is busy)"),
-        "FLASH" => new(ErrorCode.Flash, "device error: FLASH (flash write/read failed)"),
+        "FLASH" => new(ErrorCode.Flash, "device error: FLASH (flash write failed)"),
         "TOO_LONG" => new(ErrorCode.TooLong, "device error: TOO_LONG (payload too long)"),
-        "LINE_TOO_LONG" => new(ErrorCode.TooLong, "device error: LINE_TOO_LONG (command line exceeds 128 bytes)"),
         "NOT_ARMED" => new(ErrorCode.NotArmed, "device error: NOT_ARMED (timestamp not armed)"),
-        "SYNC_STATE" => new(ErrorCode.SyncState, "device error: SYNC_STATE (invalid sync state transition)"),
-        "SYNC_TIMEOUT" => new(ErrorCode.SyncTimeout, "device error: SYNC_TIMEOUT (sync pulse not detected)"),
-        "NO_RESOURCE" => new(ErrorCode.NoResource, "device error: NO_RESOURCE (required resource not configured)"),
-        "NOT_RUNNING" => new(ErrorCode.NotRunning, "device error: NOT_RUNNING (pattern not running)"),
-        _ => new(ErrorCode.UnknownDevice, $"device error: {code}"),
+        "SYNC_STATE" => new(
+            ErrorCode.SyncState, "device error: SYNC_STATE (invalid sync state transition)"),
+        "NO_RESOURCE" => new(
+            ErrorCode.NoResource, "device error: NO_RESOURCE (required pins not configured)"),
+        "NOT_RUNNING" => new(
+            ErrorCode.NotRunning, "device error: NOT_RUNNING (pattern not running)"),
+        "UNKNOWN_CMD" => new(ErrorCode.UnknownCmd, "device error: UNKNOWN_CMD (unknown command)"),
+        "LINE_TOO_LONG" => new(
+            ErrorCode.LineTooLong, "device error: LINE_TOO_LONG (line exceeds 256 bytes)"),
+        "BAD_CMD" => new(ErrorCode.BadCommand, "device error: BAD_CMD (unknown command id)"),
+        "TRANSPORT_NOT_SUPPORTED" => new(
+            ErrorCode.TransportNotSupported,
+            "device error: TRANSPORT_NOT_SUPPORTED (command not available on this transport)"),
+        _ => new(ErrorCode.UnknownDevice, $"device error: {name}"),
     };
 
-    /// <summary>Pre-Phase 9.6 firmware detected — never parsed silently.</summary>
+    /// <summary>The device reported a protocol other than the one this SDK
+    /// speaks; never parsed leniently.</summary>
     public static SdkException UnsupportedFirmware(string detail) =>
-        new(ErrorCode.UnsupportedFirmware, $"unsupported firmware: {detail} (requires FW Phase 9.6+)");
+        new(ErrorCode.UnsupportedFirmware, $"unsupported protocol: {detail}");
 }

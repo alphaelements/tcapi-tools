@@ -209,9 +209,8 @@ fn hw_full_smoke() {
     let _ = conn.read().expect("read after ts get");
 
     // --- subscribe on/off + event channel plumbed ---
-    let _events = conn.subscribe_events();
-    conn.subscribe(true).expect("subscribe on");
-    conn.subscribe(false).expect("subscribe off");
+    let events = conn.subscribe_events().expect("subscribe on");
+    drop(events);
 
     // --- sync (single device): arm/disarm cycle + count is single-line ---
     conn.sync_master().expect("sync master");
@@ -226,7 +225,10 @@ fn hw_full_smoke() {
 
     // --- raw escape hatch ---
     let raw = conn.raw("version").expect("raw");
-    assert!(raw.starts_with("OK "), "raw response: {raw}");
+    assert!(
+        raw.len() == 1 && raw[0].starts_with("OK "),
+        "raw response: {raw:?}"
+    );
 
     // --- restore original map and persist ---
     conn.map_set(&original_map).expect("map restore");
@@ -260,11 +262,10 @@ fn hw_full_smoke() {
 fn run_loopback_edge_capture(conn: &mut Connection) {
     // Clean slate: clear outputs and let inputs settle before arming,
     // so residual state from prior tests does not contaminate the ring.
-    // Also force-stop a possibly running pattern and turn off subscribe,
-    // in case a previous test run was aborted mid-flight and the device
-    // is still in `state=running step=0 loops=0` or pushing events.
+    // Also force-stop a possibly running pattern, in case a previous test
+    // run was aborted mid-flight and the device is still in
+    // `state=running step=0 loops=0`.
     let ts_res_ns = conn.caps().expect("caps").ts_res_ns;
-    let _ = conn.subscribe(false);
     let _ = conn.pattern_stop();
     let _ = conn.ts_disarm();
     conn.write(0, 0xF).expect("write clear before arm");
@@ -361,11 +362,9 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
     conn.ts_disarm().expect("ts disarm loopback");
 
     // --- Pass 2: subscribe on → run → assert ≥1 InputChange push ---
-    let events_rx = conn.subscribe_events();
-    while events_rx.try_recv().is_ok() {} // drain leftover pushes
     conn.write(0, 0xF).expect("write clear before subscribe");
     std::thread::sleep(std::time::Duration::from_millis(20));
-    conn.subscribe(true).expect("subscribe on");
+    let events_rx = conn.subscribe_events().expect("subscribe on");
     conn.pattern_run(PatternMode::Once, 1)
         .expect("pattern run for subscribe");
     wait_pattern_idle(conn, "subscribe loopback");
@@ -387,7 +386,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
             Err(_) => break,
         }
     }
-    conn.subscribe(false).expect("subscribe off");
+    drop(events_rx);
     println!("loopback subscribe: input pushes={input_pushes}, pattern_done={pattern_done_seen}");
     assert!(
         input_pushes >= 1,
@@ -523,7 +522,6 @@ fn hw_full_smoke_loop_8_times() {
         println!("--- hw_full_smoke iteration {} ---", i + 1);
         let device = pick_device();
         let mut conn = Connection::open(&device.port).expect("connect");
-        let _ = conn.subscribe(false);
         let _ = conn.pattern_reset();
 
         let steps = [PatternStep {

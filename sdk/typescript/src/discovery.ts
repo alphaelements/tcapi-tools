@@ -1,11 +1,12 @@
 /**
  * Device discovery: USB enumeration, probing, and selection.
- * Mirrors `sdk/rust/src/discovery.rs`.
+ * Mirrors `sdk/rust/src/discovery.rs`. A port is probed with DTR asserted and
+ * `version`; a device that does not report `proto=2` is not usable.
  */
 
 import { SerialPort } from "serialport";
 import { ErrorCode, SdkError } from "./errors.js";
-import { parseInfo } from "./protocol.js";
+import { assertSupportedProtocol, parseInfo, parseVersion } from "./protocol.js";
 import { Transport } from "./transport.js";
 import type { DeviceInfo } from "./types.js";
 
@@ -37,19 +38,18 @@ export interface UsbPortInfo {
 /**
  * True if the USB descriptor identifies a Pochi-DIO. node-serialport
  * exposes no product string on Linux, so the product check uses pnpId
- * (e.g. `usb-Raspberry_Pi_Pochi-DIO_<uid>-if00`). The legacy "Tachyon"
- * name is accepted: devices in the field may run pre-rename firmware.
+ * (e.g. `usb-Raspberry_Pi_Pochi-DIO_<uid>-if00`).
  */
 export function matchesPochi(info: UsbPortInfo): boolean {
   if (info.vendorId?.toLowerCase() !== POCHI_VID) return false;
   if (info.productId?.toLowerCase() !== POCHI_PID) return false;
   const pnp = info.pnpId ?? "";
-  return pnp.includes("Pochi") || pnp.includes("Tachyon");
+  return pnp.includes("Pochi");
 }
 
 /**
  * List serial port paths whose USB descriptors match a Pochi-DIO
- * (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy "Tachyon*").
+ * (VID 0x2E8A / PID 0x000A / product "Pochi*").
  * No ports are opened. Results are sorted by port path: the OS
  * enumeration order is unspecified, and callers rely on a deterministic
  * device order.
@@ -62,27 +62,35 @@ export async function enumeratePorts(): Promise<string[]> {
     .sort();
 }
 
-/** Probe one port: open it and query `info` (and best-effort `version`). */
+/** Probe one port: open it (DTR asserted), require `proto=2`, then query `info`. */
 export async function probe(portPath: string): Promise<DeviceInfo> {
   const transport = await Transport.open(portPath);
   try {
-    const data = await transport.command("info");
-    const { uid, deviceNumber } = parseInfo(data);
-
-    // Version is informational; an old or odd firmware should not make
-    // the device invisible to discovery.
-    let version: string | null = null;
-    try {
-      const versionData = await transport.command("version");
-      version = versionData.split(/\s+/)[0] ?? null;
-    } catch {
-      version = null;
-    }
-
-    return { uid, deviceNumber, port: portPath, version };
+    return await probeTransport(transport, portPath);
   } finally {
     await transport.close();
   }
+}
+
+/**
+ * Probe over an already-open transport: `version` must report `proto=2`
+ * (UnsupportedFirmware otherwise, `info` is not sent), then `info` supplies the
+ * UID and device number. A device on another protocol version is a failure of
+ * the scan, not a usable device.
+ */
+export async function probeTransport(
+  transport: Transport,
+  portPath: string,
+): Promise<DeviceInfo> {
+  const version = parseVersion(await transport.command("version"));
+  assertSupportedProtocol(version);
+  const { uid, deviceNumber } = parseInfo(await transport.command("info"));
+  return {
+    uid,
+    deviceNumber,
+    port: portPath,
+    version: `${version.major}.${version.minor}.${version.patch}`,
+  };
 }
 
 /**

@@ -9,24 +9,45 @@ use crate::protocol;
 use crate::transport::{TrafficHook, Transport};
 use crate::types::{
     Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus, PatternStep, PinMap,
-    PushEvent, TimestampResult, TsStatus, VersionInfo,
+    PushEvent, TimestampResult, TsStatus, VersionInfo, PROTO_VERSION,
 };
 
 /// An open connection to a Pochi-DIO device.
 ///
-/// The connection closes when dropped; [`Connection::close`] exists for
-/// explicit, eager shutdown.
+/// Opening asserts DTR and checks `version`: a device that does not report
+/// `proto=2` is refused with [`SdkError::UnsupportedFirmware`]. The
+/// connection closes when dropped; [`Connection::close`] exists for explicit,
+/// eager shutdown.
 pub struct Connection {
     transport: Transport,
     port_path: String,
+    firmware: String,
 }
 
 impl Connection {
     /// Open a connection to the device at the given serial port path.
     pub fn open(port: &str) -> Result<Self> {
+        Self::establish(Transport::open(port)?, port.to_string())
+    }
+
+    /// Verify the protocol version of a freshly opened transport.
+    fn establish(mut transport: Transport, port_path: String) -> Result<Self> {
+        let data = transport.command("version")?;
+        // A pre-v2 device answers `version` in a different shape; say so
+        // instead of reporting a bare parse error.
+        let version = protocol::parse_version(&data).map_err(|_| {
+            SdkError::UnsupportedFirmware(format!("unrecognised version response: {data}"))
+        })?;
+        if version.protocol_version != PROTO_VERSION {
+            return Err(SdkError::UnsupportedFirmware(format!(
+                "proto={} (this SDK speaks proto={PROTO_VERSION})",
+                version.protocol_version
+            )));
+        }
         Ok(Self {
-            transport: Transport::open(port)?,
-            port_path: port.to_string(),
+            transport,
+            port_path,
+            firmware: format!("{}.{}.{}", version.major, version.minor, version.patch),
         })
     }
 
@@ -53,12 +74,11 @@ impl Connection {
         Self::open(&device.port)
     }
 
-    /// Wrap an already-open serial port (PTY tests, custom transports).
+    /// Wrap an already-open serial port (PTY tests, custom transports). The
+    /// caller asserts DTR on real hardware; `version` is checked as in
+    /// [`Connection::open`].
     pub fn from_port(port: Box<dyn serialport::SerialPort>) -> Result<Self> {
-        Ok(Self {
-            transport: Transport::from_port(port)?,
-            port_path: String::new(),
-        })
+        Self::establish(Transport::from_port(port)?, String::new())
     }
 
     /// Set the command response timeout (default 2 s).
@@ -81,6 +101,19 @@ impl Connection {
         protocol::parse_version(&data)
     }
 
+    /// `ping <value>` — echo test; returns the echoed value, failing with
+    /// `Parse` when the device answers a different one.
+    pub fn ping(&mut self, value: u32) -> Result<u32> {
+        let data = self.transport.command(&format!("ping {value}"))?;
+        let echoed = protocol::parse_pong(&data)?;
+        if echoed != value {
+            return Err(SdkError::Parse(format!(
+                "ping {value} was answered with pong={echoed}"
+            )));
+        }
+        Ok(echoed)
+    }
+
     /// `caps` — device capabilities. Pre-v2 firmware fails to parse.
     pub fn caps(&mut self) -> Result<Capabilities> {
         let data = self.transport.command("caps")?;
@@ -95,7 +128,7 @@ impl Connection {
             uid,
             device_number,
             port: self.port_path.clone(),
-            version: None,
+            version: Some(self.firmware.clone()),
         })
     }
 
@@ -283,17 +316,15 @@ impl Connection {
 
     // --- events ---
 
-    /// `subscribe on|off` — toggle input change push notifications.
-    pub fn subscribe(&mut self, enable: bool) -> Result<()> {
-        let arg = if enable { "on" } else { "off" };
-        self.transport.command(&format!("subscribe {arg}"))?;
-        Ok(())
-    }
-
-    /// Install a push event subscriber. Events (`! INPUT` etc.) arrive on
+    /// Attach a push event subscriber. Events (`! INPUT` etc.) arrive on
     /// the returned channel as they are received, including while other
-    /// commands are in flight. A second call replaces the first subscriber.
-    pub fn subscribe_events(&mut self) -> Receiver<PushEvent> {
+    /// commands are in flight.
+    ///
+    /// The SDK owns the device `subscribe` state: it is switched on when the
+    /// first subscriber attaches and off once the last receiver has been
+    /// dropped (noticed lazily, before the next command). Every subscriber
+    /// gets every event.
+    pub fn subscribe_events(&mut self) -> Result<Receiver<PushEvent>> {
         self.transport.subscribe_events()
     }
 
@@ -325,7 +356,7 @@ impl Connection {
 
     /// `sync count` — current sync clock count.
     ///
-    /// Single-line response (`OK count=N`, no data lines follow) — uses the
+    /// Single-line response (`OK clocks=N`, no data lines follow) — uses the
     /// plain read path, never the counted one.
     pub fn sync_count(&mut self) -> Result<u64> {
         let data = self.transport.command("sync count")?;
@@ -340,13 +371,125 @@ impl Connection {
 
     // --- escape hatch ---
 
-    /// Send an arbitrary command, returning the raw response line.
-    pub fn raw(&mut self, command: &str) -> Result<String> {
+    /// Send an arbitrary command, returning **every** line of the response
+    /// unparsed (for a counted response: the header and all N lines). A
+    /// device `ERR` is returned as a line, not as an error. `subscribe`, a
+    /// line over 256 bytes and a line containing CR/LF are rejected locally
+    /// with `InvalidArgument`.
+    pub fn raw(&mut self, command: &str) -> Result<Vec<String>> {
         self.transport.raw(command)
     }
 
     /// Close the connection eagerly (equivalent to dropping it).
     pub fn close(self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{pong_for, FakeDevice};
+    use assert_matches::assert_matches;
+
+    fn connect(
+        version_reply: &'static str,
+        extra: impl Fn(&str) -> Option<Vec<String>> + Send + 'static,
+    ) -> (Result<Connection>, FakeDevice) {
+        let (reader, writer, device) = FakeDevice::spawn(move |cmd| {
+            if cmd == "version" {
+                return vec![version_reply.to_string()];
+            }
+            if let Some(pong) = pong_for(cmd) {
+                return pong;
+            }
+            extra(cmd).unwrap_or_else(|| vec!["ERR UNKNOWN_CMD".to_string()])
+        });
+        let mut transport = Transport::from_io(Box::new(reader), Box::new(writer));
+        transport.set_timeout(Duration::from_millis(200));
+        (Connection::establish(transport, "fake".into()), device)
+    }
+
+    #[test]
+    fn open_checks_version_and_accepts_proto_2() {
+        let (conn, dev) = connect("OK fw=0.1.3 proto=2", |_| None);
+        assert!(conn.is_ok());
+        assert_eq!(dev.commands(), ["version"]);
+    }
+
+    #[test]
+    fn info_reports_port_and_firmware_from_the_open_handshake() {
+        let (conn, _dev) = connect("OK fw=0.1.3 proto=2", |cmd| {
+            (cmd == "info").then(|| vec!["OK uid=0123456789ABCDEF devnum=7".to_string()])
+        });
+        let info = conn.unwrap().info().unwrap();
+        assert_eq!(info.uid, "0123456789ABCDEF");
+        assert_eq!(info.device_number, Some(7));
+        assert_eq!(info.port, "fake");
+        assert_eq!(info.version.as_deref(), Some("0.1.3"));
+    }
+
+    #[test]
+    fn open_rejects_other_protocol_versions() {
+        for reply in ["OK fw=0.1.3 proto=1", "OK fw=0.1.3 proto=3"] {
+            let (conn, _dev) = connect(reply, |_| None);
+            assert_matches!(conn.err(), Some(SdkError::UnsupportedFirmware(m)) if m.contains("proto="));
+        }
+    }
+
+    #[test]
+    fn open_rejects_pre_v2_version_reply_as_unsupported_firmware() {
+        let (conn, _dev) = connect("OK v0.1.0 proto=1", |_| None);
+        assert_matches!(conn.err(), Some(SdkError::UnsupportedFirmware(_)));
+    }
+
+    #[test]
+    fn open_fails_when_the_device_does_not_answer() {
+        let (reader, writer, _dev) = FakeDevice::spawn(|_| vec![]);
+        let mut transport = Transport::from_io(Box::new(reader), Box::new(writer));
+        transport.set_timeout(Duration::from_millis(100));
+        assert_matches!(
+            Connection::establish(transport, String::new()).err(),
+            Some(SdkError::Timeout)
+        );
+    }
+
+    #[test]
+    fn ping_returns_the_echoed_value() {
+        let (conn, _dev) = connect("OK fw=0.1.3 proto=2", |_| None);
+        assert_eq!(conn.unwrap().ping(0xFFFF_FFFF).unwrap(), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn ping_fails_with_parse_on_a_different_value() {
+        let (reader, writer, _dev) = FakeDevice::spawn(|cmd| match cmd {
+            "version" => vec!["OK fw=0.1.3 proto=2".to_string()],
+            _ => vec!["OK pong=1".to_string()],
+        });
+        let transport = Transport::from_io(Box::new(reader), Box::new(writer));
+        let mut conn = Connection::establish(transport, String::new()).unwrap();
+        assert_matches!(conn.ping(2), Err(SdkError::Parse(_)));
+    }
+
+    #[test]
+    fn subscribe_events_switches_the_device_on_once() {
+        let (conn, dev) = connect("OK fw=0.1.3 proto=2", |cmd| {
+            (cmd == "subscribe on").then(|| vec!["OK".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        let _a = conn.subscribe_events().unwrap();
+        let _b = conn.subscribe_events().unwrap();
+        assert_eq!(dev.commands(), ["version", "subscribe on"]);
+    }
+
+    #[test]
+    fn raw_refuses_subscribe_and_returns_all_lines() {
+        let (conn, dev) = connect("OK fw=0.1.3 proto=2", |cmd| {
+            (cmd == "help").then(|| vec!["OK count=1".to_string(), "  help  Help".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        assert_matches!(conn.raw("subscribe on"), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(conn.raw("help").unwrap(), ["OK count=1", "  help  Help"]);
+        assert_eq!(dev.commands(), ["version", "help"]);
     }
 }

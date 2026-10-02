@@ -63,7 +63,7 @@ pub enum SdkError {
     #[error("device disconnected")]
     Disconnected,
 
-    #[error("unsupported firmware: {0} (requires FW Phase 9.6+)")]
+    #[error("unsupported firmware: {0}")]
     UnsupportedFirmware(String),
 }
 
