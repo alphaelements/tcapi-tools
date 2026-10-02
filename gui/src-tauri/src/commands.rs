@@ -1,10 +1,12 @@
 //! Tauri command surface (`docs/gui-feature-spec.md` §9): thin typed
 //! wrappers over `pochi-sdk` calls against the shared connection.
 
+use std::path::Path;
+
 use pochi_sdk::reconcile::{self, SourceEvent};
 use pochi_sdk::{
-    toml_config, Capabilities, Connection, DeviceInfo, EdgeMode, IoState, PatternMode,
-    PatternStatus, PatternStep, PinMap, PullMode, TimestampResult, VersionInfo,
+    config, Capabilities, Connection, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus,
+    PatternStep, PinMap, TimestampResult, VersionInfo, TS_GET_MAX,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -53,12 +55,11 @@ pub async fn connect(
         // Release any previous connection first: the port is opened
         // exclusively, so a stale handle (e.g. after a webview reload)
         // would make reopening fail with EBUSY.
+        inner.stop_events();
         inner.connection = None;
         inner.device_info = None;
         let mut conn = Connection::open(&port).map_err(err)?;
-        conn.set_traffic_hook(Some(events::traffic_hook(app.clone())));
-        let rx = conn.subscribe_events();
-        events::spawn_forwarder(app, rx);
+        conn.set_traffic_hook(Some(events::traffic_hook(app)));
         let info = conn.info().map_err(err)?;
         inner.connection = Some(conn);
         inner.device_info = Some(info.clone());
@@ -71,7 +72,8 @@ pub async fn connect(
 pub async fn disconnect(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| {
-        // Dropping the connection closes the port and stops the forwarder.
+        // Dropping the connection closes the port; stop the forwarder too.
+        inner.stop_events();
         inner.connection = None;
         inner.device_info = None;
         Ok(())
@@ -135,11 +137,26 @@ pub async fn read_state(state: State<'_, SharedState>) -> Result<IoState, String
     with_state(shared, |inner| inner.conn()?.state().map_err(err)).await
 }
 
+/// Start or stop forwarding push events to the webview. The SDK owns the
+/// device `subscribe` state: it follows the forwarder's receiver.
 #[tauri::command]
-pub async fn subscribe(state: State<'_, SharedState>, enable: bool) -> Result<(), String> {
+pub async fn subscribe(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    enable: bool,
+) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        inner.conn()?.subscribe(enable).map_err(err)
+        if !enable {
+            inner.stop_events();
+            return Ok(());
+        }
+        if inner.event_stop.is_some() {
+            return Ok(());
+        }
+        let rx = inner.conn()?.subscribe_events().map_err(err)?;
+        inner.event_stop = Some(events::spawn_forwarder(app, rx));
+        Ok(())
     })
     .await
 }
@@ -162,15 +179,6 @@ pub async fn map_set(state: State<'_, SharedState>, map: PinMap) -> Result<(), S
 }
 
 #[tauri::command]
-pub async fn map_set_hex(state: State<'_, SharedState>, hex: String) -> Result<(), String> {
-    let shared = state.inner().clone();
-    with_state(shared, move |inner| {
-        inner.conn()?.map_set_hex(&hex).map_err(err)
-    })
-    .await
-}
-
-#[tauri::command]
 pub async fn map_save(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| inner.conn()?.map_save().map_err(err)).await
@@ -182,56 +190,25 @@ pub async fn map_default(state: State<'_, SharedState>) -> Result<(), String> {
     with_state(shared, |inner| inner.conn()?.map_default().map_err(err)).await
 }
 
-/// Parse a map TOML file into a [`PinMap`] without touching the device;
-/// the frontend reviews it and applies via `map_set`. Extended fields
-/// (out_default, polarities) are not represented in `PinMap`.
-#[tauri::command]
-pub async fn map_load_toml(path: String) -> Result<PinMap, String> {
-    let toml_str = std::fs::read_to_string(&path).map_err(err)?;
-    let hex = toml_config::map_toml_to_hex(&toml_str).map_err(err)?;
-    pin_map_from_hex(&hex)
+/// Evaluate a `map.toml` (schema v2, `docs/config-files.md`) into a
+/// [`PinMap`] without touching the device; the frontend reviews it and
+/// applies it via `map_set`. Errors read `<path>:<line>: <message>`.
+fn load_map_file(path: &str) -> Result<PinMap, String> {
+    config::load_map(Path::new(path)).map_err(err)
 }
 
-/// Decode the 48-char `map set` hex blob (bytes: version, out_base,
-/// out_count, in_base, in_count, pull, flags, ...) back into a [`PinMap`].
-fn pin_map_from_hex(hex: &str) -> Result<PinMap, String> {
-    if hex.len() < 14 || !hex.is_char_boundary(14) {
-        return Err(format!("map hex too short: {} chars", hex.len()));
-    }
-    let mut bytes = [0u8; 7];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-            .map_err(|e| format!("invalid map hex at byte {i}: {e}"))?;
-    }
-    let pull = match bytes[5] {
-        0 => PullMode::None,
-        1 => PullMode::Up,
-        2 => PullMode::Down,
-        other => return Err(format!("invalid pull code: {other}")),
-    };
-    Ok(PinMap {
-        version: bytes[0],
-        out_base: bytes[1],
-        out_count: bytes[2],
-        in_base: bytes[3],
-        in_count: bytes[4],
-        pull,
-        flags: bytes[6],
-    })
+#[tauri::command]
+pub async fn map_load_toml(path: String) -> Result<PinMap, String> {
+    tauri::async_runtime::spawn_blocking(move || load_map_file(&path))
+        .await
+        .map_err(|e| format!("blocking task failed: {e}"))?
 }
 
 // --- pattern ---
 
-#[tauri::command]
-pub async fn pattern_load(
-    state: State<'_, SharedState>,
-    steps: Vec<PatternStep>,
-) -> Result<u16, String> {
-    let shared = state.inner().clone();
-    with_state(shared, move |inner| {
-        inner.conn()?.pattern_load(&steps).map_err(err)
-    })
-    .await
+/// Parse a `pattern.toml` into steps with holds already in pattern ticks.
+fn load_pattern_file(path: &str) -> Result<Vec<PatternStep>, String> {
+    config::load_pattern(Path::new(path)).map_err(err)
 }
 
 /// Steps parsed from a pattern TOML file plus the device's accepted count,
@@ -249,10 +226,21 @@ pub async fn pattern_load_toml(
 ) -> Result<PatternTomlPayload, String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        let toml_str = std::fs::read_to_string(&path).map_err(err)?;
-        let steps = toml_config::pattern_toml_to_steps(&toml_str).map_err(err)?;
+        let steps = load_pattern_file(&path)?;
         let accepted = inner.conn()?.pattern_load(&steps).map_err(err)?;
         Ok(PatternTomlPayload { steps, accepted })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn pattern_load(
+    state: State<'_, SharedState>,
+    steps: Vec<PatternStep>,
+) -> Result<u16, String> {
+    let shared = state.inner().clone();
+    with_state(shared, move |inner| {
+        inner.conn()?.pattern_load(&steps).map_err(err)
     })
     .await
 }
@@ -361,7 +349,7 @@ pub struct TsResultPayload {
     pub overflow: bool,
 }
 
-fn as_is_rows(result: &TimestampResult) -> Vec<TsRow> {
+fn as_is_rows(result: &TimestampResult, ts_res_ns: u32) -> Vec<TsRow> {
     result
         .events
         .iter()
@@ -370,10 +358,50 @@ fn as_is_rows(result: &TimestampResult) -> Vec<TsRow> {
             raw_count: e.raw_count,
             raw_phase: e.raw_phase,
             sync_active: e.sync_active,
-            timestamp_ns: e.timestamp_ns,
+            timestamp_ns: e.ns(ts_res_ns),
             reconciled: false,
         })
         .collect()
+}
+
+/// Collect up to `max_events` events through `fetch` (one `ts get` per
+/// call). The protocol caps a single response at [`TS_GET_MAX`] events, so a
+/// larger request is split; a short answer means the device ring is empty.
+/// The overflow flag of any call is kept.
+fn drain_ts<F>(max_events: u16, mut fetch: F) -> Result<TimestampResult, String>
+where
+    F: FnMut(u16) -> Result<TimestampResult, String>,
+{
+    if max_events == 0 {
+        return Err("max_events must be at least 1".to_string());
+    }
+    let mut events = Vec::new();
+    let mut overflow = false;
+    let mut remaining = max_events;
+    while remaining > 0 {
+        let chunk = remaining.min(TS_GET_MAX);
+        let batch = fetch(chunk)?;
+        overflow |= batch.overflow;
+        let got = batch.events.len();
+        events.extend(batch.events);
+        if got < usize::from(chunk) {
+            break;
+        }
+        remaining -= chunk;
+    }
+    Ok(TimestampResult {
+        events,
+        reconciled: false,
+        overflow,
+    })
+}
+
+/// `ts get` for up to `max_events` events, drained across protocol-sized
+/// calls, plus the device's `ts_res_ns`.
+fn capture_ts(conn: &mut Connection, max_events: u16) -> Result<(TimestampResult, u32), String> {
+    let ts_res_ns = conn.caps().map_err(err)?.ts_res_ns;
+    let result = drain_ts(max_events, |n| conn.ts_get(n).map_err(err))?;
+    Ok((result, ts_res_ns))
 }
 
 #[tauri::command]
@@ -383,9 +411,9 @@ pub async fn ts_get(
 ) -> Result<TsResultPayload, String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        let result = inner.conn()?.ts_get(max_events).map_err(err)?;
+        let (result, ts_res_ns) = capture_ts(inner.conn()?, max_events)?;
         Ok(TsResultPayload {
-            events: as_is_rows(&result),
+            events: as_is_rows(&result, ts_res_ns),
             reconciled: false,
             overflow: result.overflow,
         })
@@ -400,16 +428,16 @@ pub async fn ts_get_reconciled(
 ) -> Result<TsResultPayload, String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        let result = inner.conn()?.ts_get(max_events).map_err(err)?;
-        Ok(reconcile_rows(&result))
+        let (result, ts_res_ns) = capture_ts(inner.conn()?, max_events)?;
+        Ok(reconcile_rows(&result, ts_res_ns))
     })
     .await
 }
 
 /// Apply host-side straddle reconciliation to a raw capture, preserving
 /// the device's event order.
-fn reconcile_rows(result: &TimestampResult) -> TsResultPayload {
-    let mut rows = as_is_rows(result);
+fn reconcile_rows(result: &TimestampResult, ts_res_ns: u32) -> TsResultPayload {
+    let mut rows = as_is_rows(result, ts_res_ns);
 
     let source_events: Vec<SourceEvent> = result
         .events
@@ -430,7 +458,7 @@ fn reconcile_rows(result: &TimestampResult) -> TsResultPayload {
     let mut order: Vec<usize> = (0..result.events.len()).collect();
     order.sort_by_key(|&i| (result.events[i].raw_count, result.events[i].raw_phase));
 
-    let groups = reconcile::group_events(&source_events);
+    let groups = reconcile::group_events(&source_events, ts_res_ns);
     let mut sorted_pos = 0usize;
     for group in &groups {
         for ns in &group.reconciled_ns {
@@ -497,7 +525,11 @@ pub async fn sync_disarm(state: State<'_, SharedState>) -> Result<(), String> {
 #[tauri::command]
 pub async fn raw_command(state: State<'_, SharedState>, text: String) -> Result<String, String> {
     let shared = state.inner().clone();
-    with_state(shared, move |inner| inner.conn()?.raw(&text).map_err(err)).await
+    with_state(shared, move |inner| {
+        let lines = inner.conn()?.raw(&text).map_err(err)?;
+        Ok(lines.join("\n"))
+    })
+    .await
 }
 
 /// Write export payloads (CSV/JSON built by the frontend) to a path chosen
@@ -514,45 +546,131 @@ mod tests {
     use super::*;
     use pochi_sdk::TimestampEvent;
 
-    // --- pin_map_from_hex ---
+    /// Capabilities.ts_res_ns of the v2 firmware.
+    const TS_RES_NS: u32 = 40;
 
-    #[test]
-    fn pin_map_from_hex_minimal_seven_bytes() {
-        // v=1 out=0:8 in=8:15 pull=down flags=0x03 — exactly 7 bytes
-        let map = pin_map_from_hex("010008080f0203").unwrap();
-        assert_eq!(map.out_count, 8);
-        assert_eq!(map.in_count, 15);
-        assert_eq!(map.pull, PullMode::Down);
+    // --- TOML loading through the SDK config parsers ---
+
+    fn fixture(name: &str) -> String {
+        format!("{}/../../docs/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
     }
 
     #[test]
-    fn pin_map_from_hex_round_trip() {
-        let hex = "010008080f02030000000000000000000000000000000000";
-        let map = pin_map_from_hex(hex).unwrap();
-        assert_eq!(map.version, 1);
-        assert_eq!(map.out_base, 0);
-        assert_eq!(map.out_count, 8);
-        assert_eq!(map.in_base, 8);
-        assert_eq!(map.in_count, 15);
-        assert_eq!(map.pull, PullMode::Down);
-        assert_eq!(map.flags, 0x03);
+    fn load_map_file_evaluates_the_sdk_schema() {
+        let map = load_map_file(&fixture("map-mixed-io.toml")).unwrap();
+        assert_eq!(map.direction, 0x0000_0003);
+        assert_eq!(map.pull_up, 0x0400_0004);
+        assert_eq!(map.edge, 0x0c7f_fff4);
+        assert_eq!(map.flags, 0);
     }
 
     #[test]
-    fn pin_map_from_hex_rejects_short_input() {
-        assert!(pin_map_from_hex("0100").unwrap_err().contains("too short"));
+    fn load_map_file_reports_file_and_line_of_a_syntax_error() {
+        let path = fixture("map-toml-syntax.toml");
+        let e = load_map_file(&path).unwrap_err();
+        // The fixture's syntax error is on line 6 (`# expected_line: 6`).
+        assert!(e.contains(&format!("{path}:6: toml syntax")), "{e}");
     }
 
     #[test]
-    fn pin_map_from_hex_rejects_bad_pull() {
-        let hex = "010008080f07030000000000000000000000000000000000";
-        assert!(pin_map_from_hex(hex).unwrap_err().contains("pull"));
+    fn load_map_file_rejects_a_missing_file() {
+        let e = load_map_file(&fixture("does-not-exist.toml")).unwrap_err();
+        assert!(!e.is_empty());
     }
 
     #[test]
-    fn pin_map_from_hex_rejects_non_hex() {
-        let hex = "zz0008080f02030000000000000000000000000000000000";
-        assert!(pin_map_from_hex(hex).unwrap_err().contains("byte 0"));
+    fn load_pattern_file_converts_holds_to_ticks() {
+        let steps = load_pattern_file(&fixture("pattern-basic.toml")).unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                PatternStep {
+                    out_bits: 0x5,
+                    hold_ticks: 5
+                },
+                PatternStep {
+                    out_bits: 0x0,
+                    hold_ticks: 10
+                },
+                PatternStep {
+                    out_bits: 0x0400_0000,
+                    hold_ticks: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_pattern_file_rejects_a_v1_style_file_naming_the_version() {
+        let e = load_pattern_file(&fixture("map-invalid-version.toml")).unwrap_err();
+        assert!(e.contains("version"), "{e}");
+    }
+
+    // --- drain_ts ---
+
+    fn batch(count: usize, overflow: bool) -> TimestampResult {
+        TimestampResult {
+            events: (0..count).map(|i| ev(i as u32, 0)).collect(),
+            reconciled: false,
+            overflow,
+        }
+    }
+
+    #[test]
+    fn drain_ts_splits_a_large_request_into_protocol_sized_calls() {
+        let mut asked = Vec::new();
+        let mut pending = 200usize;
+        let result = drain_ts(512, |n| {
+            asked.push(n);
+            let take = pending.min(usize::from(n));
+            pending -= take;
+            Ok(batch(take, false))
+        })
+        .unwrap();
+        assert_eq!(result.events.len(), 200);
+        // 85 + 85 + 30: the last call comes back short, which ends the drain.
+        assert_eq!(asked, vec![85, 85, 85]);
+    }
+
+    #[test]
+    fn drain_ts_stops_at_the_requested_maximum() {
+        let mut asked = Vec::new();
+        let result = drain_ts(100, |n| {
+            asked.push(n);
+            Ok(batch(usize::from(n), false))
+        })
+        .unwrap();
+        assert_eq!(result.events.len(), 100);
+        assert_eq!(asked, vec![85, 15]);
+    }
+
+    #[test]
+    fn drain_ts_keeps_the_overflow_flag_of_any_call() {
+        let mut call = 0;
+        let result = drain_ts(170, |n| {
+            call += 1;
+            Ok(batch(usize::from(n), call == 1))
+        })
+        .unwrap();
+        assert!(result.overflow);
+    }
+
+    #[test]
+    fn drain_ts_with_nothing_pending_is_empty() {
+        let result = drain_ts(10, |_| Ok(batch(0, false))).unwrap();
+        assert!(result.events.is_empty());
+        assert!(!result.overflow);
+    }
+
+    #[test]
+    fn drain_ts_propagates_a_device_error() {
+        let e = drain_ts(10, |_| Err("ts get: device error: NOT_ARMED".to_string())).unwrap_err();
+        assert!(e.contains("NOT_ARMED"));
+    }
+
+    #[test]
+    fn drain_ts_rejects_zero() {
+        assert!(drain_ts(0, |_| Ok(batch(0, false))).is_err());
     }
 
     // --- reconcile_rows ---
@@ -563,7 +681,6 @@ mod tests {
             raw_count,
             raw_phase,
             sync_active: true,
-            timestamp_ns: reconcile::as_is_ns(raw_count, raw_phase),
         }
     }
 
@@ -576,7 +693,7 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.reconciled);
         assert_eq!(payload.events.len(), 2);
         let adjusted: Vec<bool> = payload.events.iter().map(|r| r.reconciled).collect();
@@ -590,9 +707,12 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.events.iter().all(|r| !r.reconciled));
-        assert_eq!(payload.events[0].timestamp_ns, reconcile::as_is_ns(1000, 5));
+        assert_eq!(
+            payload.events[0].timestamp_ns,
+            reconcile::as_is_ns(1000, 5, TS_RES_NS)
+        );
     }
 
     #[test]
@@ -603,7 +723,7 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert_eq!(payload.events[0].raw_count, 5000);
         assert_eq!(payload.events[1].raw_count, 1000);
     }
@@ -615,7 +735,7 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.events.is_empty());
         assert!(payload.reconciled);
     }
@@ -627,7 +747,7 @@ mod tests {
             reconciled: false,
             overflow: true,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.overflow);
     }
 }

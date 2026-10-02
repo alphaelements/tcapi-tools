@@ -1,17 +1,28 @@
-"""Command builders and typed response parsers for the CDC text protocol.
-Pure functions (no I/O) — every parser is unit-testable without a device.
-Mirrors ``sdk/rust/src/protocol.rs``."""
+"""Command builders and typed response parsers for the v2 CDC text
+protocol. Pure functions (no I/O) — every parser is unit-testable without a
+device. Mirrors ``sdk/rust/src/protocol.rs``.
+
+Parsers are strict (R-P6): a response must carry exactly the documented
+keys, no more and no fewer, and numbers must be in range. Anything else is a
+:class:`~pochi.errors.ParseError`, never a silently defaulted value.
+Transport-level framing (line reads, counted reads) lives in
+:mod:`pochi.transport`.
+"""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
-from .errors import ParseError, SdkError, UnsupportedFirmwareError, from_error_code
-from .reconcile import as_is_ns
+from .errors import (
+    InvalidArgumentError,
+    ParseError,
+    SdkError,
+    UnknownEventError,
+    from_error_code,
+)
 from .types import (
-    MAP_V2_CHANNEL_LINES,
-    VALID_DIO_MASK,
+    PROTO_VERSION,
     Capabilities,
     EdgeMode,
     InputChangeEvent,
@@ -23,15 +34,35 @@ from .types import (
     PatternStep,
     PatternTimeoutEvent,
     PinMap,
-    PinMapV2,
-    PullMode,
     PushEvent,
-    SyncDoneEvent,
     TimestampEvent,
-    UnknownEvent,
+    TsStatus,
     VersionInfo,
-    channel_to_gp,
+    check_dio_mask,
 )
+
+#: Longest request line the device accepts, excluding the CR/LF terminator
+#: (R-T1).
+MAX_LINE_BYTES = 256
+
+#: Highest valid ``p=`` (raw phase) value of a timestamp event.
+_MAX_RAW_PHASE = 24
+
+#: ``ts get <max>``: accepted range (a single response is limited by the
+#: device line buffer).
+TS_GET_MAX_EVENTS = 85
+
+#: ``pattern run loop <repeat>``: accepted range (u16, no infinite mode).
+PATTERN_LOOP_MAX = 0xFFFF
+
+_U8 = 0xFF
+_U16 = 0xFFFF
+_U32 = 0xFFFFFFFF
+_U64 = 0xFFFFFFFFFFFFFFFF
+
+_DEC = re.compile(r"[0-9]+")
+_HEX = re.compile(r"0[xX][0-9a-fA-F]+")
+_UID = re.compile(r"[0-9a-fA-F]{16}")
 
 
 @dataclass
@@ -66,90 +97,102 @@ def parse_response(line: str) -> Response:
 
 
 def parse_count_field(ok_data: str) -> int:
-    """Extract ``count=N`` from an OK data string (ts get / sync count)."""
+    """Extract ``count=N`` from the header of a counted multi-line response
+    (``ts get``, ``help``)."""
     for part in ok_data.split():
         if part.startswith("count="):
-            value = part[6:]
-            if not value.isdigit():
+            value = part[len("count=") :]
+            if not _DEC.fullmatch(value):
                 raise ParseError(f"invalid count= value: {ok_data}")
             return int(value)
     raise ParseError(f"missing count= field: {ok_data}")
 
 
-def parse_count_overflow_field(ok_data: str) -> tuple[int, bool]:
-    """Extract ``count=N overflow=B`` from a ``ts get`` OK data string.
-
-    ``overflow=B`` was added in FW v0.1.2 (Pochi-DIO
-    ``fix/cdc-tx-buffer-truncation``) and signals that the ring buffer
-    overflowed since the last ``ts get`` (read-then-clear on the FW side).
-    A missing ``overflow=`` (older FW) is treated as ``overflow=0``.
-    """
-    count = parse_count_field(ok_data)
-    for part in ok_data.split():
-        if part.startswith("overflow="):
-            value = part[len("overflow=") :]
-            if value == "0":
-                return count, False
-            if value == "1":
-                return count, True
-            raise ParseError(f"invalid overflow= value: {value}")
-    return count, False
+# --- key=value field parsing ---
 
 
-def _parse_u32(s: str) -> int:
-    if re.fullmatch(r"0[xX][0-9a-fA-F]+", s):
-        value = int(s, 16)
-    elif s.isdigit():
-        value = int(s)
-    else:
-        raise ParseError(f"invalid number: {s}")
-    if value > 0xFFFFFFFF:
-        raise ParseError(f"invalid number: {s}")
-    return value
+def _parse_number(text: str) -> int | None:
+    """A number given as decimal or ``0x`` hex. Digits only: no sign, no
+    whitespace, no empty digit string. ``None`` when malformed."""
+    if _HEX.fullmatch(text):
+        return int(text, 16)
+    if _DEC.fullmatch(text):
+        return int(text)
+    return None
 
 
-def _fields(data: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for part in data.split():
-        key, sep, value = part.partition("=")
-        if sep and key:
-            out[key] = value
-    return out
+class _Fields:
+    """The ``key=value`` fields of one response, checked against the exact
+    key set the protocol documents for it (order is free)."""
 
+    def __init__(self, ctx: str, data: str, keys: tuple[str, ...]) -> None:
+        self.ctx = ctx
+        self.data = data
+        self.pairs: dict[str, str] = {}
+        for token in data.split():
+            key, sep, value = token.partition("=")
+            if not sep:
+                raise self._error(f"token without '=' ({token})")
+            if key not in keys:
+                raise self._error(f"unexpected key {key}=")
+            if key in self.pairs:
+                raise self._error(f"duplicate key {key}=")
+            self.pairs[key] = value
+        for key in keys:
+            if key not in self.pairs:
+                raise self._error(f"missing {key}= field")
 
-def _require(fields: dict[str, str], key: str, ctx: str) -> str:
-    if key not in fields:
-        raise ParseError(f"missing {key}= field in {ctx}")
-    return fields[key]
+    def _error(self, msg: str) -> ParseError:
+        return ParseError(f"{msg} in {self.ctx}: {self.data}")
 
+    def _invalid(self, key: str) -> ParseError:
+        return ParseError(f"invalid {key}= value in {self.ctx}: {self.data}")
 
-def _int_strict(s: str, ctx: str) -> int:
-    if not s.isdigit():
-        raise ParseError(f"invalid number in {ctx}: {s}")
-    return int(s)
+    def raw(self, key: str) -> str:
+        return self.pairs[key]
+
+    def dec(self, key: str, maximum: int) -> int:
+        """Plain decimal integer up to ``maximum``."""
+        value = self.pairs[key]
+        if not _DEC.fullmatch(value) or int(value) > maximum:
+            raise self._invalid(key)
+        return int(value)
+
+    def mask(self, key: str, maximum: int = _U32) -> int:
+        """Mask or bit value: ``0x`` hex (canonical) or decimal."""
+        number = _parse_number(self.pairs[key])
+        if number is None or number > maximum:
+            raise self._invalid(key)
+        return number
+
+    def flag(self, key: str) -> bool:
+        """``0`` or ``1``."""
+        value = self.pairs[key]
+        if value == "0":
+            return False
+        if value == "1":
+            return True
+        raise self._invalid(key)
 
 
 # --- version ---
 
 
 def parse_version(data: str) -> VersionInfo:
-    """Parse ``v0.1.0 proto=1``."""
-    match = None
-    for part in data.split():
-        if re.fullmatch(r"v\d+\.\d+\.\d+", part):
-            match = part
-            break
-    if match is None:
-        raise ParseError(f"missing version in: {data}")
-    major, minor, patch = (int(x) for x in match[1:].split("."))
-    fields = _fields(data)
-    if "proto" not in fields:
-        raise ParseError(f"missing proto= in: {data}")
+    """Parse ``fw=0.1.3 proto=2``.
+
+    The protocol number is returned as reported; callers decide whether it
+    is supported (see :data:`pochi.types.PROTO_VERSION`)."""
+    f = _Fields("version", data, ("fw", "proto"))
+    parts = f.raw("fw").split(".")
+    if len(parts) != 3 or not all(_DEC.fullmatch(p) and int(p) <= _U8 for p in parts):
+        raise f._invalid("fw")
+    major, minor, patch = (int(p) for p in parts)
     return VersionInfo(
         major=major,
         minor=minor,
         patch=patch,
-        protocol_version=_int_strict(fields["proto"], "version"),
+        protocol_version=f.dec("proto", _U8),
     )
 
 
@@ -157,232 +200,176 @@ def parse_version(data: str) -> VersionInfo:
 
 
 def parse_caps(data: str) -> Capabilities:
-    """Parse ``dio=23 out=12 in=11 ts_res=40ns pattern=256 ring=256
-    feat=0x...``. Old firmware (``ts_res=1000``) fails loudly."""
-    f = _fields(data)
-    ctx = f"caps: {data}"
-    ts_res = _int_strict(_require(f, "ts_res", ctx).removesuffix("ns"), ctx)
-    caps = Capabilities(
-        protocol_version=0,  # populated by the caller from `version`
-        max_dio=_int_strict(_require(f, "dio", ctx), ctx),
-        out_count=_int_strict(_require(f, "out", ctx), ctx),
-        in_count=_int_strict(_require(f, "in", ctx), ctx),
-        ts_resolution_ns=ts_res,
-        max_pattern_steps=_int_strict(_require(f, "pattern", ctx), ctx),
-        ts_ring_events=_int_strict(_require(f, "ring", ctx), ctx),
-        features=_parse_u32(_require(f, "feat", ctx)),
+    """Parse ``dio=25 out=2 in=23 ts_res_ns=40 tick_ns=200 pattern=256
+    ring=256 feat=0x00000003``."""
+    f = _Fields(
+        "caps",
+        data,
+        ("dio", "out", "in", "ts_res_ns", "tick_ns", "pattern", "ring", "feat"),
     )
-    if caps.ts_resolution_ns == 1000:
-        raise UnsupportedFirmwareError(
-            "caps reports ts_res=1000ns (pre-Phase 9.6 timestamp format)"
-        )
-    return caps
+    return Capabilities(
+        dio=f.dec("dio", _U8),
+        out=f.dec("out", _U8),
+        in_=f.dec("in", _U8),
+        ts_res_ns=f.dec("ts_res_ns", _U32),
+        tick_ns=f.dec("tick_ns", _U32),
+        pattern_max=f.dec("pattern", _U16),
+        ring=f.dec("ring", _U16),
+        features=f.mask("feat"),
+    )
 
 
-# --- info ---
+# --- info / devnum / ping ---
 
 
 def parse_info(data: str) -> tuple[str, int | None]:
-    """Parse ``uid=AABBCCDD11223344 devnum=42``. devnum 255 maps to None."""
-    f = _fields(data)
-    uid = f.get("uid", "")
-    if not uid:
-        raise ParseError(f"missing uid in info response: {data}")
-    device_number: int | None = None
-    if "devnum" in f:
-        n = _int_strict(f["devnum"], f"info: {data}")
-        device_number = None if n == 255 else n
-    return uid, device_number
+    """Parse ``uid=0123456789ABCDEF devnum=42``. devnum 255 (unassigned)
+    maps to ``None``."""
+    f = _Fields("info", data, ("uid", "devnum"))
+    uid = f.raw("uid")
+    if not _UID.fullmatch(uid):
+        raise f._invalid("uid")
+    devnum = f.dec("devnum", _U8)
+    return uid, None if devnum == 255 else devnum
+
+
+def devnum_command(n: int) -> str:
+    """Build the ``devnum <n>`` command (0-254; 255 unassigns)."""
+    if not 0 <= n <= _U8:
+        raise InvalidArgumentError(f"device number {n} is out of range (0-255)")
+    return f"devnum {n}"
+
+
+def parse_pong(data: str) -> int:
+    """Parse the ``ping`` response ``pong=<u32>``."""
+    return _Fields("ping", data, ("pong",)).dec("pong", _U32)
+
+
+def ping_command(value: int) -> str:
+    """Build the ``ping <u32>`` command."""
+    if not 0 <= value <= _U32:
+        raise InvalidArgumentError(f"ping value {value} is not a u32")
+    return f"ping {value}"
 
 
 # --- map ---
 
 
-def parse_map_version(data: str) -> int:
-    """Extract just the ``v=`` field from a ``map get`` header, before
-    deciding whether the 25 v2 detail lines need to be read."""
-    f = _fields(data)
-    return _int_strict(_require(f, "v", f"map: {data}"), f"map: {data}")
-
-
-def parse_map(data: str, channel_lines: list[str] | None = None) -> PinMap | PinMapV2:
-    """Parse a ``map get`` response. Branches on the ``v=`` field first:
-    ``v=1`` uses the legacy ``out=base:count`` / ``pull=`` fields;
-    ``v>=2`` uses the unified-DIO bitmask model (``out=count in=count``,
-    no ``pull=``) and reconstructs ``direction_mask`` from
-    ``channel_lines`` (the 25 ``chN: OUT/IN`` detail lines that follow
-    the header in the raw response, if the caller read them)."""
-    f = _fields(data)
-    ctx = f"map: {data}"
-    version = _int_strict(_require(f, "v", ctx), ctx)
-    if version >= 2:
-        return _parse_map_v2(f, ctx, channel_lines or [])
-    return _parse_map_v1(f, ctx)
-
-
-def _parse_map_v1(f: dict[str, str], ctx: str) -> PinMap:
-    def parse_range(key: str) -> tuple[int, int]:
-        value = _require(f, key, ctx)
-        base, sep, count = value.partition(":")
-        if not sep:
-            raise ParseError(f"invalid {key}= range in {ctx}")
-        return _int_strict(base, ctx), _int_strict(count, ctx)
-
-    out_base, out_count = parse_range("out")
-    in_base, in_count = parse_range("in")
-    pull = _require(f, "pull", ctx)
-    if pull not in ("none", "up", "down"):
-        raise ParseError(f"invalid pull mode in map: {pull}")
-    return PinMap(
-        version=_int_strict(_require(f, "v", ctx), ctx),
-        out_base=out_base,
-        out_count=out_count,
-        in_base=in_base,
-        in_count=in_count,
-        pull=PullMode(pull),
-        flags=_parse_u32(_require(f, "flags", ctx)),
+def parse_map(data: str) -> PinMap:
+    """Parse the ``map get`` response ``v=2 flags=0x00 dir=... edge=...`` and
+    validate it (R-M1): a device reporting an invalid or non-v2 map is an
+    error, not a value."""
+    f = _Fields(
+        "map",
+        data,
+        ("v", "flags", "dir", "pu", "pd", "def", "opol", "ipol", "edge"),
     )
-
-
-def _parse_map_v2(f: dict[str, str], ctx: str, channel_lines: list[str]) -> PinMapV2:
-    version = _int_strict(_require(f, "v", ctx), ctx)
-    out_count = _int_strict(_require(f, "out", ctx), ctx)
-    in_count = _int_strict(_require(f, "in", ctx), ctx)
-    flags = _parse_u32(_require(f, "flags", ctx))
-    channels: list[str] = []
-    direction_mask = 0
-    if channel_lines:
-        direction_mask = parse_map_v2_channels(channel_lines)
-        channels = [line.rpartition(":")[2].strip() for line in channel_lines]
-    return PinMapV2(
-        version=version,
-        flags=flags,
-        direction_mask=direction_mask,
-        out_count=out_count,
-        in_count=in_count,
-        channels=channels,
+    version = f.dec("v", _U8)
+    if version != PROTO_VERSION:
+        raise ParseError(f"unsupported map version v={version} in map: {data}")
+    pin_map = PinMap(
+        flags=f.mask("flags", _U8),
+        direction=f.mask("dir"),
+        pull_up=f.mask("pu"),
+        pull_down=f.mask("pd"),
+        out_default=f.mask("def"),
+        out_polarity=f.mask("opol"),
+        in_polarity=f.mask("ipol"),
+        edge=f.mask("edge"),
     )
-
-
-def parse_map_v2_channels(lines: list[str]) -> int:
-    """Parse the 25 ``  chN: OUT/IN`` detail lines that follow a v2
-    ``map get`` header and reconstruct ``direction_mask`` (ch->GP
-    mapping: ch0-22 -> GP0-22, ch23 -> GP26, ch24 -> GP27)."""
-    if len(lines) != MAP_V2_CHANNEL_LINES:
+    try:
+        pin_map.validate()
+    except InvalidArgumentError as exc:
         raise ParseError(
-            f"expected {MAP_V2_CHANNEL_LINES} map v2 channel lines, got {len(lines)}"
-        )
-    mask = 0
-    for ch, line in enumerate(lines):
-        trimmed = line.strip()
-        label, sep, direction = trimmed.partition(":")
-        if not sep or label != f"ch{ch}":
-            raise ParseError(f"malformed map v2 channel line: {line!r}")
-        direction = direction.strip()
-        if direction == "OUT":
-            mask |= 1 << channel_to_gp(ch)
-        elif direction != "IN":
-            raise ParseError(f"invalid direction in map v2 channel line: {line!r}")
-    return mask
+            f"device reported an invalid map ({exc.message}): {data}"
+        ) from exc
+    return pin_map
 
 
-def map_to_hex(pin_map: PinMap) -> str:
-    """Encode a PinMap as the 48-char hex string for ``map set``.
-    Extended fields not in PinMap (out_default, polarities) are zero."""
-    buf = bytearray(24)
-    buf[0] = pin_map.version
-    buf[1] = pin_map.out_base
-    buf[2] = pin_map.out_count
-    buf[3] = pin_map.in_base
-    buf[4] = pin_map.in_count
-    buf[5] = {"none": 0, "up": 1, "down": 2}[pin_map.pull.value]
-    buf[6] = pin_map.flags
-    return buf.hex()
-
-
-def map_v2_to_hex(pin_map: PinMapV2) -> str:
-    """Encode a PinMapV2 as the 64-char (32B) hex string for ``map set``.
-    Fields not observable over the text protocol (pull/polarity/edge/
-    out_default) use the same defaults as FW ``parse_map_set_v2()``:
-    ``pull_down_mask`` / ``edge_mask`` default to the input-pin
-    complement of ``direction_mask``; everything else defaults to 0."""
-    complement = ~pin_map.direction_mask & VALID_DIO_MASK
-    buf = bytearray(32)
-    buf[0] = pin_map.version
-    buf[1] = pin_map.flags
-    buf[2:4] = (0).to_bytes(2, "little")
-    buf[4:8] = pin_map.direction_mask.to_bytes(4, "little")
-    buf[8:12] = (0).to_bytes(4, "little")  # pull_up_mask
-    buf[12:16] = complement.to_bytes(4, "little")  # pull_down_mask
-    buf[16:20] = (0).to_bytes(4, "little")  # out_default
-    buf[20:24] = (0).to_bytes(4, "little")  # out_polarity
-    buf[24:28] = (0).to_bytes(4, "little")  # in_polarity
-    buf[28:32] = complement.to_bytes(4, "little")  # edge_mask
-    return buf.hex()
+def map_set_command(pin_map: PinMap) -> str:
+    """Build the ``map set`` command for ``pin_map`` (validated first)."""
+    return f"map set {pin_map.to_set_args()}"
 
 
 # --- read / write / state ---
 
 
 def parse_read(data: str) -> int:
-    """Parse the ``read`` response data: ``0x000005``."""
-    return _parse_u32(data.strip())
+    """Parse the ``read`` response ``in=0x00000005``."""
+    return _Fields("read", data, ("in",)).mask("in")
 
 
 def parse_state(data: str) -> IoState:
-    """Parse ``in=0x000005 out=0x00000A flags=0x00``."""
-    f = _fields(data)
-    ctx = f"state: {data}"
-    return IoState(
-        inputs=_parse_u32(_require(f, "in", ctx)),
-        outputs=_parse_u32(_require(f, "out", ctx)),
-        flags=_parse_u32(_require(f, "flags", ctx)),
-    )
+    """Parse the ``state`` response ``in=0x00000000 out=0x00000005``."""
+    f = _Fields("state", data, ("in", "out"))
+    return IoState(inputs=f.mask("in"), outputs=f.mask("out"))
+
+
+def write_command(values: int, mask: int) -> str:
+    """Build the ``write <values> <mask>`` command. Both words must stay
+    within the DIO pins (R-PIN2)."""
+    check_dio_mask("write values", values)
+    check_dio_mask("write mask", mask)
+    return f"write {values:#x} {mask:#x}"
 
 
 # --- pattern ---
 
 
-def pattern_to_hex(steps: list[PatternStep]) -> str:
-    """Encode pattern steps for ``pattern load``: step count (u16 LE)
-    followed by 8 bytes per step (out_bits u32 LE + hold_us u32 LE)."""
+def pattern_add_commands(steps: list[PatternStep]) -> list[str]:
+    """Build the ``pattern add`` command lines for ``steps``.
+
+    Steps are packed greedily so every line stays within
+    :data:`MAX_LINE_BYTES`; each line is applied atomically by the device
+    (R-PT3). Every step is validated first, so nothing is produced for a bad
+    pattern."""
     if not steps:
-        raise ParseError("pattern must have at least one step")
-    if len(steps) > 0xFFFF:
-        raise ParseError(f"too many pattern steps: {len(steps)}")
-    data = bytearray(len(steps).to_bytes(2, "little"))
+        raise InvalidArgumentError("pattern must have at least one step")
+    prefix = "pattern add"
+    lines: list[str] = []
+    line = prefix
     for step in steps:
-        data += step.out_bits.to_bytes(4, "little")
-        data += step.hold_us.to_bytes(4, "little")
-    return data.hex()
+        text = step.to_text()
+        # +1 for the separating space.
+        if len(line) + 1 + len(text) > MAX_LINE_BYTES:
+            lines.append(line)
+            line = prefix
+        line += " " + text
+    lines.append(line)
+    return lines
 
 
-def parse_accepted(data: str) -> int:
-    """Parse ``accepted=4`` from the ``pattern load`` response."""
-    for part in data.split():
-        if part.startswith("accepted="):
-            return _int_strict(part[9:], f"accepted: {data}")
-    raise ParseError(f"missing accepted= field: {data}")
+def parse_pattern_total(data: str) -> int:
+    """Parse the ``pattern add`` response ``total=<n>``: steps now in the
+    buffer."""
+    return _Fields("pattern add", data, ("total",)).dec("total", _U16)
 
 
 def pattern_run_command(mode: PatternMode, repeat: int) -> str:
-    """Build the ``pattern run`` command string."""
+    """Build the ``pattern run`` command string. ``once`` plays a single
+    pass and ignores ``repeat``; ``loop`` requires 1-65535."""
     if mode is PatternMode.ONCE:
-        return "pattern run once 1"
+        return "pattern run once"
+    if not 1 <= repeat <= PATTERN_LOOP_MAX:
+        raise InvalidArgumentError(
+            f"loop repeat {repeat} is out of range (1-{PATTERN_LOOP_MAX})"
+        )
     return f"pattern run loop {repeat}"
 
 
 def parse_pattern_status(data: str) -> PatternStatus:
-    """Parse ``state=running step=5 loops=3``."""
-    f = _fields(data)
-    ctx = f"pattern status: {data}"
-    state = _require(f, "state", ctx)
-    if state not in ("idle", "loaded", "running", "done"):
-        raise ParseError(f"unknown pattern state: {state}")
+    """Parse ``state=running step=5 loops=3 total=40``."""
+    f = _Fields("pattern status", data, ("state", "step", "loops", "total"))
+    state = f.raw("state")
+    try:
+        parsed_state = PatternState(state)
+    except ValueError:
+        raise ParseError(f"unknown pattern state: {state}") from None
     return PatternStatus(
-        state=PatternState(state),
-        current_step=_int_strict(_require(f, "step", ctx), ctx),
-        loops_done=_int_strict(_require(f, "loops", ctx), ctx),
+        state=parsed_state,
+        step=f.dec("step", _U16),
+        loops=f.dec("loops", _U16),
+        total=f.dec("total", _U16),
     )
 
 
@@ -390,36 +377,53 @@ def parse_pattern_status(data: str) -> PatternStatus:
 
 
 def ts_arm_command(mask: int, mode: EdgeMode) -> str:
-    """Build the ``ts arm`` command string."""
+    """Build the ``ts arm`` command string. The mask must be non-zero and
+    stay within the DIO pins (R-PIN2)."""
+    check_dio_mask("ts arm mask", mask)
+    if mask == 0:
+        raise InvalidArgumentError("ts arm mask must not be empty")
     return f"ts arm {mask:#x} {mode.value}"
 
 
-def parse_ts_event_line(line: str) -> TimestampEvent:
-    """Parse one ``ts get`` event line (FW Phase 9.6):
-    ``0x00000005 c=1000 p=7 s=1``. The pre-9.6 ``t=`` format is rejected
-    as UnsupportedFirmwareError — never parsed silently."""
-    trimmed = line.strip()
-    f = _fields(trimmed)
-    inputs_part = next((p for p in trimmed.split() if p.startswith(("0x", "0X"))), None)
-
-    if "t" in f and "c" not in f:
-        raise UnsupportedFirmwareError(
-            f"ts event uses pre-Phase 9.6 `t=` format: {trimmed}"
+def ts_get_command(max_events: int) -> str:
+    """Build the ``ts get <max>`` command (1-85 events per response)."""
+    if not 1 <= max_events <= TS_GET_MAX_EVENTS:
+        raise InvalidArgumentError(
+            f"ts get max {max_events} is out of range (1-{TS_GET_MAX_EVENTS})"
         )
-    if inputs_part is None:
-        raise ParseError(f"missing inputs (0x...) field in ts event: {trimmed}")
-    ctx = f"ts event: {trimmed}"
-    raw_count = _int_strict(_require(f, "c", ctx), ctx)
-    raw_phase = _int_strict(_require(f, "p", ctx), ctx)
-    s = _require(f, "s", ctx)
-    if s not in ("0", "1"):
-        raise ParseError(f"invalid s= in ts event: {s}")
+    return f"ts get {max_events}"
+
+
+def parse_ts_status(data: str) -> TsStatus:
+    """Parse the ``ts status`` response ``armed=1 pending=2 overflow=0``."""
+    f = _Fields("ts status", data, ("armed", "pending", "overflow"))
+    return TsStatus(
+        armed=f.flag("armed"),
+        pending=f.dec("pending", _U32),
+        overflow=f.flag("overflow"),
+    )
+
+
+def parse_ts_get_header(data: str) -> tuple[int, bool]:
+    """Parse the header of a ``ts get`` response, ``count=3 overflow=0``,
+    into the number of event lines that follow and the ring-overflow flag."""
+    f = _Fields("ts get", data, ("count", "overflow"))
+    return f.dec("count", _U32), f.flag("overflow")
+
+
+def parse_ts_event_line(line: str) -> TimestampEvent:
+    """Parse one ``ts get`` event line: ``in=0x00000001 c=1000 p=7 s=1``
+    (surrounding whitespace, including the two leading spaces of a
+    continuation line, is ignored)."""
+    f = _Fields("ts event", line.strip(), ("in", "c", "p", "s"))
+    raw_phase = f.dec("p", _U8)
+    if raw_phase > _MAX_RAW_PHASE:
+        raise f._invalid("p")
     return TimestampEvent(
-        inputs=_parse_u32(inputs_part),
-        raw_count=raw_count,
+        inputs=f.mask("in"),
+        raw_count=f.dec("c", _U32),
         raw_phase=raw_phase,
-        sync_active=s == "1",
-        timestamp_ns=as_is_ns(raw_count, raw_phase),
+        sync_active=f.flag("s"),
     )
 
 
@@ -427,82 +431,64 @@ def parse_ts_event_line(line: str) -> TimestampEvent:
 
 
 def parse_sync_count(data: str) -> int:
-    """Parse the ``sync count`` response data: ``count=1000000``."""
-    return parse_count_field(data)
+    """Parse the ``sync count`` response ``clocks=1000000``."""
+    return _Fields("sync count", data, ("clocks",)).dec("clocks", _U64)
 
 
 # --- push events ---
 
 
 def parse_push_event(payload: str) -> PushEvent:
-    """Parse the payload of a push line (after ``! ``). Unknown event
-    types are preserved as UnknownEvent rather than dropped."""
+    """Parse the payload of a push line (after ``! ``).
+
+    A recognized event with malformed fields is a
+    :class:`~pochi.errors.ParseError`; an event name the protocol does not
+    define is an :class:`~pochi.errors.UnknownEventError` (the transport
+    logs and discards it)."""
     trimmed = payload.strip()
     kind, _, rest = trimmed.partition(" ")
-    f = _fields(rest)
-
     if kind == "INPUT":
-        inputs_part = next(
-            (p for p in rest.split() if p.startswith(("0x", "0X"))), None
-        )
-        if inputs_part is None:
-            raise ParseError(f"missing inputs (0x...) in INPUT event: {trimmed}")
-        t = f.get("t")
-        if t is None or not t.isdigit():
-            raise ParseError(f"missing or invalid t= in INPUT event: {trimmed}")
-        return InputChangeEvent(inputs=_parse_u32(inputs_part), timestamp_us=int(t))
+        f = _Fields("INPUT event", rest, ("in", "t"))
+        return InputChangeEvent(inputs=f.mask("in"), t_us=f.dec("t", _U64))
     if kind == "PATTERN_DONE":
-        loops = f.get("loops")
-        if loops is None or not loops.isdigit():
-            raise ParseError(
-                f"missing or invalid loops= in PATTERN_DONE event: {trimmed}"
-            )
-        return PatternDoneEvent(loops=int(loops))
+        f = _Fields("PATTERN_DONE event", rest, ("loops",))
+        return PatternDoneEvent(loops=f.dec("loops", _U16))
     if kind == "PATTERN_TIMEOUT":
-        loops = f.get("loops")
-        if loops is None or not loops.isdigit():
-            raise ParseError(
-                f"missing or invalid loops= in PATTERN_TIMEOUT event: {trimmed}"
-            )
-        return PatternTimeoutEvent(loops=int(loops))
-    if kind == "SYNC_DONE":
-        status = f.get("status")
-        devnum = f.get("devnum")
-        ts = f.get("ts")
-        if (
-            status is None
-            or devnum is None
-            or not devnum.isdigit()
-            or ts is None
-            or not ts.isdigit()
-        ):
-            raise ParseError(f"missing field in SYNC_DONE event: {trimmed}")
-        return SyncDoneEvent(status=status, devnum=int(devnum), timestamp=int(ts))
-    return UnknownEvent(raw=trimmed)
+        f = _Fields("PATTERN_TIMEOUT event", rest, ("loops",))
+        return PatternTimeoutEvent(loops=f.dec("loops", _U16))
+    raise UnknownEventError(f"unknown event: {trimmed}")
 
 
 __all__ = [
+    "MAX_LINE_BYTES",
+    "PATTERN_LOOP_MAX",
+    "TS_GET_MAX_EVENTS",
     "Response",
-    "parse_response",
-    "parse_count_field",
-    "parse_count_overflow_field",
-    "parse_version",
-    "parse_caps",
-    "parse_info",
-    "parse_map_version",
-    "parse_map",
-    "parse_map_v2_channels",
-    "map_to_hex",
-    "map_v2_to_hex",
-    "parse_read",
-    "parse_state",
-    "pattern_to_hex",
-    "parse_accepted",
-    "pattern_run_command",
-    "parse_pattern_status",
-    "ts_arm_command",
-    "parse_ts_event_line",
-    "parse_sync_count",
-    "parse_push_event",
     "SdkError",
+    "UnknownEventError",
+    "devnum_command",
+    "from_error_code",
+    "map_set_command",
+    "parse_caps",
+    "parse_count_field",
+    "parse_info",
+    "parse_map",
+    "parse_pattern_status",
+    "parse_pattern_total",
+    "parse_pong",
+    "parse_push_event",
+    "parse_read",
+    "parse_response",
+    "parse_state",
+    "parse_sync_count",
+    "parse_ts_event_line",
+    "parse_ts_get_header",
+    "parse_ts_status",
+    "parse_version",
+    "pattern_add_commands",
+    "pattern_run_command",
+    "ping_command",
+    "ts_arm_command",
+    "ts_get_command",
+    "write_command",
 ]

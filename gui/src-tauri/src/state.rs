@@ -1,5 +1,6 @@
 //! Shared backend state: the single active device connection.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use pochi_sdk::{Connection, DeviceInfo};
@@ -10,9 +11,20 @@ use pochi_sdk::{Connection, DeviceInfo};
 pub struct AppInner {
     pub connection: Option<Connection>,
     pub device_info: Option<DeviceInfo>,
+    /// Stop flag of the push-event forwarder; present while the UI is
+    /// subscribed. Dropping the forwarder's receiver is how the SDK learns
+    /// that the device subscription is no longer needed.
+    pub event_stop: Option<Arc<AtomicBool>>,
 }
 
 impl AppInner {
+    /// Stop forwarding push events (no-op when not subscribed).
+    pub fn stop_events(&mut self) {
+        if let Some(stop) = self.event_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// Borrow the active connection or fail with the message the frontend
     /// shows verbatim.
     pub fn conn(&mut self) -> Result<&mut Connection, String> {

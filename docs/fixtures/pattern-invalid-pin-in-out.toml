@@ -1,0 +1,8 @@
+# GP23 is outside VALID_DIO_MASK.
+# expected_error: step 1: invalid pin "GP23" in out
+# expected_line: 7
+version = 2
+
+[[step]]
+out = ["GP0", "GP23"]
+hold = 5

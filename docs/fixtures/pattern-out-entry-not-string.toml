@@ -1,0 +1,8 @@
+# Every entry of `out` must be a string.
+# expected_error: step 1: out must be an array of pin names
+# expected_line: 7
+version = 2
+
+[[step]]
+out = [1]
+hold = 5

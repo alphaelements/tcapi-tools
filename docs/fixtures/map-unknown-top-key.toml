@@ -1,0 +1,5 @@
+# Unknown top-level key (R-TOML1: no lenient mode).
+# expected_error: unknown key "pin"
+# expected_line: 5
+version = 2
+pin = 1

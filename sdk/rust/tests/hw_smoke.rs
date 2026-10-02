@@ -10,8 +10,8 @@
 //! The tests restore the device pin map and device number on completion.
 //!
 //! Edge-capture and push-event delivery need an external signal source.
-//! If the persisted pin map is `out=0:>=4 in=4:>=4` (the loopback rig —
-//! GP0..GP3 wired to GP4..GP7) the smoke runs a full stimulus → capture
+//! If the persisted pin map has GP0..GP3 as outputs and GP4..GP7 as inputs
+//! (the loopback rig — GP0..GP3 wired to GP4..GP7) the smoke runs a full stimulus → capture
 //! → subscribe push pass. Otherwise those steps verify only the
 //! protocol flow (count=0 counted read, subscribe on/off).
 //!
@@ -20,9 +20,24 @@
 //! port order.
 
 use pochi_sdk::{
-    discover, discover_detailed, Connection, EdgeMode, PatternMode, PatternState, PatternStep,
-    PushEvent,
+    discover, discover_detailed, Connection, EdgeMode, PatternState, PatternStep, PinMap,
+    PushEvent, PATTERN_TICK_NS, TS_GET_MAX, VALID_DIO_MASK,
 };
+
+// Pattern holds are written in ticks (`hold_ticks`, one tick = 200 ns, R-PT5),
+// never in microseconds.
+const TICKS_PER_MS: u32 = 5_000;
+const TICKS_200_US: u32 = 1_000;
+const TICKS_100_US: u32 = 500;
+/// R-PT5: every pattern step lasts `hold_ticks * tick + 133 ns`.
+const STEP_OVERHEAD_NS: u64 = 133;
+
+const _: () = assert!(TICKS_PER_MS as u64 * PATTERN_TICK_NS as u64 == 1_000_000);
+
+/// Duration of one pattern step in nanoseconds (R-PT5).
+fn step_ns(hold_ticks: u32) -> u64 {
+    u64::from(hold_ticks) * u64::from(PATTERN_TICK_NS) + STEP_OVERHEAD_NS
+}
 
 #[test]
 #[ignore = "requires connected Pochi-DIO hardware"]
@@ -86,8 +101,9 @@ fn hw_full_smoke() {
     );
     let caps = conn.caps().expect("caps");
     println!("caps: {caps:?}");
-    assert_eq!(caps.max_dio, 23);
-    assert_ne!(caps.ts_resolution_ns, 1000, "old firmware");
+    assert_eq!(caps.dio, 25);
+    assert_eq!(caps.ts_res_ns, 40);
+    assert_eq!(caps.tick_ns, 200);
     let info = conn.info().expect("info");
     assert_eq!(info.uid, device.uid);
 
@@ -104,19 +120,13 @@ fn hw_full_smoke() {
     // Only when the persisted map matches the rig wiring. Other devices
     // (no loopback wire) skip this block — `hw_full_smoke` is intended to
     // pass on any healthy Pochi-DIO.
-    let loopback_rig = original_map.out_base == 0
-        && original_map.out_count >= 4
-        && original_map.in_base == 4
-        && original_map.in_count >= 4;
+    let loopback_rig = original_map.direction & 0xFF == 0x0F;
     if loopback_rig {
         run_loopback_edge_capture(&mut conn);
     } else {
         println!(
-            "skipping loopback edge capture (map is {}:{}/{}:{}, expected 0:>=4/4:>=4)",
-            original_map.out_base,
-            original_map.out_count,
-            original_map.in_base,
-            original_map.in_count,
+            "skipping loopback edge capture (dir=0x{:08x}, expected GP0..3 out / GP4..7 in)",
+            original_map.direction
         );
     }
 
@@ -126,20 +136,17 @@ fn hw_full_smoke() {
     conn.set_device_number(original_devnum.unwrap_or(255))
         .expect("devnum restore");
 
-    // --- pin map: 12 out / 11 in ---
-    let work_map = pochi_sdk::PinMap {
-        version: 1,
-        out_base: 0,
-        out_count: 12,
-        in_base: 12,
-        in_count: 11,
-        pull: pochi_sdk::PullMode::Up,
-        flags: 0x01,
+    // --- pin map: GP0..11 out / the rest in with pull-up ---
+    let work_map = PinMap {
+        direction: 0xFFF,
+        pull_up: VALID_DIO_MASK & !0xFFF,
+        pull_down: 0,
+        edge: VALID_DIO_MASK & !0xFFF,
+        ..PinMap::default()
     };
     conn.map_set(&work_map).expect("map set");
     let active = conn.map_get().expect("map get after set");
-    assert_eq!(active.out_count, 12);
-    assert_eq!(active.in_count, 11);
+    assert_eq!(active, work_map);
 
     // --- write / read / state ---
     conn.write(0x0A5, 0xFFF).expect("write");
@@ -155,26 +162,25 @@ fn hw_full_smoke() {
     let steps = vec![
         PatternStep {
             out_bits: 0x00F,
-            hold_us: 1000,
+            hold_ticks: TICKS_PER_MS,
         },
         PatternStep {
             out_bits: 0x000,
-            hold_us: 1000,
+            hold_ticks: TICKS_PER_MS,
         },
         PatternStep {
             out_bits: 0x0F0,
-            hold_us: 1000,
+            hold_ticks: TICKS_PER_MS,
         },
         PatternStep {
             out_bits: 0x000,
-            hold_us: 1000,
+            hold_ticks: TICKS_PER_MS,
         },
     ];
     let accepted = conn.pattern_load(&steps).expect("pattern load");
     assert_eq!(accepted, 4);
 
-    conn.pattern_run(PatternMode::Once, 1)
-        .expect("pattern run once");
+    conn.pattern_run_once().expect("pattern run once");
     std::thread::sleep(std::time::Duration::from_millis(50));
     let status = conn.pattern_status().expect("pattern status");
     println!("pattern status after once: {status:?}");
@@ -186,8 +192,7 @@ fn hw_full_smoke() {
 
     // repeat=0 is rejected by FW (BAD_PARAM) — there is no infinite mode;
     // 1000 loops x 4ms is long enough to observe Running and stop it.
-    conn.pattern_run(PatternMode::Loop, 1000)
-        .expect("pattern run loop");
+    conn.pattern_run_loop(1000).expect("pattern run loop");
     std::thread::sleep(std::time::Duration::from_millis(20));
     let status = conn.pattern_status().expect("pattern status");
     assert_eq!(status.state, PatternState::Running);
@@ -197,7 +202,9 @@ fn hw_full_smoke() {
 
     // --- timestamp: arm / get / disarm (counted read, incl. count=0) ---
     conn.ts_arm(0x07FF, EdgeMode::Both).expect("ts arm");
-    let result = conn.ts_get(256).expect("ts get");
+    let ts_status = conn.ts_status().expect("ts status");
+    assert!(ts_status.armed, "ts status after arm: {ts_status:?}");
+    let result = conn.ts_get(TS_GET_MAX).expect("ts get");
     println!(
         "ts events without stimulus: {} (expected 0 unless inputs are wired)",
         result.events.len()
@@ -211,9 +218,8 @@ fn hw_full_smoke() {
     let _ = conn.read().expect("read after ts get");
 
     // --- subscribe on/off + event channel plumbed ---
-    let _events = conn.subscribe_events();
-    conn.subscribe(true).expect("subscribe on");
-    conn.subscribe(false).expect("subscribe off");
+    let events = conn.subscribe_events().expect("subscribe on");
+    drop(events);
 
     // --- sync (single device): arm/disarm cycle + count is single-line ---
     conn.sync_master().expect("sync master");
@@ -226,16 +232,26 @@ fn hw_full_smoke() {
     conn.sync_stop().expect("sync stop");
     conn.sync_disarm().expect("sync disarm");
 
+    // --- help (counted response) ---
+    let help = conn.help().expect("help");
+    assert!(!help.is_empty(), "help returned no lines");
+    assert!(
+        help.iter().any(|l| l.trim_start().starts_with("version")),
+        "help lacks the version entry: {help:?}"
+    );
+
     // --- raw escape hatch ---
     let raw = conn.raw("version").expect("raw");
-    assert!(raw.starts_with("OK "), "raw response: {raw}");
+    assert!(
+        raw.len() == 1 && raw[0].starts_with("OK "),
+        "raw response: {raw:?}"
+    );
 
     // --- restore original map and persist ---
     conn.map_set(&original_map).expect("map restore");
     conn.map_save().expect("map save");
     let restored = conn.map_get().expect("map get final");
-    assert_eq!(restored.out_count, original_map.out_count);
-    assert_eq!(restored.in_count, original_map.in_count);
+    assert_eq!(restored, original_map);
 
     conn.close().expect("close");
     println!("hw_full_smoke: all steps passed");
@@ -263,10 +279,10 @@ fn hw_full_smoke() {
 fn run_loopback_edge_capture(conn: &mut Connection) {
     // Clean slate: clear outputs and let inputs settle before arming,
     // so residual state from prior tests does not contaminate the ring.
-    // Also force-stop a possibly running pattern and turn off subscribe,
-    // in case a previous test run was aborted mid-flight and the device
-    // is still in `state=running step=0 loops=0` or pushing events.
-    let _ = conn.subscribe(false);
+    // Also force-stop a possibly running pattern, in case a previous test
+    // run was aborted mid-flight and the device is still in
+    // `state=running step=0 loops=0`.
+    let ts_res_ns = conn.caps().expect("caps").ts_res_ns;
     let _ = conn.pattern_stop();
     let _ = conn.ts_disarm();
     conn.write(0, 0xF).expect("write clear before arm");
@@ -274,13 +290,13 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
 
     // Accumulating walk on GP0..GP3 → four rising edges, monitored via
     // GP4..GP7 through the loopback wire.
-    const HOLD_US: u32 = 200;
+    const HOLD_TICKS: u32 = TICKS_200_US;
     const EXPECTED_TAIL: [u32; 4] = [0x1, 0x3, 0x7, 0xF];
     let steps = EXPECTED_TAIL
         .iter()
         .map(|&v| PatternStep {
             out_bits: v,
-            hold_us: HOLD_US,
+            hold_ticks: HOLD_TICKS,
         })
         .collect::<Vec<_>>();
     let accepted = conn.pattern_load(&steps).expect("pattern load loopback");
@@ -288,8 +304,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
 
     // --- Pass 1: ts arm rising → run → ts get → strict tail check ---
     conn.ts_arm(0xF, EdgeMode::Rising).expect("ts arm rising");
-    conn.pattern_run(PatternMode::Once, 1)
-        .expect("pattern run for ts");
+    conn.pattern_run_once().expect("pattern run for ts");
     wait_pattern_idle(conn, "ts loopback");
 
     // FW v0.1.2 max-events-per-response is 85, well above our worst case.
@@ -304,7 +319,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
         println!(
             "  [{i}] inputs=0x{:X} ts_ns={}",
             e.inputs & 0xF,
-            e.timestamp_ns
+            e.ns(ts_res_ns)
         );
     }
 
@@ -340,36 +355,33 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
             "unexpected nibble 0x{n:X} in stream: {nibbles:?}"
         );
     }
-    let ns: Vec<i64> = edges.iter().map(|e| e.timestamp_ns).collect();
+    let ns: Vec<i64> = edges.iter().map(|e| e.ns(ts_res_ns)).collect();
     for w in ns.windows(2) {
         assert!(w[1] > w[0], "ts not monotonic: {ns:?}");
     }
 
     // Hold timing assertion: the trailing tail [0x3, 0x7, 0xF] is always
     // present, so the span between its first and last edges should equal
-    // `(tail.len() - 1) * HOLD_US`. A regression where the FW completes
+    // `(tail.len() - 1)` steps of `step_ns(HOLD_TICKS)` (R-PT5). A regression where the FW completes
     // the pattern before honoring the last hold (the v0.1.2 problem A bug
     // fixed in pochi-dio commit ae2af10) would make the span much shorter,
     // so a generous ±50 µs/step tolerance still catches it.
     let tail_ns = &ns[ns.len() - expected_tail.len()..];
-    let span_us = ((tail_ns[tail_ns.len() - 1] - tail_ns[0]) / 1000) as u64;
-    let expected_us = (expected_tail.len() as u64 - 1) * HOLD_US as u64;
-    let tolerance_us = expected_tail.len() as u64 * 50;
+    let span_ns = (tail_ns[tail_ns.len() - 1] - tail_ns[0]) as u64;
+    let expected_ns = (expected_tail.len() as u64 - 1) * step_ns(HOLD_TICKS);
+    let tolerance_ns = expected_tail.len() as u64 * 50_000;
     assert!(
-        span_us.abs_diff(expected_us) < tolerance_us,
-        "hold timing drift: expected {expected_us}us got {span_us}us (tail ns={tail_ns:?})"
+        span_ns.abs_diff(expected_ns) < tolerance_ns,
+        "hold timing drift: expected {expected_ns}ns got {span_ns}ns (tail ns={tail_ns:?})"
     );
 
     conn.ts_disarm().expect("ts disarm loopback");
 
     // --- Pass 2: subscribe on → run → assert ≥1 InputChange push ---
-    let events_rx = conn.subscribe_events();
-    while events_rx.try_recv().is_ok() {} // drain leftover pushes
     conn.write(0, 0xF).expect("write clear before subscribe");
     std::thread::sleep(std::time::Duration::from_millis(20));
-    conn.subscribe(true).expect("subscribe on");
-    conn.pattern_run(PatternMode::Once, 1)
-        .expect("pattern run for subscribe");
+    let events_rx = conn.subscribe_events().expect("subscribe on");
+    conn.pattern_run_once().expect("pattern run for subscribe");
     wait_pattern_idle(conn, "subscribe loopback");
 
     let mut input_pushes = 0usize;
@@ -389,7 +401,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
             Err(_) => break,
         }
     }
-    conn.subscribe(false).expect("subscribe off");
+    drop(events_rx);
     println!("loopback subscribe: input pushes={input_pushes}, pattern_done={pattern_done_seen}");
     assert!(
         input_pushes >= 1,
@@ -443,23 +455,23 @@ fn hw_pattern_reset_during_loop() {
     let steps = [
         PatternStep {
             out_bits: 0x1,
-            hold_us: 1_000,
+            hold_ticks: TICKS_PER_MS,
         },
         PatternStep {
             out_bits: 0x2,
-            hold_us: 1_000,
+            hold_ticks: TICKS_PER_MS,
         },
         PatternStep {
             out_bits: 0x4,
-            hold_us: 1_000,
+            hold_ticks: TICKS_PER_MS,
         },
         PatternStep {
             out_bits: 0x8,
-            hold_us: 1_000,
+            hold_ticks: TICKS_PER_MS,
         },
     ];
     assert_eq!(conn.pattern_load(&steps).expect("load"), 4);
-    conn.pattern_run(PatternMode::Loop, 10_000).expect("run");
+    conn.pattern_run_loop(10_000).expect("run");
     std::thread::sleep(std::time::Duration::from_millis(20));
     let running = conn.pattern_status().expect("status mid-run");
     assert_eq!(
@@ -471,8 +483,8 @@ fn hw_pattern_reset_during_loop() {
     conn.pattern_reset().expect("pattern reset");
     let after = conn.pattern_status().expect("status after reset");
     assert_eq!(after.state, PatternState::Idle, "status: {after:?}");
-    assert_eq!(after.loops_done, 0);
-    assert_eq!(after.current_step, 0);
+    assert_eq!(after.loops, 0);
+    assert_eq!(after.step, 0);
 
     // USB must still be up — a follow-up `version` succeeds without reopen.
     conn.version().expect("USB stayed up after pattern reset");
@@ -525,15 +537,14 @@ fn hw_full_smoke_loop_8_times() {
         println!("--- hw_full_smoke iteration {} ---", i + 1);
         let device = pick_device();
         let mut conn = Connection::open(&device.port).expect("connect");
-        let _ = conn.subscribe(false);
         let _ = conn.pattern_reset();
 
         let steps = [PatternStep {
             out_bits: 0x1,
-            hold_us: 100,
+            hold_ticks: TICKS_100_US,
         }];
         conn.pattern_load(&steps).expect("load");
-        conn.pattern_run(PatternMode::Once, 1).expect("run");
+        conn.pattern_run_once().expect("run");
         wait_pattern_idle(&mut conn, &format!("loop iteration {}", i + 1));
         let status = conn.pattern_status().expect("status");
         assert_eq!(

@@ -1,0 +1,7 @@
+# Output pins cannot have a pull setting.
+# expected_error: GP5: pull is not allowed on an output pin
+# expected_line: 7
+version = 2
+
+[pins]
+GP5 = { dir = "out", pull = "up" }

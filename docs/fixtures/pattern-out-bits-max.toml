@@ -1,0 +1,7 @@
+# out_bits equal to VALID_DIO_MASK is accepted; unit defaults to "tick".
+# expected_step: out_bits=0x0c7fffff hold_ticks=3
+version = 2
+
+[[step]]
+out_bits = 0x0c7fffff
+hold = 3

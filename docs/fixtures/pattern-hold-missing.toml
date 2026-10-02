@@ -1,0 +1,7 @@
+# Each step needs a `hold`. Reported on the line of the step header.
+# expected_error: step 1: hold is required
+# expected_line: 6
+version = 2
+
+[[step]]
+out = ["GP0"]

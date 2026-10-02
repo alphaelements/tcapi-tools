@@ -1,0 +1,355 @@
+# proto=2
+# generated_by=hand
+# fw_commit=f376234f2f93
+# Events are lines starting with `< ! ` and are never part of a request's response.
+
+# --- INPUT: every change on an edge pin is reported with the full input snapshot and the time in us ---
+> subscribe on
+< OK
+~ advance us=5
+~ in=0x00000001
+< ! INPUT in=0x00000001 t=5
+~ advance us=3
+~ in=0x00000000
+< ! INPUT in=0x00000000 t=8
+
+# --- INPUT: events are not sent before subscribe on, and stop after subscribe off ---
+~ advance us=1
+~ in=0x00000001
+> subscribe on
+< OK
+~ advance us=1
+~ in=0x00000000
+< ! INPUT in=0x00000000 t=2
+> subscribe off
+< OK
+~ advance us=1
+~ in=0x00000001
+~ advance us=1
+~ in=0x00000000
+
+# --- INPUT: driving an unchanged level is not a change ---
+> subscribe on
+< OK
+~ advance us=1
+~ in=0x00000001
+< ! INPUT in=0x00000001 t=1
+~ in=0x00000001
+~ advance us=1
+~ in=0x00000001
+
+# --- INPUT: time is the floor of the microsecond clock ---
+> subscribe on
+< OK
+~ advance ns=1999
+~ in=0x00000001
+< ! INPUT in=0x00000001 t=1
+~ advance ns=1
+~ in=0x00000000
+< ! INPUT in=0x00000000 t=2
+
+# --- INPUT edge filter: only pins in the map edge mask trigger an event ---
+# the event still carries the levels of all input pins
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000003
+< OK
+> subscribe on
+< OK
+~ advance us=10
+~ in=0x00000004
+~ advance us=10
+~ in=0x00000005
+< ! INPUT in=0x00000005 t=20
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+< ! INPUT in=0x00000000 t=40
+~ advance us=10
+~ in=0x00000002
+< ! INPUT in=0x00000002 t=50
+~ advance us=10
+~ in=0x00000006
+~ advance us=10
+~ in=0x00000004
+< ! INPUT in=0x00000004 t=70
+
+# --- INPUT edge filter: an empty edge mask makes subscribe silent ---
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> subscribe on
+< OK
+~ advance us=1
+~ in=0x00000001
+~ advance us=1
+~ in=0x0c7fffff
+~ advance us=1
+~ in=0x00000000
+
+# --- INPUT edge filter: highest DIO pins ---
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c000000
+< OK
+> subscribe on
+< OK
+~ advance us=1
+~ in=0x00400000
+~ advance us=1
+~ in=0x04000000
+< ! INPUT in=0x04000000 t=2
+~ advance us=1
+~ in=0x08000000
+< ! INPUT in=0x08000000 t=3
+
+# --- INPUT edge filter: output pins never produce events ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> subscribe on
+< OK
+~ advance us=1
+~ in=0x0000000f
+~ advance us=1
+~ in=0x00000010
+< ! INPUT in=0x00000010 t=2
+
+# --- INPUT edge filter: a new map takes effect for later changes ---
+# ASSUMPTION: the previous-input snapshot follows every poll, including polls that raise no event
+# (pin 1 is already at 1 when the new edge mask is installed, so the later fall is a change)
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000001
+< OK
+> subscribe on
+< OK
+~ advance us=1
+~ in=0x00000002
+~ advance us=1
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000002
+< OK
+~ advance us=1
+~ in=0x00000000
+< ! INPUT in=0x00000000 t=3
+~ advance us=1
+~ in=0x00000001
+~ advance us=1
+~ in=0x00000003
+< ! INPUT in=0x00000003 t=5
+
+# --- INPUT uses logical levels: ipol inverts the reported snapshot ---
+# ASSUMPTION: map set re-seeds the previous-input snapshot from the new map, so the polarity change
+# itself (logical level 0 -> 1 at t=0 for physical level 0) raises no event
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7ffffe def=0x00000000 opol=0x00000000 ipol=0x00000001 edge=0x00000001
+< OK
+> subscribe on
+< OK
+~ advance us=4
+~ in=0x00000001
+< ! INPUT in=0x00000000 t=4
+~ advance us=4
+~ in=0x00000000
+< ! INPUT in=0x00000001 t=8
+
+# --- INPUT: subscribe and timestamp record are independent, both see the edge ---
+> subscribe on
+< OK
+> ts arm 0x1 both
+< OK
+~ advance us=2
+~ in=0x00000001
+< ! INPUT in=0x00000001 t=2
+> ts get 5
+< OK count=1 overflow=0
+<   in=0x00000001 c=2 p=0 s=0
+
+# --- INPUT: events keep time order across several changes ---
+> subscribe on
+< OK
+~ advance us=1
+~ in=0x00000001
+< ! INPUT in=0x00000001 t=1
+~ advance us=1
+~ in=0x00000003
+< ! INPUT in=0x00000003 t=2
+~ advance us=1
+~ in=0x00000002
+< ! INPUT in=0x00000002 t=3
+~ advance us=1
+~ in=0x00000000
+< ! INPUT in=0x00000000 t=4
+
+# --- PATTERN_DONE: pushed once when a once pattern completes, with the pass count ---
+# ASSUMPTION: pattern events are pushed whether or not subscribe is on
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=3265
+~ advance ns=1
+< ! PATTERN_DONE loops=1
+~ advance us=1000
+> pattern status
+< OK state=done step=0 loops=1 total=2
+
+# --- PATTERN_DONE: loop 3 reports loops=3 only after the last pass ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 3
+< OK
+~ advance ns=9797
+~ advance ns=1
+< ! PATTERN_DONE loops=3
+~ advance us=1000
+
+# --- PATTERN_DONE: with subscribe on it is still a single event ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> subscribe on
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+
+# --- PATTERN_DONE: a stopped pattern reports nothing ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 4
+< OK
+~ advance ns=5000
+> pattern stop
+< OK
+~ advance us=1000
+
+# --- PATTERN_DONE and INPUT interleave in time order ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> subscribe on
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=2000
+~ in=0x00000010
+< ! INPUT in=0x00000010 t=2
+~ advance ns=1266
+< ! PATTERN_DONE loops=1
+~ advance us=1
+~ in=0x00000000
+< ! INPUT in=0x00000000 t=4
+
+# --- PATTERN_TIMEOUT: a stalled pattern is forced to a safe state after its budget, no PATTERN_DONE ---
+# ASSUMPTION: budget = nominal duration * 2 + 100 ms, as in the v1 firmware
+# nominal = 15 ticks * 200 ns = 3 us (floor), budget = 3*2 + 100000 = 100006 us, timeout when elapsed > budget
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+~ fault pio_stall
+> pattern run once
+< OK
+~ advance us=100000
+> pattern status
+< OK state=running step=0 loops=0 total=2
+~ advance us=6
+> pattern status
+< OK state=running step=0 loops=0 total=2
+~ advance us=1
+< ! PATTERN_TIMEOUT loops=0
+> pattern status
+< OK state=done step=0 loops=0 total=2
+~ advance us=1000000
+
+# --- PATTERN_TIMEOUT: the engine can be stopped, reset and run again afterwards ---
+# the stall fault applies to one run only
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+~ fault pio_stall
+> pattern run once
+< OK
+~ advance us=200000
+< ! PATTERN_TIMEOUT loops=0
+> pattern stop
+< ERR NOT_RUNNING
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+
+# --- PATTERN_TIMEOUT: a loop pattern has a longer budget (repeat * nominal * 2 + 100 ms) ---
+# ASSUMPTION: budget formula as in the v1 firmware, nominal = 3 us * 1000 loops = 3000 us, budget = 106000 us
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+~ fault pio_stall
+> pattern run loop 1000
+< OK
+~ advance us=106000
+> pattern status
+< OK state=running step=0 loops=0 total=2
+~ advance us=1
+< ! PATTERN_TIMEOUT loops=0
+
+# --- PATTERN_TIMEOUT: map set is allowed again once the pattern is no longer running ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+~ fault pio_stall
+> pattern run once
+< OK
+> map default
+< ERR BUSY
+~ advance us=200000
+< ! PATTERN_TIMEOUT loops=0
+> map default
+< OK
+
+# --- R-E3: events are text lines from boot, no binary frame was ever used ---
+# R-E3
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5
+< OK total=1
+> pattern run once
+< OK
+~ advance ns=1133
+< ! PATTERN_DONE loops=1
+
+# --- PATTERN_TIMEOUT: state out= keeps the last output step and matches the pins (R-PT4) ---
+# R-PT4
+# ASSUMPTION: the stall freezes the engine while step 0 is held; the timeout leaves the output latch at
+# the last stepped value (0x1), it does not revert to the map default
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000002 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+~ fault pio_stall
+> pattern run once
+< OK
+~ advance us=200000
+< ! PATTERN_TIMEOUT loops=0
+> state
+< OK in=0x00000000 out=0x00000001
+~ expect_pins out=0x00000003
+
+# --- PATTERN_DONE: state out= is the last step's logical value after completion (R-PT4) ---
+# R-PT4
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000001 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x2:5 0x1:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+> state
+< OK in=0x00000000 out=0x00000001
+~ expect_pins out=0x00000000

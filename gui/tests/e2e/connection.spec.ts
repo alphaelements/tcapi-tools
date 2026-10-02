@@ -6,7 +6,7 @@ test("auto-scan lists devices with UID, port and firmware", async ({ page }) => 
   await expect(page.getByText("Pochi-DIO #42")).toBeVisible();
   await expect(page.getByText("UID MOCKA1B2…")).toBeVisible();
   await expect(page.getByText("mock0")).toBeVisible();
-  await expect(page.getByText("fw 0.1.2")).toBeVisible();
+  await expect(page.getByText("fw 0.1.3")).toBeVisible();
   // Old-firmware unit is listed without a device number.
   await expect(page.getByText("Pochi-DIO #?")).toBeVisible();
   await expect(page.getByText("fw 0.1.0")).toBeVisible();
@@ -18,10 +18,11 @@ test("auto-scan lists devices with UID, port and firmware", async ({ page }) => 
 test("double-click connects: version, caps card, status pill, map", async ({ page }) => {
   await connect(page);
   // DeviceCard shows version + capabilities after connect.
-  await expect(page.getByText("0.1.2", { exact: false }).first()).toBeVisible();
-  await expect(page.getByText("125MHz")).toBeVisible();
-  // Status bar reflects the device pin map (12 out / 11 in).
-  await expect(page.getByText("map 12o/11i")).toBeVisible();
+  await expect(page.getByText("0.1.3", { exact: false }).first()).toBeVisible();
+  // caps card reports the pattern tick (caps tick_ns=200).
+  await expect(page.getByText("200 ns", { exact: true }).first()).toBeVisible();
+  // Status bar reflects the device pin map (12 out / 13 in of 25 channels).
+  await expect(page.getByText("map 12o/13i")).toBeVisible();
   // Port chip in the menu bar replaces "no link".
   await expect(page.getByText("no link")).toHaveCount(0);
   // Connect sequence ran over the wire.

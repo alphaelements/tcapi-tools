@@ -1,0 +1,7 @@
+# Pin names use the canonical form GP(0|[1-9][0-9]*): a sign is rejected.
+# expected_error: invalid pin GP+5: valid pins are GP0-GP22, GP26, GP27
+# expected_line: 7
+version = 2
+
+[pins]
+"GP+5" = { dir = "out" }

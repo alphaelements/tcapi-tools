@@ -4,9 +4,29 @@
 
 Pochi Tools is a monorepo providing multi-language SDKs and a GUI application
 for **Pochi-DIO**, an RP2350-based high-speed digital I/O unit. Pochi-DIO
-offers 23 GPIO pins (GP0-GP22) with microsecond-level timestamping, output
-pattern generation, and multi-device clock synchronization over a single USB
-connection.
+offers 25 DIO channels (ch0-ch24 on GP0-GP22, GP26 and GP27) with 40 ns
+timestamp resolution, output pattern generation (200 ns tick), and
+multi-device clock synchronization over a single USB connection.
+
+The system speaks one protocol version, **proto=2**, defined in
+[`protocol-reference.md`](protocol-reference.md) and verified by the golden
+transcripts in `protocol/golden/`. The SDK API surface is in
+[`sdk-api-design.md`](sdk-api-design.md); the TOML formats in
+[`config-files.md`](config-files.md).
+
+### Channels and pins
+
+| Channel | GP pin | Bit |
+|---|---|---|
+| ch0-ch22 | GP0-GP22 | bit0-bit22 |
+| ch23 | GP26 | bit26 |
+| ch24 | GP27 | bit27 |
+
+GP23, GP24, GP25 and GP28 are not DIO. Every mask on the wire is a physical
+GP bit position (`VALID_DIO_MASK = 0x0c7fffff`); channels are a display
+concept only. Each SDK provides `ch_to_gp`, `gp_to_ch`, `VALID_DIO_MASK` and
+`pin_label`, and the CLI, GUI and VS Code extension use nothing else for pin
+arithmetic.
 
 ### Related Repositories
 
@@ -38,7 +58,7 @@ connection.
                    ┌────────┴────────┐
                    │   Pochi-DIO     │
                    │   (RP2350)      │
-                   │   23 GPIO pins  │
+                   │   25 DIO pins   │
                    └─────────────────┘
 ```
 
@@ -55,53 +75,71 @@ same layers to ensure consistent behavior and API surface.
 ### Layer 1 -- Discovery
 
 Enumerates USB serial ports and identifies Pochi-DIO devices by filtering on
-USB VID (`0x2E8A`), PID (`0x000A`), and product string prefix (`"Pochi"`).
-Returns a list of `DeviceInfo` objects containing UID, device number, port
-path, and firmware version.
+USB VID (`0x2E8A`), PID (`0x000A`), and product string prefix (`"Pochi"`),
+then confirms `proto=2` with `version`. Returns a list of `DeviceInfo`
+objects containing UID, device number, port path, and firmware version.
 
 ### Layer 2 -- Transport
 
-Manages the serial port connection (open, close, read, write). Sends
-text-mode commands (`{command}\r\n`) and reads response lines. Handles line
-buffering and timeout. The transport layer is protocol-agnostic -- it deals
-only with line-level I/O.
+Manages the serial port connection (open with DTR asserted, close, read,
+write). Sends text-mode commands (`{command}\r\n`, at most 256 bytes) and
+reads exactly one response per command: a single line, or a `count=N` header
+plus N continuation lines. It detects timeouts, malformed lines and short
+counted responses, and recovers with a `ping` handshake (`desync` state);
+when that fails the connection is closed. Push event lines are separated from
+responses here and routed to Layer 4. The transport layer is protocol-agnostic
+-- it deals only with line-level I/O.
 
 ### Layer 3 -- Protocol
 
 Maps typed API calls to text commands and parses response strings into typed
 results. For example, `connection.caps()` sends `caps\r\n`, receives
-`OK dio=23 out=12 in=11 ts_res=40ns ...`, and returns a `Capabilities`
-struct. This layer also translates `ERR <code>` responses into typed error
-values.
+`OK dio=25 out=0 in=25 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003`,
+and returns a `Capabilities` struct. This layer also translates `ERR <NAME>`
+responses into typed error values. Unknown keys, unknown error names and
+out-of-range values are errors, never defaults.
 
-Some commands produce multi-line responses: `ts get` returns `OK count=N`
-followed by N event lines. The protocol layer handles counted reads for these
-cases.
+Two commands produce counted multi-line responses: `ts get` returns
+`OK count=N overflow=<0|1>` followed by N event lines, and `help` returns
+`OK count=N` followed by N lines. `sync count` is a single line
+(`OK clocks=<n>`). The transport handles counted reads for these cases.
 
 ### Layer 4 -- Events
 
-Manages asynchronous push events from the device (`! INPUT ...`,
-`! PATTERN_DONE ...`, `! SYNC_DONE ...`). The implementation is
-language-specific:
+Manages asynchronous push events from the device. There are exactly three:
+`! INPUT in=... t=...`, `! PATTERN_DONE loops=...` and
+`! PATTERN_TIMEOUT loops=...`. Unknown event lines are logged as errors and
+discarded. The SDK owns the device `subscribe` state: it is switched on when
+the first subscriber attaches and off when the last one leaves. The
+implementation is language-specific:
 
 | Language | Event Mechanism |
 |---|---|
-| Rust | `tokio::sync::mpsc` channel / `Stream` trait |
+| Rust | `std::sync::mpsc::Receiver` (no async runtime) |
 | TypeScript | `EventEmitter` / async iterator |
-| Python | `asyncio.Queue` |
+| Python | `EventSubscription` (thread-safe `queue.Queue`, context manager) |
 | C# | `IObservable<T>` (Reactive Extensions pattern) |
 
 ### Host-Side Processing
 
-The SDK also implements host-side computations that are required by the
-Phase 9.6 protocol:
+The SDK also implements host-side computations that the protocol leaves to the
+host:
 
 - **32-to-64-bit count extension**: `raw_count` is u32 and wraps after
   ~71.6 minutes. The SDK tracks the high bits and extends to u64.
-- **Nanosecond calculation**: `timestamp_ns = raw_count * 1000 + raw_phase * 40`
+- **Nanosecond calculation**:
+  `timestamp_ns = raw_count * 1000 + raw_phase * ts_res_ns`, where
+  `ts_res_ns` is read from `caps` (40). It is a parameter, never a constant.
 - **Reconcile (straddle correction)**: When DMA captures cross a microsecond
   boundary, the SDK generates candidate timestamps and selects the
   combination that minimizes pairwise differences across channels/devices.
+  It takes `ts_res_ns` as an argument.
+- **Pattern tick conversion**: pattern hold times are ticks of 200 ns
+  (`caps.tick_ns`); a nanosecond value is converted only when it is an exact
+  multiple, otherwise it is an error.
+- **TOML configuration**: `map.toml` / `pattern.toml` parsing lives in the Rust
+  SDK (`pochi-sdk` `config`) only; the CLI, the GUI backend and the VS Code
+  extension (through its native layer) reuse it.
 
 ## 4. GUI Architecture
 
@@ -196,10 +234,15 @@ pochi-tools/
 │
 ├── docs/
 │   ├── architecture.md     # This document
-│   ├── protocol-reference.md
+│   ├── protocol-reference.md   # proto=2 text protocol
 │   ├── sdk-api-design.md
+│   ├── config-files.md     # map.toml / pattern.toml schema v2
+│   ├── fixtures/           # TOML conformance fixtures
 │   ├── gui-feature-spec.md
 │   └── mockups/            # SVG mockups for GUI design
+│
+├── protocol/
+│   └── golden/             # golden transcripts (copied from the firmware)
 │
 └── tmp/                    # Scratch files (git-ignored)
 ```
@@ -269,5 +312,9 @@ All four SDK implementations share identical:
   identically
 
 The Rust SDK is the **reference implementation**. Other SDKs should match
-its behavior exactly, verified by a shared test suite of expected
-command/response pairs.
+its behavior exactly. The shared reference is the set of golden transcripts in
+`protocol/golden/` (exact request and response lines recorded from the
+firmware): every SDK fake device generates its responses from them or is
+checked against them, and hand-written response lines are limited to negative
+tests. The copies are kept identical to the firmware's by the workspace script
+`scripts/sync-protocol-golden.sh --check`.

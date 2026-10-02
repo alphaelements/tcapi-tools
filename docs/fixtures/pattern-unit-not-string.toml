@@ -1,0 +1,9 @@
+# `unit` must be a string.
+# expected_error: unit must be a string
+# expected_line: 5
+version = 2
+unit = 5
+
+[[step]]
+out = ["GP0"]
+hold = 5

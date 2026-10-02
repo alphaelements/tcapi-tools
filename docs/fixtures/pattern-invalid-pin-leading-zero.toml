@@ -1,0 +1,8 @@
+# Pin names use the canonical form GP(0|[1-9][0-9]*): leading zeros are rejected.
+# expected_error: step 1: invalid pin "GP05" in out
+# expected_line: 7
+version = 2
+
+[[step]]
+out = ["GP05"]
+hold = 5

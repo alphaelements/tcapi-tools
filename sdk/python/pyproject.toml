@@ -20,3 +20,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# scripts/ holds hardware tools (some named test_*.py) that need real devices.
+testpaths = ["tests"]

@@ -1,0 +1,8 @@
+# `version` is mandatory. Whole-file error: reported on line 1.
+# expected_error: missing key "version"
+# expected_line: 1
+unit = "tick"
+
+[[step]]
+out = ["GP0"]
+hold = 5

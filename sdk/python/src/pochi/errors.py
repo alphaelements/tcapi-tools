@@ -1,5 +1,6 @@
 """Typed SDK errors. Mirrors ``sdk/rust/src/error.rs``; every device error
-code and SDK-level condition has a distinct, catchable exception class."""
+name the text protocol can answer and every SDK-level condition has a
+distinct, catchable exception class (docs/sdk-api-design.md section 4)."""
 
 from __future__ import annotations
 
@@ -18,6 +19,9 @@ class SdkError(Exception):
 
 
 class BadCommandError(SdkError):
+    """``ERR BAD_CMD``: binary / HID transports only; a text device never
+    answers it."""
+
     code = "BAD_CMD"
 
 
@@ -49,10 +53,6 @@ class SyncStateError(SdkError):
     code = "SYNC_STATE"
 
 
-class SyncTimeoutError(SdkError):
-    code = "SYNC_TIMEOUT"
-
-
 class NoResourceError(SdkError):
     code = "NO_RESOURCE"
 
@@ -61,7 +61,24 @@ class NotRunningError(SdkError):
     code = "NOT_RUNNING"
 
 
+class UnknownCmdError(SdkError):
+    code = "UNKNOWN_CMD"
+
+
+class LineTooLongError(SdkError):
+    code = "LINE_TOO_LONG"
+
+
+class TransportNotSupportedError(SdkError):
+    """``ERR TRANSPORT_NOT_SUPPORTED``: HID only; a text device never
+    answers it."""
+
+    code = "TRANSPORT_NOT_SUPPORTED"
+
+
 class UnknownDeviceError(SdkError):
+    """Any other ``ERR <NAME>``; the raw name is preserved in the message."""
+
     code = "UNKNOWN_DEVICE"
 
 
@@ -77,7 +94,20 @@ class IoError(SdkError):
 
 
 class ParseError(SdkError):
+    """A response does not match the documented format (including unknown
+    keys, missing keys and wrong counted-line counts)."""
+
     code = "PARSE"
+
+
+class UnknownEventError(ParseError):
+    """A push line whose event name the protocol does not define."""
+
+
+class InvalidArgumentError(SdkError):
+    """Rejected by host-side validation; nothing was sent."""
+
+    code = "INVALID_ARGUMENT"
 
 
 class TimeoutError_(SdkError):
@@ -93,35 +123,45 @@ class MultipleDevicesError(SdkError):
 
 
 class DisconnectedError(SdkError):
+    """The device went away mid-session, or resynchronisation failed."""
+
     code = "DISCONNECTED"
 
 
 class UnsupportedFirmwareError(SdkError):
+    """``version`` reported a ``proto`` other than 2. Never parsed
+    leniently."""
+
     code = "UNSUPPORTED_FIRMWARE"
 
     def __init__(self, detail: str) -> None:
-        super().__init__(f"unsupported firmware: {detail} (requires FW Phase 9.6+)")
+        super().__init__(f"unsupported protocol: {detail}")
 
 
 _DEVICE_ERRORS: dict[str, tuple[type[SdkError], str]] = {
     "BAD_CMD": (BadCommandError, "unknown command"),
-    "UNKNOWN_CMD": (BadCommandError, "unknown text command"),
     "BAD_PARAM": (BadParamError, "invalid parameter"),
     "BAD_MAP": (BadMapError, "map validation failed"),
     "BUSY": (BusyError, "device is busy"),
     "FLASH": (FlashError, "flash write/read failed"),
     "TOO_LONG": (TooLongError, "payload too long"),
-    "LINE_TOO_LONG": (TooLongError, "command line exceeds 128 bytes"),
     "NOT_ARMED": (NotArmedError, "timestamp not armed"),
     "SYNC_STATE": (SyncStateError, "invalid sync state transition"),
-    "SYNC_TIMEOUT": (SyncTimeoutError, "sync pulse not detected"),
     "NO_RESOURCE": (NoResourceError, "required resource not configured"),
     "NOT_RUNNING": (NotRunningError, "pattern not running"),
+    "UNKNOWN_CMD": (UnknownCmdError, "unknown command or subcommand"),
+    "LINE_TOO_LONG": (LineTooLongError, "command line exceeds 256 bytes"),
+    "TRANSPORT_NOT_SUPPORTED": (
+        TransportNotSupportedError,
+        "command not available on this transport",
+    ),
 }
 
 
 def from_error_code(code: str) -> SdkError:
-    """Map an ``ERR <code>`` response to a typed error."""
+    """Map an ``ERR <code>`` response to a typed error. A name the protocol
+    does not define is preserved verbatim (``UnknownDeviceError``), never
+    mapped to a default."""
     entry = _DEVICE_ERRORS.get(code)
     if entry is not None:
         cls, hint = entry

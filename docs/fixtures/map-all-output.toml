@@ -1,0 +1,31 @@
+# All-output map: every valid DIO pin (GP0-GP22, GP26, GP27) is a push-pull
+# output idling low. No pull, no edge detection.
+# expected: dir=0x0c7fffff pull_up=0x00000000 pull_down=0x00000000 out_default=0x00000000 out_polarity=0x00000000 in_polarity=0x00000000 edge=0x00000000
+version = 2
+
+[pins]
+GP0  = { dir = "out" }
+GP1  = { dir = "out" }
+GP2  = { dir = "out" }
+GP3  = { dir = "out" }
+GP4  = { dir = "out" }
+GP5  = { dir = "out" }
+GP6  = { dir = "out" }
+GP7  = { dir = "out" }
+GP8  = { dir = "out" }
+GP9  = { dir = "out" }
+GP10 = { dir = "out" }
+GP11 = { dir = "out" }
+GP12 = { dir = "out" }
+GP13 = { dir = "out" }
+GP14 = { dir = "out" }
+GP15 = { dir = "out" }
+GP16 = { dir = "out" }
+GP17 = { dir = "out" }
+GP18 = { dir = "out" }
+GP19 = { dir = "out" }
+GP20 = { dir = "out" }
+GP21 = { dir = "out" }
+GP22 = { dir = "out" }
+GP26 = { dir = "out" }
+GP27 = { dir = "out" }

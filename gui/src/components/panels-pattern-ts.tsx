@@ -8,29 +8,43 @@ import { useMemo, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { fmt } from "../lib/fmt";
 import { invoke, tauriAvailable } from "../lib/tauri";
-import { NUM_PINS, PatternStepUi, PochiStore, useStore } from "../store/store";
+import { formatHold, parseHoldInput } from "../lib/pattern";
+import { pinLabel } from "../lib/pins";
+import { PatternStepUi, PochiStore, useStore } from "../store/store";
+
+/// Hold field text → ticks. Text that is not a valid hold becomes 0, which
+/// the field flags and the upload rejects with a clear error.
+function parseHoldTicks(text: string, tickNs: number): number {
+  try {
+    return parseHoldInput(text, tickNs);
+  } catch {
+    return 0;
+  }
+}
 
 // ---------------- PatternEditor ----------------
-function PatternPreview({ steps, nOut, curStep, playing }: { steps: PatternStepUi[]; nOut: number; curStep: number; playing: boolean }) {
-  const total = steps.reduce((a, s) => a + s.hold, 0) || 1;
+function PatternPreview({ steps, outs, curStep, playing }: { steps: PatternStepUi[]; outs: number[]; curStep: number; playing: boolean }) {
+  const nOut = outs.length;
+  const total = steps.reduce((a, s) => a + s.holdTicks, 0) || 1;
   const H = 11, GAP = 3, W = 100;
   const rows: React.JSX.Element[] = [];
-  for (let ch = 0; ch < nOut; ch++) {
+  for (let row = 0; row < nOut; row++) {
+    const ch = outs[row];
     let x = 0; const segs: React.JSX.Element[] = [];
     steps.forEach((s, si) => {
-      const w = (s.hold / total) * W;
-      const on = (s.out >> ch) & 1;
+      const w = (s.holdTicks / total) * W;
+      const on = (s.out >>> ch) & 1;
       segs.push(<rect key={si} x={x} y={on ? 0 : H * 0.55} width={Math.max(0.4, w - 0.3)} height={on ? H * 0.5 : H * 0.42} fill={on ? "var(--high)" : "#3a3a52"} rx="0.5" />);
       x += w;
     });
-    rows.push(<g key={ch} transform={`translate(0 ${ch * (H + GAP)})`}><line x1="0" y1={H} x2={W} y2={H} stroke="#23232f" strokeWidth="0.4" />{segs}</g>);
+    rows.push(<g key={ch} transform={`translate(0 ${row * (H + GAP)})`}><line x1="0" y1={H} x2={W} y2={H} stroke="#23232f" strokeWidth="0.4" />{segs}</g>);
   }
   // current step marker
-  let cx = 0; for (let i = 0; i < curStep; i++) cx += (steps[i]?.hold || 0) / total * W;
+  let cx = 0; for (let i = 0; i < curStep; i++) cx += (steps[i]?.holdTicks || 0) / total * W;
   return (
     <svg viewBox={`0 0 ${W} ${nOut * (H + GAP)}`} style={{ width: "100%", height: nOut * (H + GAP) * 1.3, display: "block" }} preserveAspectRatio="none">
       {rows}
-      {playing && <rect x={cx} y={0} width={(steps[curStep]?.hold || 0) / total * W} height={nOut * (H + GAP)} fill="color-mix(in oklab, var(--accent) 22%, transparent)" />}
+      {playing && <rect x={cx} y={0} width={(steps[curStep]?.holdTicks || 0) / total * W} height={nOut * (H + GAP)} fill="color-mix(in oklab, var(--accent) 22%, transparent)" />}
     </svg>
   );
 }
@@ -40,12 +54,14 @@ export function PatternEditor() {
   const S = PochiStore.get();
   const p = S.pattern;
   const connected = S.connStatus === "connected";
-  const nOut = S.splitIndex;
+  const outs = PochiStore.outputChannels();
+  const nOut = outs.length;
   const running = p.playState === "running";
+  const tickNs = PochiStore.tickNs();
 
   async function loadFile() {
     if (!tauriAvailable) {
-      PochiStore.addLog("error", "pattern load: file dialog requires the Tauri runtime");
+      PochiStore.addLog("error", "pattern file: file dialog requires the Tauri runtime");
       return;
     }
     const path = await open({ filters: [{ name: "TOML", extensions: ["toml"] }], multiple: false });
@@ -57,7 +73,7 @@ export function PatternEditor() {
       {/* preview */}
       <div style={{ background: "var(--scope-bg)", border: "1px solid var(--border)", borderRadius: "var(--r-sm)", padding: "8px 8px 6px" }}>
         <div className="eyebrow" style={{ marginBottom: 6 }}>Timing Preview · {nOut}ch</div>
-        <PatternPreview steps={p.steps} nOut={nOut} curStep={p.curStep} playing={running} />
+        <PatternPreview steps={p.steps} outs={outs} curStep={p.curStep} playing={running} />
       </div>
 
       {/* step table */}
@@ -65,11 +81,11 @@ export function PatternEditor() {
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: "var(--surface-2)", borderBottom: "1px solid var(--border-soft)" }}>
           <span className="eyebrow" style={{ width: 22 }}>#</span>
           <span className="eyebrow" style={{ flex: 1 }}>output bits (MSB→LSB)</span>
-          <span className="eyebrow" style={{ width: 56, textAlign: "right" }}>hold µs</span>
+          <span className="eyebrow" style={{ width: 108, textAlign: "right" }}>hold (ticks · {tickNs} ns)</span>
         </div>
         <div className="scroll-y" style={{ maxHeight: 188 }}>
           {p.steps.map((s, i) => (
-            <StepRow key={i} step={s} idx={i} nOut={nOut} active={running && p.curStep === i} />
+            <StepRow key={i} step={s} idx={i} outs={outs} tickNs={tickNs} active={running && p.curStep === i} />
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, padding: 7, borderTop: "1px solid var(--border-soft)" }}>
@@ -113,12 +129,43 @@ export function PatternEditor() {
   );
 }
 
-function StepRow({ step, idx, nOut, active }: { step: PatternStepUi; idx: number; nOut: number; active: boolean }) {
+/// Hold field that keeps its own text so partial input such as "1." survives
+/// while typing; the parsed tick count is pushed to the store on every
+/// change and shown with its nanosecond equivalent underneath. Plain numbers
+/// are ticks; `ns` / `us` / `ms` suffixes are converted.
+function HoldInput({ holdTicks, tickNs, onChange }: { holdTicks: number; tickNs: number; onChange: (holdTicks: number) => void }) {
+  const [text, setText] = useState(String(holdTicks));
+  const [lastTicks, setLastTicks] = useState(holdTicks);
+  if (holdTicks !== lastTicks) {
+    // Changed from outside (TOML load, step removal): follow the store.
+    setLastTicks(holdTicks);
+    setText(String(holdTicks));
+  }
+  const valid = holdTicks >= 1;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", width: 108 }}>
+      <input className="field" value={text} aria-label="hold ticks" aria-invalid={!valid}
+        onChange={(e) => {
+          const ticks = parseHoldTicks(e.target.value, tickNs);
+          setText(e.target.value);
+          setLastTicks(ticks);
+          onChange(ticks);
+        }}
+        style={{ width: 96, padding: "3px 6px", fontSize: 11, textAlign: "right", borderColor: valid ? undefined : "#ef4444" }} />
+      <span className="mono dim" data-testid="hold-readout" style={{ fontSize: 8.5, color: valid ? undefined : "#ef4444" }}>
+        {valid ? formatHold(holdTicks, tickNs) : "invalid hold"}
+      </span>
+    </div>
+  );
+}
+
+function StepRow({ step, idx, outs, tickNs, active }: { step: PatternStepUi; idx: number; outs: number[]; tickNs: number; active: boolean }) {
   const bits = [];
-  for (let b = nOut - 1; b >= 0; b--) {
-    const on = (step.out >> b) & 1;
+  for (let i = outs.length - 1; i >= 0; i--) {
+    const b = outs[i];
+    const on = (step.out >>> b) & 1;
     bits.push(
-      <button key={b} onClick={() => PochiStore.updateStep(idx, { out: (step.out ^ (1 << b)) >>> 0 })}
+      <button key={b} title={pinLabel(b)} onClick={() => PochiStore.updateStep(idx, { out: (step.out ^ (1 << b)) >>> 0 })}
         style={{ width: 15, height: 17, borderRadius: 2, border: "1px solid " + (on ? "var(--high)" : "var(--border)"), background: on ? "var(--high)" : "var(--scope-bg)", cursor: "pointer", padding: 0, color: on ? "#0d0d15" : "var(--text-dim)", fontSize: 8, fontWeight: 700, fontFamily: "var(--font-mono)" }}>
         {on ? "1" : "0"}
       </button>
@@ -128,7 +175,7 @@ function StepRow({ step, idx, nOut, active }: { step: PatternStepUi; idx: number
     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border-soft)", background: active ? "color-mix(in oklab, var(--accent) 14%, transparent)" : "transparent" }}>
       <span className="mono" style={{ width: 22, fontSize: 10.5, color: "var(--text-dim)" }}>{String(idx).padStart(2, "0")}</span>
       <div style={{ flex: 1, display: "flex", gap: 2, flexWrap: "wrap" }}>{bits}</div>
-      <input className="field" value={step.hold} onChange={(e) => PochiStore.updateStep(idx, { hold: parseInt(e.target.value) || 0 })} style={{ width: 52, padding: "3px 6px", fontSize: 11, textAlign: "right" }} />
+      <HoldInput holdTicks={step.holdTicks} tickNs={tickNs} onChange={(holdTicks) => PochiStore.updateStep(idx, { holdTicks })} />
       <button className="btn ghost icon sm" style={{ width: 20, height: 20 }} onClick={() => PochiStore.removeStep(idx)} title="remove">×</button>
     </div>
   );
@@ -144,14 +191,11 @@ export function TimestampViewer() {
   const res = ts.result;
   const tsDepth = S.capabilities?.tsDepth ?? 4096;
 
-  // ts arm takes an *input-channel* bitmask (bit c = channel c), not GPs.
-  // The FW rejects mask bits beyond caps.in_count even when the pin map
-  // assigns more inputs, so clamp to whichever is smaller.
+  // ts arm takes a physical GP bit mask that must be a subset of the input
+  // pins (R-PIN2); "all inputs" is exactly the complement of the direction
+  // mask within the DIO pins.
   function allInputsMask() {
-    const n = Math.min(NUM_PINS - S.splitIndex, S.capabilities?.inCount ?? NUM_PINS);
-    let m = 0;
-    for (let c = 0; c < n; c++) m |= 1 << c;
-    return m >>> 0;
+    return PochiStore.inputMask();
   }
 
   const stats = useMemo(() => {

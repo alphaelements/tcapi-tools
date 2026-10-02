@@ -1,6 +1,6 @@
-// Hardware smoke test — requires a connected Pochi-DIO device.
+// Hardware smoke test — requires a connected Pochi-DIO device (proto=2).
 // Run: dotnet run --project Pochi.Sdk.HwSmoke
-// Mirrors sdk/rust/tests/hw_smoke.rs; restores device state on exit.
+// Mirrors sdk/rust/tests/hw_smoke.rs; restores the RAM pin map on exit.
 
 using Pochi.Sdk;
 
@@ -18,60 +18,71 @@ var debugprobePorts = DebugprobePorts();
 Console.WriteLine("debugprobe ports: " + string.Join(", ", debugprobePorts));
 Check(devices.All(d => !debugprobePorts.Contains(d.Port)), "Debugprobe misdetected");
 
+// GP0-GP11 outputs, everything else an input with pull-down and edge events.
+const uint outputMask = 0x0000_0FFF;
+const uint inputMask = Pins.ValidDioMask & ~outputMask;
+var testMap = new PinMap(
+    Flags: 0, Direction: outputMask, PullUp: 0, PullDown: inputMask, OutDefault: 0,
+    OutPolarity: 0, InPolarity: 0, Edge: inputMask);
+
 var device = devices[0];
 using (var conn = Connection.Open(device.Port))
 {
-    var version = conn.Version();
-    Console.WriteLine("version: " + WireJson.Serialize(version));
+    Console.WriteLine("firmware: " + WireJson.Serialize(conn.Firmware));
+    Check(conn.Firmware.ProtocolVersion == Pins.ProtoVersion, "unexpected protocol");
     var caps = conn.Caps();
     Console.WriteLine($"caps: {WireJson.Serialize(caps)} has_sync: {caps.HasSync}");
-    Check(caps.MaxDio == 23, "unexpected max_dio");
-    Check(caps.TsResolutionNs != 1000, "old firmware");
+    Check(caps.Dio == Pins.DioChannels, "unexpected dio count");
+    Check(caps.TickNs == Pins.PatternTickNs, "unexpected pattern tick");
     Check(conn.Info().Uid == device.Uid, "info uid mismatch");
+    Check(conn.Ping(0xC0FFEE) == 0xC0FFEE, "ping did not echo");
 
     var originalMap = conn.MapGet();
     Console.WriteLine("original map: " + WireJson.Serialize(originalMap));
 
-    conn.MapSet(new PinMap(
-        Version: 1, OutBase: 0, OutCount: 12, InBase: 12, InCount: 11,
-        Pull: PullMode.Up, Flags: 0x01));
-    var active = conn.MapGet();
-    Check(active.OutCount == 12 && active.InCount == 11, "map set not applied");
+    conn.MapSet(testMap);
+    Check(conn.MapGet() == testMap, "map set not applied");
+    var applied = conn.Caps();
+    Check(applied.Out == 12 && applied.In == 13, "caps do not follow the map");
 
-    conn.Write(0x0A5, 0xFFF);
+    conn.Write(0x0A5, outputMask);
     var state = conn.State();
     Console.WriteLine("state after write 0x0A5: " + WireJson.Serialize(state));
-    Check((state.Outputs & 0xFFF) == 0x0A5, "outputs mismatch after write");
-    conn.Write(0, 0xFFF);
+    Check((state.Outputs & outputMask) == 0x0A5, "outputs mismatch after write");
+    conn.Write(0, outputMask);
 
-    var accepted = conn.PatternLoad(
+    var total = conn.PatternLoad(
     [
-        new PatternStep(OutBits: 0x00F, HoldUs: 1000),
-        new PatternStep(OutBits: 0x000, HoldUs: 1000),
-        new PatternStep(OutBits: 0x0F0, HoldUs: 1000),
-        new PatternStep(OutBits: 0x000, HoldUs: 1000),
+        new PatternStep(OutBits: 0x00F, HoldTicks: PatternStep.HoldTicksFromNs(200_000)),
+        new PatternStep(OutBits: 0x000, HoldTicks: PatternStep.HoldTicksFromNs(200_000)),
+        new PatternStep(OutBits: 0x0F0, HoldTicks: PatternStep.HoldTicksFromNs(200_000)),
+        new PatternStep(OutBits: 0x000, HoldTicks: PatternStep.HoldTicksFromNs(200_000)),
     ]);
-    Check(accepted == 4, $"accepted={accepted}, expected 4");
+    Check(total == 4, $"total={total}, expected 4");
     conn.PatternRun(PatternMode.Once, 1);
     Thread.Sleep(50);
     var afterOnce = conn.PatternStatus();
     Console.WriteLine("pattern status after once: " + WireJson.Serialize(afterOnce));
     Check(afterOnce.State != PatternState.Running, "pattern still running after once");
-    // repeat=0 is BAD_PARAM on FW — no infinite mode.
+    // There is no infinite mode: use a large count and stop.
     conn.PatternRun(PatternMode.Loop, 1000);
     Thread.Sleep(20);
     Check(conn.PatternStatus().State == PatternState.Running, "loop not running");
     conn.PatternStop();
     Check(conn.PatternStatus().State != PatternState.Running, "stop did not stop");
+    conn.PatternReset();
 
-    conn.TsArm(0x07FF, EdgeMode.Both);
-    var result = conn.TsGet(256);
+    conn.TsArm(0x00FF_F000, EdgeMode.Both);
+    var result = conn.TsGet(Protocol.MaxTsGetEvents);
     Console.WriteLine($"ts events without stimulus: {result.Events.Count}");
     conn.TsDisarm();
-    conn.Read(); // connection healthy after counted read
+    conn.Read(); // connection healthy after a counted read
 
-    conn.Subscribe(true);
-    conn.Subscribe(false);
+    // The SDK owns `subscribe`: attaching turns it on, detaching turns it off.
+    using (conn.Events.Subscribe(new NullObserver()))
+    {
+        conn.Read();
+    }
 
     conn.SyncMaster();
     conn.SyncStart();
@@ -84,11 +95,10 @@ using (var conn = Connection.Open(device.Port))
     conn.SyncDisarm();
 
     var raw = conn.Raw("version");
-    Check(raw.StartsWith("OK ", StringComparison.Ordinal), $"raw response: {raw}");
+    Check(raw.Count == 1 && raw[0].StartsWith("OK ", StringComparison.Ordinal), $"raw response: {string.Join(" | ", raw)}");
 
     conn.MapSet(originalMap);
-    conn.MapSave();
-    Check(conn.MapGet().OutCount == originalMap.OutCount, "map restore failed");
+    Check(conn.MapGet() == originalMap, "map restore failed");
 
     Console.WriteLine("hw_smoke: all steps passed");
 }
@@ -123,5 +133,18 @@ static void Check(bool condition, string message)
     if (!condition)
     {
         throw new InvalidOperationException($"SMOKE FAIL: {message}");
+    }
+}
+
+internal sealed class NullObserver : IObserver<PushEvent>
+{
+    public void OnNext(PushEvent value) => Console.WriteLine("event: " + value);
+
+    public void OnCompleted()
+    {
+    }
+
+    public void OnError(Exception error)
+    {
     }
 }

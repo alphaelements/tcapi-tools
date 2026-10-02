@@ -1,0 +1,7 @@
+# Each step needs `out` or `out_bits`. Reported on the line of the step header.
+# expected_error: step 1: one of out or out_bits is required
+# expected_line: 6
+version = 2
+
+[[step]]
+hold = 5

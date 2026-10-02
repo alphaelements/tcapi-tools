@@ -133,16 +133,17 @@ function StatusBar({ fps }: { fps: number }) {
   useStore(["conn", "pins", "sim", "map"]);
   const S = PochiStore.get();
   const connected = S.connStatus === "connected";
+  const outCount = PochiStore.outputChannels().length;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 0, height: 24, flex: "none", background: "var(--surface)", borderTop: "1px solid var(--border)", fontSize: 10.5, color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
       <SbItem accent>{connected ? "● " + (S.version ? "fw " + S.version.fw : "") : "○ offline"}</SbItem>
-      <SbItem>map {S.splitIndex}o/{NUM_PINS - S.splitIndex}i</SbItem>
+      <SbItem>map {outCount}o/{NUM_PINS - outCount}i</SbItem>
       <SbItem>sub {S.subscribed ? "ON" : "off"}</SbItem>
       <SbItem>t {(S.streamT / 1000).toFixed(1)}ms</SbItem>
       <SbItem>scope {S.monitored.size}ch</SbItem>
       <div style={{ flex: 1 }} />
       <SbItem>{fps} fps</SbItem>
-      <SbItem>{S.capabilities ? S.capabilities.clockMhz + " MHz" : "125 MHz"}</SbItem>
+      <SbItem>{"tick " + PochiStore.tickNs() + " ns"}</SbItem>
       <SbItem accent>Pochi-DIO SDK 0.1.0</SbItem>
     </div>
   );
@@ -155,7 +156,7 @@ function SbItem({ children, accent }: { children: React.ReactNode; accent?: bool
 function App() {
   const [t, setTweak] = useTweaks();
   const [leftW, setLeftW] = useState(212);
-  const [rightW, setRightW] = useState(264);
+  const [rightW, setRightW] = useState(340);
   const [logH, setLogH] = useState(156);
   const [logCollapsed, setLogCollapsed] = useState(false);
   const [gpioPct, setGpioPct] = useState(LAYOUT_GPIO[t.layout] ?? 0.4);

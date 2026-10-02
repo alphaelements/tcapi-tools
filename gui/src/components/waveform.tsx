@@ -6,7 +6,8 @@
 // simulation's pure signal functions.
 // ============================================================
 import { useEffect, useRef } from "react";
-import { NUM_PINS, PochiStore, useStore } from "../store/store";
+import { pinLabel } from "../lib/pins";
+import { PochiStore, useStore } from "../store/store";
 import type { Tweaks } from "./settings";
 
 const CHAN_COLORS = [
@@ -15,8 +16,8 @@ const CHAN_COLORS = [
   "#facc15", "#fb923c", "#4ade80", "#818cf8", "#e879f9",
 ];
 
-function channelLabel(gp: number): string {
-  return PochiStore.gpDir(gp) === "input" ? "IN" : "OUT";
+function channelLabel(ch: number): string {
+  return PochiStore.gpDir(ch) === "input" ? "IN" : "OUT";
 }
 
 export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
@@ -25,7 +26,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
   const tweakRef = useRef(tweaks);
   tweakRef.current = tweaks;
   const dragRef = useRef<{ idx: number; tStart: number; winUs: number; plotW: number; PAD_L: number } | null>(null);
-  useStore(["map", "conn"]); // re-render lane list when monitored/connection changes
+  useStore(["map", "conn", "ui"]); // re-render on monitored/connection/rec/window changes (the per-frame "sim" tick is read by the canvas loop)
 
   // cursor read-out (updates via rAF through ref to avoid React churn)
   const readoutRef = useRef<HTMLSpanElement>(null);
@@ -106,7 +107,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
         ctx.fillStyle = color;
         ctx.font = '600 11px "IBM Plex Mono", monospace';
         ctx.textAlign = "left";
-        ctx.fillText("GP" + String(gp).padStart(2, "0"), 10, cy - 3);
+        ctx.fillText(pinLabel(gp), 10, cy - 3);
         ctx.fillStyle = "#64748b";
         ctx.font = '9px "IBM Plex Mono", monospace';
         ctx.fillText(channelLabel(gp), 10, cy + 9);
@@ -242,10 +243,8 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
   }
 
   const S = PochiStore.get();
-  const allInputs: number[] = [];
-  for (let gp = S.splitIndex; gp < NUM_PINS; gp++) allInputs.push(gp);
-  const outs: number[] = [];
-  for (let gp = 0; gp < S.splitIndex; gp++) outs.push(gp);
+  const allInputs = PochiStore.inputChannels();
+  const outs = PochiStore.outputChannels();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, flex: 1, minWidth: 0 }}>
@@ -269,15 +268,15 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
         </div>
         <div className="scroll-y" style={{ width: 132, borderLeft: "1px solid var(--border-soft)", padding: "8px 6px", display: "flex", flexDirection: "column", gap: 2 }}>
           <div className="eyebrow" style={{ padding: "2px 6px 4px" }}>Channels</div>
-          {outs.filter((gp) => S.monitored.has(gp)).length > 0 && (
+          {outs.filter((ch) => S.monitored.has(ch)).length > 0 && (
             <div className="eyebrow dim" style={{ padding: "4px 6px 2px", fontSize: 8.5 }}>Outputs</div>
           )}
-          {outs.map((gp) => S.monitored.has(gp) ? (
-            <ChanRow key={gp} gp={gp} on={true} color={CHAN_COLORS[gp % CHAN_COLORS.length]} />
+          {outs.map((ch) => S.monitored.has(ch) ? (
+            <ChanRow key={ch} ch={ch} on={true} color={CHAN_COLORS[ch % CHAN_COLORS.length]} />
           ) : null)}
           <div className="eyebrow dim" style={{ padding: "6px 6px 2px", fontSize: 8.5 }}>Inputs</div>
-          {allInputs.map((gp) => (
-            <ChanRow key={gp} gp={gp} on={S.monitored.has(gp)} color={CHAN_COLORS[gp % CHAN_COLORS.length]} />
+          {allInputs.map((ch) => (
+            <ChanRow key={ch} ch={ch} on={S.monitored.has(ch)} color={CHAN_COLORS[ch % CHAN_COLORS.length]} />
           ))}
         </div>
       </div>
@@ -285,18 +284,18 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
   );
 }
 
-function ChanRow({ gp, on, color }: { gp: number; on: boolean; color: string }) {
+function ChanRow({ ch, on, color }: { ch: number; on: boolean; color: string }) {
   return (
     <button
-      onClick={() => PochiStore.toggleMonitor(gp)}
+      onClick={() => PochiStore.toggleMonitor(ch)}
       style={{
         display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", borderRadius: 4,
         background: on ? "var(--surface-2)" : "transparent", border: "1px solid " + (on ? "var(--border-soft)" : "transparent"),
         cursor: "pointer", color: on ? "var(--text)" : "var(--text-dim)", textAlign: "left", width: "100%",
       }}>
       <span style={{ width: 9, height: 9, borderRadius: 2, background: on ? color : "#2c2c3c", flex: "none", boxShadow: on ? "0 0 6px " + color + "88" : "none" }}></span>
-      <span className="mono" style={{ fontSize: 10.5, fontWeight: 600 }}>GP{String(gp).padStart(2, "0")}</span>
-      <span className="mono" style={{ fontSize: 8.5, color: "var(--text-dim)", marginLeft: "auto" }}>{channelLabel(gp)}</span>
+      <span className="mono" style={{ fontSize: 10.5, fontWeight: 600 }}>{pinLabel(ch)}</span>
+      <span className="mono" style={{ fontSize: 8.5, color: "var(--text-dim)", marginLeft: "auto" }}>{channelLabel(ch)}</span>
     </button>
   );
 }

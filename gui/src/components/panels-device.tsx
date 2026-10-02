@@ -52,7 +52,7 @@ function DeviceCard({ dev }: { dev: DeviceEntry }) {
         <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-soft)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 8px" }}>
           <Info k="proto" v={S.version?.proto} />
           <Info k="pins" v={S.capabilities?.pins} />
-          <Info k="clock" v={S.capabilities?.clockMhz + "MHz"} />
+          <Info k="tick" v={S.capabilities?.tickNs + " ns"} />
           <Info k="pattern" v={S.capabilities?.maxPattern} />
         </div>
       )}

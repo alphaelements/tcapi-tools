@@ -4,29 +4,50 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use crate::discovery;
-use crate::error::Result;
+use crate::error::{Result, SdkError};
 use crate::protocol;
 use crate::transport::{TrafficHook, Transport};
 use crate::types::{
     Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus, PatternStep, PinMap,
-    PushEvent, TimestampResult, VersionInfo,
+    PushEvent, TimestampResult, TsStatus, VersionInfo, PROTO_VERSION,
 };
 
 /// An open connection to a Pochi-DIO device.
 ///
-/// The connection closes when dropped; [`Connection::close`] exists for
-/// explicit, eager shutdown.
+/// Opening asserts DTR and checks `version`: a device that does not report
+/// `proto=2` is refused with [`SdkError::UnsupportedFirmware`]. The
+/// connection closes when dropped; [`Connection::close`] exists for explicit,
+/// eager shutdown.
 pub struct Connection {
     transport: Transport,
     port_path: String,
+    firmware: String,
 }
 
 impl Connection {
     /// Open a connection to the device at the given serial port path.
     pub fn open(port: &str) -> Result<Self> {
+        Self::establish(Transport::open(port)?, port.to_string())
+    }
+
+    /// Verify the protocol version of a freshly opened transport.
+    pub(crate) fn establish(mut transport: Transport, port_path: String) -> Result<Self> {
+        let data = transport.command("version")?;
+        // A pre-v2 device answers `version` in a different shape; say so
+        // instead of reporting a bare parse error.
+        let version = protocol::parse_version(&data).map_err(|_| {
+            SdkError::UnsupportedFirmware(format!("unrecognised version response: {data}"))
+        })?;
+        if version.protocol_version != PROTO_VERSION {
+            return Err(SdkError::UnsupportedFirmware(format!(
+                "proto={} (this SDK speaks proto={PROTO_VERSION})",
+                version.protocol_version
+            )));
+        }
         Ok(Self {
-            transport: Transport::open(port)?,
-            port_path: port.to_string(),
+            transport,
+            port_path,
+            firmware: format!("{}.{}.{}", version.major, version.minor, version.patch),
         })
     }
 
@@ -53,12 +74,11 @@ impl Connection {
         Self::open(&device.port)
     }
 
-    /// Wrap an already-open serial port (PTY tests, custom transports).
+    /// Wrap an already-open serial port (PTY tests, custom transports). The
+    /// caller asserts DTR on real hardware; `version` is checked as in
+    /// [`Connection::open`].
     pub fn from_port(port: Box<dyn serialport::SerialPort>) -> Result<Self> {
-        Ok(Self {
-            transport: Transport::from_port(port)?,
-            port_path: String::new(),
-        })
+        Self::establish(Transport::from_port(port)?, String::new())
     }
 
     /// Set the command response timeout (default 2 s).
@@ -81,16 +101,23 @@ impl Connection {
         protocol::parse_version(&data)
     }
 
-    /// `caps` — device capabilities. The protocol version is filled in
-    /// from `version` so the struct is complete.
-    ///
-    /// Fails with `UnsupportedFirmware` on pre-Phase 9.6 firmware
-    /// (`ts_res=1000`).
+    /// `ping <value>` — echo test; returns the echoed value, failing with
+    /// `Parse` when the device answers a different one.
+    pub fn ping(&mut self, value: u32) -> Result<u32> {
+        let data = self.transport.command(&format!("ping {value}"))?;
+        let echoed = protocol::parse_pong(&data)?;
+        if echoed != value {
+            return Err(SdkError::Parse(format!(
+                "ping {value} was answered with pong={echoed}"
+            )));
+        }
+        Ok(echoed)
+    }
+
+    /// `caps` — device capabilities. Pre-v2 firmware fails to parse.
     pub fn caps(&mut self) -> Result<Capabilities> {
         let data = self.transport.command("caps")?;
-        let mut caps = protocol::parse_caps(&data)?;
-        caps.protocol_version = self.version()?.protocol_version;
-        Ok(caps)
+        protocol::parse_caps(&data)
     }
 
     /// `info` — device identification (UID, device number).
@@ -101,7 +128,7 @@ impl Connection {
             uid,
             device_number,
             port: self.port_path.clone(),
-            version: None,
+            version: Some(self.firmware.clone()),
         })
     }
 
@@ -122,7 +149,7 @@ impl Connection {
     /// `write <values> <mask>` — set outputs (only masked bits change).
     pub fn write(&mut self, values: u32, mask: u32) -> Result<()> {
         self.transport
-            .command(&format!("write {values:#x} {mask:#x}"))?;
+            .command(&protocol::write_command(values, mask)?)?;
         Ok(())
     }
 
@@ -140,16 +167,9 @@ impl Connection {
         protocol::parse_map(&data)
     }
 
-    /// `map set` from a typed [`PinMap`]. Extended fields (out_default,
-    /// polarities) are zero; use [`Connection::map_set_hex`] to control them.
+    /// `map set` from a typed [`PinMap`]; validated (R-M1) before sending.
     pub fn map_set(&mut self, map: &PinMap) -> Result<()> {
-        self.map_set_hex(&protocol::map_to_hex(map))
-    }
-
-    /// `map set <hex>` — raw 48-char hex map (see `toml` module for TOML
-    /// conversion).
-    pub fn map_set_hex(&mut self, hex: &str) -> Result<()> {
-        self.transport.command(&format!("map set {hex}"))?;
+        self.transport.command(&protocol::map_set_command(map)?)?;
         Ok(())
     }
 
@@ -167,23 +187,43 @@ impl Connection {
 
     // --- pattern ---
 
-    /// `pattern load` from typed steps. Returns the accepted step count.
+    /// `pattern add` — append steps to the pattern buffer, split into as many
+    /// lines as the 256-byte line limit requires. Returns the total step
+    /// count after the last line.
+    pub fn pattern_add(&mut self, steps: &[PatternStep]) -> Result<u16> {
+        let mut total = 0;
+        for line in protocol::pattern_add_commands(steps)? {
+            let data = self.transport.command(&line)?;
+            total = protocol::parse_pattern_total(&data)?;
+        }
+        Ok(total)
+    }
+
+    /// Replace the pattern buffer: `pattern reset`, then [`Self::pattern_add`].
+    /// Returns the total step count.
     pub fn pattern_load(&mut self, steps: &[PatternStep]) -> Result<u16> {
-        let hex = protocol::pattern_to_hex(steps)?;
-        self.pattern_load_hex(&hex)
+        protocol::pattern_add_commands(steps)?;
+        self.pattern_reset()?;
+        self.pattern_add(steps)
     }
 
-    /// `pattern load <hex>` — raw count-prefixed step data.
-    pub fn pattern_load_hex(&mut self, hex: &str) -> Result<u16> {
-        let data = self.transport.command(&format!("pattern load {hex}"))?;
-        protocol::parse_accepted(&data)
-    }
-
-    /// `pattern run <mode> <repeat>` — start playback.
+    /// `pattern run <mode> <repeat>` — start playback. `Once` plays one pass
+    /// and ignores `repeat`; `Loop` needs a `repeat` of 1-65535.
     pub fn pattern_run(&mut self, mode: PatternMode, repeat: u16) -> Result<()> {
         self.transport
-            .command(&protocol::pattern_run_command(mode, repeat))?;
+            .command(&protocol::pattern_run_command(mode, repeat)?)?;
         Ok(())
+    }
+
+    /// `pattern run once` — play the loaded pattern one time.
+    pub fn pattern_run_once(&mut self) -> Result<()> {
+        self.pattern_run(PatternMode::Once, 1)
+    }
+
+    /// `pattern run loop <repeat>` — play the loaded pattern `repeat` times
+    /// (1-65535; there is no infinite mode).
+    pub fn pattern_run_loop(&mut self, repeat: u16) -> Result<()> {
+        self.pattern_run(PatternMode::Loop, repeat)
     }
 
     /// `pattern stop` — stop playback immediately.
@@ -239,24 +279,36 @@ impl Connection {
     /// `ts arm <mask> <mode>` — arm timestamp capture.
     pub fn ts_arm(&mut self, mask: u32, mode: EdgeMode) -> Result<()> {
         self.transport
-            .command(&protocol::ts_arm_command(mask, mode))?;
+            .command(&protocol::ts_arm_command(mask, mode)?)?;
         Ok(())
     }
 
-    /// `ts get <max>` — retrieve captured events (counted multi-line read).
-    /// `timestamp_ns` is the host-computed as-is value; apply
+    /// `ts status` — capture state and pending event count.
+    pub fn ts_status(&mut self) -> Result<TsStatus> {
+        let data = self.transport.command("ts status")?;
+        protocol::parse_ts_status(&data)
+    }
+
+    /// `ts get <max>` — retrieve captured events (counted multi-line read);
+    /// `max_events` must be 1-85, anything else is rejected locally.
+    /// Use [`crate::TimestampEvent::ns`] for the nanosecond value and
     /// [`crate::reconcile`] for straddle correction across events.
     ///
     /// The returned [`TimestampResult::overflow`] is `true` if the FW
     /// reported a ring overflow since the last `ts get` (FW v0.1.2+).
-    /// Note that `max_events` is clamped FW-side: as of FW v0.1.2 a single
-    /// response carries at most 85 events, so draining a full 256-event
-    /// ring may need multiple calls.
+    /// A single response carries at most 85 events, so draining a full
+    /// 256-event ring takes several calls.
     pub fn ts_get(&mut self, max_events: u16) -> Result<TimestampResult> {
         let (data, lines) = self
             .transport
-            .command_counted(&format!("ts get {max_events}"))?;
-        let (_, overflow) = protocol::parse_count_overflow_field(&data)?;
+            .command_counted(&protocol::ts_get_command(max_events)?)?;
+        let (count, overflow) = protocol::parse_ts_get_header(&data)?;
+        if count as usize != lines.len() {
+            return Err(SdkError::Parse(format!(
+                "ts get header announced {count} events but {} lines were read",
+                lines.len()
+            )));
+        }
         let events = lines
             .iter()
             .map(|line| protocol::parse_ts_event_line(line))
@@ -276,17 +328,15 @@ impl Connection {
 
     // --- events ---
 
-    /// `subscribe on|off` — toggle input change push notifications.
-    pub fn subscribe(&mut self, enable: bool) -> Result<()> {
-        let arg = if enable { "on" } else { "off" };
-        self.transport.command(&format!("subscribe {arg}"))?;
-        Ok(())
-    }
-
-    /// Install a push event subscriber. Events (`! INPUT` etc.) arrive on
+    /// Attach a push event subscriber. Events (`! INPUT` etc.) arrive on
     /// the returned channel as they are received, including while other
-    /// commands are in flight. A second call replaces the first subscriber.
-    pub fn subscribe_events(&mut self) -> Receiver<PushEvent> {
+    /// commands are in flight.
+    ///
+    /// The SDK owns the device `subscribe` state: it is switched on when the
+    /// first subscriber attaches and off once the last receiver has been
+    /// dropped (noticed lazily, before the next command). Every subscriber
+    /// gets every event.
+    pub fn subscribe_events(&mut self) -> Result<Receiver<PushEvent>> {
         self.transport.subscribe_events()
     }
 
@@ -318,7 +368,7 @@ impl Connection {
 
     /// `sync count` — current sync clock count.
     ///
-    /// Single-line response (`OK count=N`, no data lines follow) — uses the
+    /// Single-line response (`OK clocks=N`, no data lines follow) — uses the
     /// plain read path, never the counted one.
     pub fn sync_count(&mut self) -> Result<u64> {
         let data = self.transport.command("sync count")?;
@@ -331,15 +381,302 @@ impl Connection {
         Ok(())
     }
 
+    // --- help ---
+
+    /// `help` — the device's command list, one entry per line (counted
+    /// response); the two-space indent of the wire form is removed.
+    pub fn help(&mut self) -> Result<Vec<String>> {
+        let (data, lines) = self.transport.command_counted("help")?;
+        let count = protocol::parse_count_field(&data)?;
+        if count != lines.len() as u64 {
+            return Err(SdkError::Parse(format!(
+                "help header announced {count} lines but {} were read",
+                lines.len()
+            )));
+        }
+        Ok(lines
+            .iter()
+            .map(|line| {
+                line.trim_end()
+                    .strip_prefix("  ")
+                    .unwrap_or(line.trim_end())
+                    .to_string()
+            })
+            .collect())
+    }
+
     // --- escape hatch ---
 
-    /// Send an arbitrary command, returning the raw response line.
-    pub fn raw(&mut self, command: &str) -> Result<String> {
+    /// Send an arbitrary command, returning **every** line of the response
+    /// unparsed (for a counted response: the header and all N lines). A
+    /// device `ERR` is returned as a line, not as an error. `subscribe`, a
+    /// line over 256 bytes and a line containing CR/LF are rejected locally
+    /// with `InvalidArgument`.
+    pub fn raw(&mut self, command: &str) -> Result<Vec<String>> {
         self.transport.raw(command)
     }
 
     /// Close the connection eagerly (equivalent to dropping it).
     pub fn close(self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{pong_for, FakeDevice};
+    use assert_matches::assert_matches;
+
+    fn connect(
+        version_reply: &'static str,
+        extra: impl Fn(&str) -> Option<Vec<String>> + Send + 'static,
+    ) -> (Result<Connection>, FakeDevice) {
+        let (reader, writer, device) = FakeDevice::spawn(move |cmd| {
+            if cmd == "version" {
+                return vec![version_reply.to_string()];
+            }
+            if let Some(pong) = pong_for(cmd) {
+                return pong;
+            }
+            extra(cmd).unwrap_or_else(|| vec!["ERR UNKNOWN_CMD".to_string()])
+        });
+        let mut transport = Transport::from_io(Box::new(reader), Box::new(writer));
+        transport.set_timeout(Duration::from_millis(200));
+        (Connection::establish(transport, "fake".into()), device)
+    }
+
+    #[test]
+    fn open_checks_version_and_accepts_proto_2() {
+        let (conn, dev) = connect("OK fw=0.1.3 proto=2", |_| None);
+        assert!(conn.is_ok());
+        assert_eq!(dev.commands(), ["version"]);
+    }
+
+    #[test]
+    fn info_reports_port_and_firmware_from_the_open_handshake() {
+        let (conn, _dev) = connect("OK fw=0.1.3 proto=2", |cmd| {
+            (cmd == "info").then(|| vec!["OK uid=0123456789ABCDEF devnum=7".to_string()])
+        });
+        let info = conn.unwrap().info().unwrap();
+        assert_eq!(info.uid, "0123456789ABCDEF");
+        assert_eq!(info.device_number, Some(7));
+        assert_eq!(info.port, "fake");
+        assert_eq!(info.version.as_deref(), Some("0.1.3"));
+    }
+
+    #[test]
+    fn open_rejects_other_protocol_versions() {
+        for reply in ["OK fw=0.1.3 proto=1", "OK fw=0.1.3 proto=3"] {
+            let (conn, _dev) = connect(reply, |_| None);
+            assert_matches!(conn.err(), Some(SdkError::UnsupportedFirmware(m)) if m.contains("proto="));
+        }
+    }
+
+    #[test]
+    fn open_rejects_pre_v2_version_reply_as_unsupported_firmware() {
+        let (conn, _dev) = connect("OK v0.1.0 proto=1", |_| None);
+        assert_matches!(conn.err(), Some(SdkError::UnsupportedFirmware(_)));
+    }
+
+    #[test]
+    fn open_fails_when_the_device_does_not_answer() {
+        let (reader, writer, _dev) = FakeDevice::spawn(|_| vec![]);
+        let mut transport = Transport::from_io(Box::new(reader), Box::new(writer));
+        transport.set_timeout(Duration::from_millis(100));
+        assert_matches!(
+            Connection::establish(transport, String::new()).err(),
+            Some(SdkError::Timeout)
+        );
+    }
+
+    #[test]
+    fn ping_returns_the_echoed_value() {
+        let (conn, _dev) = connect("OK fw=0.1.3 proto=2", |_| None);
+        assert_eq!(conn.unwrap().ping(0xFFFF_FFFF).unwrap(), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn ping_fails_with_parse_on_a_different_value() {
+        let (reader, writer, _dev) = FakeDevice::spawn(|cmd| match cmd {
+            "version" => vec!["OK fw=0.1.3 proto=2".to_string()],
+            _ => vec!["OK pong=1".to_string()],
+        });
+        let transport = Transport::from_io(Box::new(reader), Box::new(writer));
+        let mut conn = Connection::establish(transport, String::new()).unwrap();
+        assert_matches!(conn.ping(2), Err(SdkError::Parse(_)));
+    }
+
+    #[test]
+    fn subscribe_events_switches_the_device_on_once() {
+        let (conn, dev) = connect("OK fw=0.1.3 proto=2", |cmd| {
+            (cmd == "subscribe on").then(|| vec!["OK".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        let _a = conn.subscribe_events().unwrap();
+        let _b = conn.subscribe_events().unwrap();
+        assert_eq!(dev.commands(), ["version", "subscribe on"]);
+    }
+
+    const FW: &str = "OK fw=0.1.3 proto=2";
+
+    #[test]
+    fn help_returns_the_counted_lines_without_their_indent() {
+        let (conn, dev) = connect(FW, |cmd| {
+            (cmd == "help").then(|| {
+                vec![
+                    "OK count=2".to_string(),
+                    "  version                                  Get firmware version".to_string(),
+                    "  help                                     Show this help".to_string(),
+                ]
+            })
+        });
+        let lines = conn.unwrap().help().unwrap();
+        assert_eq!(
+            lines,
+            [
+                "version                                  Get firmware version",
+                "help                                     Show this help"
+            ]
+        );
+        assert_eq!(dev.commands(), ["version", "help"]);
+    }
+
+    #[test]
+    fn pattern_run_once_and_loop_send_the_documented_text() {
+        let (conn, dev) = connect(FW, |cmd| {
+            cmd.starts_with("pattern run")
+                .then(|| vec!["OK".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        conn.pattern_run_once().unwrap();
+        conn.pattern_run_loop(10).unwrap();
+        conn.pattern_run(PatternMode::Once, 7).unwrap();
+        conn.pattern_run(PatternMode::Loop, 65535).unwrap();
+        assert_eq!(
+            dev.commands(),
+            [
+                "version",
+                "pattern run once",
+                "pattern run loop 10",
+                "pattern run once",
+                "pattern run loop 65535"
+            ]
+        );
+    }
+
+    #[test]
+    fn pattern_run_loop_rejects_zero_without_sending() {
+        let (conn, dev) = connect(FW, |_| None);
+        let mut conn = conn.unwrap();
+        assert_matches!(conn.pattern_run_loop(0), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(dev.commands(), ["version"]);
+    }
+
+    #[test]
+    fn ts_get_rejects_a_max_outside_1_to_85_without_sending() {
+        let (conn, dev) = connect(FW, |cmd| {
+            (cmd == "ts get 85").then(|| vec!["OK count=0 overflow=0".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        for bad in [0, 86, 256] {
+            assert_matches!(conn.ts_get(bad), Err(SdkError::InvalidArgument(_)), "{bad}");
+        }
+        assert!(conn.ts_get(85).unwrap().events.is_empty());
+        assert_eq!(dev.commands(), ["version", "ts get 85"]);
+    }
+
+    #[test]
+    fn ts_get_returns_the_events_of_the_counted_response() {
+        let (conn, _dev) = connect(FW, |cmd| {
+            (cmd == "ts get 5").then(|| {
+                vec![
+                    "OK count=2 overflow=1".to_string(),
+                    "  in=0x00000005 c=1000 p=7 s=1".to_string(),
+                    "  in=0x0000000a c=2000 p=0 s=0".to_string(),
+                ]
+            })
+        });
+        let result = conn.unwrap().ts_get(5).unwrap();
+        assert!(result.overflow);
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0].ns(40), 1_000_280);
+        assert_eq!(result.events[1].ns(40), 2_000_000);
+    }
+
+    #[test]
+    fn ts_status_reports_armed_pending_and_overflow() {
+        let (conn, _dev) = connect(FW, |cmd| {
+            (cmd == "ts status").then(|| vec!["OK armed=1 pending=3 overflow=1".to_string()])
+        });
+        let status = conn.unwrap().ts_status().unwrap();
+        assert_eq!(
+            (status.armed, status.pending, status.overflow),
+            (true, 3, true)
+        );
+    }
+
+    /// 256 steps (the pattern buffer size) go out as `pattern reset` plus
+    /// several `pattern add` lines, none over the 256-byte line limit.
+    #[test]
+    fn pattern_load_sends_256_steps_in_multiple_lines() {
+        let total = std::sync::Arc::new(std::sync::Mutex::new(0u16));
+        let (conn, dev) = connect(FW, {
+            let total = std::sync::Arc::clone(&total);
+            move |cmd| {
+                if cmd == "pattern reset" {
+                    *total.lock().unwrap() = 0;
+                    return Some(vec!["OK".to_string()]);
+                }
+                let steps = cmd.strip_prefix("pattern add ")?;
+                let mut t = total.lock().unwrap();
+                *t += steps.split(' ').count() as u16;
+                Some(vec![format!("OK total={}", *t)])
+            }
+        });
+        let steps: Vec<PatternStep> = (0..256u32)
+            .map(|i| PatternStep {
+                out_bits: i & 0x3,
+                hold_ticks: i + 1,
+            })
+            .collect();
+        assert_eq!(conn.unwrap().pattern_load(&steps).unwrap(), 256);
+
+        let sent = dev.commands();
+        assert_eq!(sent[1], "pattern reset");
+        let adds: Vec<&String> = sent[2..].iter().collect();
+        assert!(adds.len() > 1, "256 steps must not fit in one line");
+        assert!(adds.iter().all(|l| l.len() <= protocol::MAX_LINE_BYTES));
+        // The steps arrive in order, none lost or duplicated.
+        let wire: Vec<&str> = adds
+            .iter()
+            .flat_map(|l| l.strip_prefix("pattern add ").unwrap().split(' '))
+            .collect();
+        let expected: Vec<String> = steps.iter().map(|s| s.to_text().unwrap()).collect();
+        assert_eq!(wire, expected);
+    }
+
+    #[test]
+    fn pattern_load_rejects_a_bad_pattern_before_resetting_the_device() {
+        let (conn, dev) = connect(FW, |_| None);
+        let mut conn = conn.unwrap();
+        let bad = [PatternStep {
+            out_bits: 0x1,
+            hold_ticks: 0,
+        }];
+        assert_matches!(conn.pattern_load(&bad), Err(SdkError::InvalidArgument(_)));
+        assert_matches!(conn.pattern_load(&[]), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(dev.commands(), ["version"]);
+    }
+
+    #[test]
+    fn raw_refuses_subscribe_and_returns_all_lines() {
+        let (conn, dev) = connect("OK fw=0.1.3 proto=2", |cmd| {
+            (cmd == "help").then(|| vec!["OK count=1".to_string(), "  help  Help".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        assert_matches!(conn.raw("subscribe on"), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(conn.raw("help").unwrap(), ["OK count=1", "  help  Help"]);
+        assert_eq!(dev.commands(), ["version", "help"]);
     }
 }

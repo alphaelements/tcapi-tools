@@ -1,0 +1,5 @@
+# `step` must be an array of tables ([[step]]).
+# expected_error: step 1: step must be a table
+# expected_line: 5
+version = 2
+step = [1]

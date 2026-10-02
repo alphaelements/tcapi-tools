@@ -1,0 +1,8 @@
+# Malformed TOML. Only the "toml syntax: " prefix and the line are fixed;
+# the rest of the message is parser specific.
+# expected_error_prefix: toml syntax: 
+# expected_line: 6
+version = 2
+[[step]
+out = ["GP0"]
+hold = 5

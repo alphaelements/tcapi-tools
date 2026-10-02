@@ -1,0 +1,8 @@
+# `out` must be an array of pin names.
+# expected_error: step 1: out must be an array of pin names
+# expected_line: 7
+version = 2
+
+[[step]]
+out = "GP0"
+hold = 5

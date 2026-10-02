@@ -1,0 +1,8 @@
+# Unknown key inside a step.
+# expected_error: unknown key "holdd" in step 1
+# expected_line: 8
+version = 2
+
+[[step]]
+out = ["GP0"]
+holdd = 5

@@ -1,0 +1,5 @@
+# `pins` must be a table.
+# expected_error: pins must be a table
+# expected_line: 5
+version = 2
+pins = 3

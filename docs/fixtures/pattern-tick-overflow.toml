@@ -1,0 +1,9 @@
+# 4294967296 ticks exceeds u32::MAX.
+# expected_error: step 1: hold 4294967296 tick exceeds the u32 tick range
+# expected_line: 9
+version = 2
+unit = "tick"
+
+[[step]]
+out = ["GP0"]
+hold = 4294967296

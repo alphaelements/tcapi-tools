@@ -27,7 +27,6 @@ pub fn run() {
             commands::subscribe,
             commands::map_get,
             commands::map_set,
-            commands::map_set_hex,
             commands::map_save,
             commands::map_default,
             commands::map_load_toml,

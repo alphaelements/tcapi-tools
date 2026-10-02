@@ -1,0 +1,7 @@
+# `default` only applies to outputs.
+# expected_error: GP1: default is only allowed on an output pin
+# expected_line: 7
+version = 2
+
+[pins]
+GP1 = { dir = "in", default = 1 }

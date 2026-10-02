@@ -12,8 +12,37 @@ import { useSyncExternalStore } from "react";
 import { fmt } from "../lib/fmt";
 import { EdgeHistory } from "../lib/ring";
 import { invoke, listen, tauriAvailable } from "../lib/tauri";
+import {
+  PIN_MAP_DEFAULT,
+  channelConfig,
+  inputChannels,
+  inputMask,
+  outputChannels,
+  withChannelFlag,
+  withChannelPull,
+  withChannelRole,
+  type ChannelConfig,
+  type ChannelFlag,
+  type ChannelRole,
+  type PullDir,
+  type WirePinMap,
+} from "../lib/pinmap";
+import {
+  PATTERN_TICK_NS,
+  stepsFromWire,
+  stepsToWire,
+  type PatternStepUi,
+  type WirePatternStep,
+} from "../lib/pattern";
+import { DIO_CHANNELS, checkDioMask, chBit, chMask } from "../lib/pins";
 
-export const NUM_PINS = 23;
+export type { PatternStepUi } from "../lib/pattern";
+
+/// Number of DIO channels shown by the UI (ch0-ch24).
+export const NUM_PINS = DIO_CHANNELS;
+
+/// Hold of a freshly added pattern step: 200 µs at the 200 ns tick.
+const DEFAULT_HOLD_TICKS = 1000;
 
 // ---- wire types (serde snake_case from the Rust backend) ----
 
@@ -30,33 +59,24 @@ interface WireVersionInfo {
   protocol_version: number;
 }
 interface WireCapabilities {
-  protocol_version: number;
-  max_dio: number;
-  out_count: number;
-  in_count: number;
-  ts_resolution_ns: number;
-  max_pattern_steps: number;
-  ts_ring_events: number;
+  dio: number;
+  out: number;
+  in: number;
+  ts_res_ns: number;
+  tick_ns: number;
+  pattern_max: number;
+  ring: number;
   features: number;
-}
-interface WirePinMap {
-  version: number;
-  out_base: number;
-  out_count: number;
-  in_base: number;
-  in_count: number;
-  pull: "none" | "up" | "down";
-  flags: number;
 }
 interface WireIoState {
   inputs: number;
   outputs: number;
-  flags: number;
 }
 interface WirePatternStatus {
   state: "idle" | "loaded" | "running" | "done";
-  current_step: number;
-  loops_done: number;
+  step: number;
+  loops: number;
+  total: number;
 }
 interface WireTsRow {
   inputs: number;
@@ -72,7 +92,7 @@ interface WireTsResult {
   overflow: boolean;
 }
 interface WirePatternTomlPayload {
-  steps: { out_bits: number; hold_us: number }[];
+  steps: WirePatternStep[];
   accepted: number;
 }
 
@@ -93,10 +113,6 @@ export interface PinMeta {
   lastChangeMs: number | null;
   pull: string;
   edges: number;
-}
-export interface PatternStepUi {
-  out: number;
-  hold: number;
 }
 export interface TsRowUi {
   idx: number;
@@ -134,22 +150,22 @@ interface StoreState {
   version: { fw: string; proto: string } | null;
   capabilities: {
     pins: number;
-    inCount: number;
     maxPattern: number;
     tsDepth: number;
-    clockMhz: number;
+    /// Pattern tick (`caps tick_ns`): the unit of every step hold.
+    tickNs: number;
+    /// Timestamp phase step (`caps ts_res_ns`).
+    tsResNs: number;
     sync: boolean;
     reset: boolean;
   } | null;
   subscribed: boolean;
 
-  // pins
-  splitIndex: number;
+  // pins (`inputs` / `outputs` are wire words: bit = GP)
+  map: WirePinMap;
   pinMeta: PinMeta[];
   inputs: number;
   outputs: number;
-  pullDefault: "up" | "down" | "none";
-  mapFlags: number;
   mapApplied: boolean;
 
   // waveform
@@ -219,7 +235,6 @@ function createStore() {
   }
 
   // initial pin meta
-  const SPLIT = 8; // demo default until map_get reflects the device
   const pinMeta: PinMeta[] = [];
   for (let i = 0; i < NUM_PINS; i++) {
     pinMeta.push({ gp: i, value: 0, lastChangeMs: null, pull: "none", edges: 0 });
@@ -235,12 +250,10 @@ function createStore() {
     capabilities: null,
     subscribed: true,
 
-    splitIndex: SPLIT,
+    map: { ...PIN_MAP_DEFAULT },
     pinMeta,
     inputs: 0,
     outputs: 0,
-    pullDefault: "down",
-    mapFlags: 0x03,
     mapApplied: true,
 
     monitored: new Set<number>(),
@@ -275,8 +288,9 @@ function createStore() {
   const history: EdgeHistory[] = [];
   for (let i = 0; i < NUM_PINS; i++) history.push(new EdgeHistory());
 
-  function gpDir(gp: number): "output" | "input" {
-    return gp < S.splitIndex ? "output" : "input";
+  /// Direction of channel `ch` according to the current map.
+  function gpDir(ch: number): "output" | "input" {
+    return (S.map.direction & chMask(ch)) !== 0 ? "output" : "input";
   }
 
   function log(direction: LogDirection, text: string) {
@@ -298,21 +312,18 @@ function createStore() {
     return (performance.now() - S._t0) * 1000;
   }
 
-  // Wire words pack one bit per *channel* (`read`: "bit N corresponds to
-  // input channel N"), not per GP. With the UI's single-split map model,
-  // output channel c = GP c and input channel c = GP (splitIndex + c).
+  // Wire words pack one bit per physical GP pin (REF-V2 R-PIN); the UI
+  // indexes pins by channel, so every access goes through chBit.
   function applyPinValues(word: number, dir: "input" | "output", t: number) {
-    const base = dir === "output" ? 0 : S.splitIndex;
-    const count = dir === "output" ? S.splitIndex : NUM_PINS - S.splitIndex;
-    for (let c = 0; c < count; c++) {
-      const gp = base + c;
-      const v = (word >> c) & 1;
-      const m = S.pinMeta[gp];
+    const chans = dir === "output" ? outputChannels(S.map) : inputChannels(S.map);
+    for (const ch of chans) {
+      const v = chBit(word, ch);
+      const m = S.pinMeta[ch];
       if (v !== m.value) {
         m.value = v;
         m.lastChangeMs = t;
         m.edges++;
-        history[gp].push(t, v as 0 | 1);
+        history[ch].push(t, v);
       }
     }
   }
@@ -382,8 +393,8 @@ function createStore() {
       invoke<WirePatternStatus>("pattern_status")
         .then((st) => {
           if (S.pattern.playState !== "running") return;
-          S.pattern.curStep = st.current_step;
-          S.pattern.loops = st.loops_done;
+          S.pattern.curStep = st.step;
+          S.pattern.loops = st.loops;
           if (st.state === "done" || st.state === "idle") {
             S.pattern.playState = st.state === "done" ? "done" : "idle";
             stopPatternPoll();
@@ -396,10 +407,9 @@ function createStore() {
     }, 350);
   }
 
+  /// Wire mask of the output pins.
   function outputMask(): number {
-    let m = 0;
-    for (let gp = 0; gp < S.splitIndex; gp++) m |= 1 << gp;
-    return m >>> 0;
+    return S.map.direction >>> 0;
   }
 
   function resetDeviceState() {
@@ -423,23 +433,53 @@ function createStore() {
   }
 
   async function writeOutputsWord(values: number, mask: number) {
-    await invoke("write_outputs", { values: values >>> 0, mask: mask >>> 0 });
-    S.outputs = (values & mask) | (S.outputs & ~mask);
-    S.outputs >>>= 0;
+    // The device rejects value bits outside the DIO pins, so send only the
+    // masked bits.
+    const masked = (values & mask) >>> 0;
+    checkDioMask("write mask", mask >>> 0);
+    await invoke("write_outputs", { values: masked, mask: mask >>> 0 });
+    S.outputs = (masked | (S.outputs & ~mask)) >>> 0;
     applyPinValues(S.outputs, "output", S._pausedAt ?? nowStreamT());
     bump("pins");
   }
 
-  // The UI strip models the map as one split point (out_base = 0,
-  // in_base = out_count), which matches the device default layout.
+  /// Per-pin pull label for tooltips: inputs show their pull, outputs "—".
+  function pinPull(map: WirePinMap, ch: number): string {
+    const bit = chMask(ch);
+    if (map.direction & bit) return "—";
+    if (map.pull_up & bit) return "up";
+    if (map.pull_down & bit) return "down";
+    return "none";
+  }
+
   function applyWireMap(map: WirePinMap) {
-    S.splitIndex = map.out_count;
-    S.pullDefault = map.pull;
-    S.mapFlags = map.flags;
-    for (let gp = 0; gp < NUM_PINS; gp++) {
-      S.pinMeta[gp].pull = gpDir(gp) === "input" ? map.pull : "—";
+    S.map = { ...map };
+    for (let ch = 0; ch < NUM_PINS; ch++) {
+      S.pinMeta[ch].pull = pinPull(map, ch);
     }
     S.mapApplied = true;
+  }
+
+  /// R-M5: a successful `map set` / `map default` returns the device's
+  /// pattern engine to idle (steps erased, so the next run re-uploads) and
+  /// disarms timestamp capture.
+  function mapReplacedOnDevice() {
+    stopPatternPoll();
+    S.pattern.accepted = null;
+    S.pattern.playState = "idle";
+    S.pattern.curStep = 0;
+    S.pattern.loops = 0;
+    S.ts.armed = false;
+    S.ts.bufferEst = 0;
+  }
+
+  /// Edit the working map; it is only sent on Apply.
+  function editMap(map: WirePinMap) {
+    S.map = map;
+    for (let ch = 0; ch < NUM_PINS; ch++) {
+      S.pinMeta[ch].pull = pinPull(map, ch);
+    }
+    S.mapApplied = false;
   }
 
   // ====== ACTIONS ======
@@ -528,15 +568,11 @@ function createStore() {
           proto: String(version.protocol_version),
         };
         S.capabilities = {
-          pins: caps.max_dio,
-          // The FW services at most this many input channels regardless of
-          // the pin map; ts arm masks beyond it are BAD_PARAM.
-          inCount: caps.in_count,
-          maxPattern: caps.max_pattern_steps,
-          tsDepth: caps.ts_ring_events,
-          // System clock is not reported by `caps` (ts_resolution_ns is the
-          // 40 ns phase step); 125 MHz is the device constant from the spec.
-          clockMhz: 125,
+          pins: caps.dio,
+          maxPattern: caps.pattern_max,
+          tsDepth: caps.ring,
+          tickNs: caps.tick_ns,
+          tsResNs: caps.ts_res_ns,
           sync: (caps.features & 0x1) !== 0,
           reset: (caps.features & 0x2) !== 0,
         };
@@ -552,16 +588,14 @@ function createStore() {
         S.inputs = io.inputs >>> 0;
         S.outputs = io.outputs >>> 0;
         // Initialize pin levels without counting the boot snapshot as edges.
-        for (let gp = 0; gp < NUM_PINS; gp++) {
-          const isIn = gpDir(gp) === "input";
-          const c = isIn ? gp - S.splitIndex : gp;
-          S.pinMeta[gp].value = ((isIn ? S.inputs : S.outputs) >> c) & 1;
-          history[gp].clear(S.pinMeta[gp].value as 0 | 1);
+        for (let ch = 0; ch < NUM_PINS; ch++) {
+          const word = gpDir(ch) === "input" ? S.inputs : S.outputs;
+          const level = chBit(word, ch);
+          S.pinMeta[ch].value = level;
+          history[ch].clear(level);
         }
         // default monitor first 8 inputs
-        S.monitored = new Set<number>();
-        for (let gp = S.splitIndex; gp < NUM_PINS && S.monitored.size < 8; gp++)
-          S.monitored.add(gp);
+        S.monitored = new Set<number>(inputChannels(S.map).slice(0, 8));
         bump("conn", "pins", "map");
       } catch (e) {
         logError("connect", e);
@@ -613,10 +647,10 @@ function createStore() {
     },
 
     // outputs
-    async toggleOutput(gp: number) {
+    async toggleOutput(ch: number) {
       if (S.pattern.playState === "running") return;
       try {
-        await writeOutputsWord(S.outputs ^ (1 << gp), outputMask());
+        await writeOutputsWord(S.outputs ^ chMask(ch), outputMask());
       } catch (e) {
         logError("write", e);
       }
@@ -647,38 +681,37 @@ function createStore() {
     },
 
     // pin map
-    setSplit(idx: number) {
-      idx = Math.max(0, Math.min(NUM_PINS, idx));
-      if (idx === S.splitIndex) return;
-      S.splitIndex = idx;
+    /// Channels configured as outputs / inputs in the working map.
+    outputChannels: () => outputChannels(S.map),
+    inputChannels: () => inputChannels(S.map),
+    /// Wire mask of the input pins (what `ts arm` takes for "all inputs").
+    inputMask: () => inputMask(S.map),
+    /// Pattern tick of the connected device (the 200 ns default before connect).
+    tickNs: () => S.capabilities?.tickNs ?? PATTERN_TICK_NS,
+    /// One editor row: everything the working map says about channel `ch`.
+    channelConfig: (ch: number): ChannelConfig => channelConfig(S.map, ch),
+    setChannelRole(ch: number, role: ChannelRole) {
+      const next = withChannelRole(S.map, ch, role);
+      if (next === S.map) return;
+      editMap(next);
       S.outputs = (S.outputs & outputMask()) >>> 0;
-      S.mapApplied = false;
       bump("map", "pins");
     },
-    setPull(mode: "up" | "down" | "none") {
-      S.pullDefault = mode;
-      S.mapApplied = false;
+    setChannelPull(ch: number, mode: PullDir) {
+      editMap(withChannelPull(S.map, ch, mode));
       bump("map");
     },
-    setMapFlag(bit: number, on: boolean) {
-      S.mapFlags = on ? S.mapFlags | bit : S.mapFlags & ~bit;
-      S.mapApplied = false;
+    setChannelFlag(ch: number, flag: ChannelFlag, on: boolean) {
+      editMap(withChannelFlag(S.map, ch, flag, on));
       bump("map");
     },
     async applyMap() {
-      const map: WirePinMap = {
-        version: 1,
-        out_base: 0,
-        out_count: S.splitIndex,
-        in_base: S.splitIndex,
-        in_count: NUM_PINS - S.splitIndex,
-        pull: S.pullDefault,
-        flags: S.mapFlags,
-      };
       try {
-        await invoke("map_set", { map });
+        await invoke("map_set", { map: S.map });
         S.mapApplied = true;
-        bump("map", "pins");
+        mapReplacedOnDevice();
+        bump("map", "pins", "pattern", "ts");
+        await actions.readState();
       } catch (e) {
         logError("map set", e);
       }
@@ -695,8 +728,9 @@ function createStore() {
         await invoke("map_default");
         const map = await invoke<WirePinMap>("map_get");
         applyWireMap(map);
-        S.outputs = (S.outputs & outputMask()) >>> 0;
-        bump("map", "pins");
+        mapReplacedOnDevice();
+        bump("map", "pins", "pattern", "ts");
+        await actions.readState();
       } catch (e) {
         logError("map default", e);
       }
@@ -704,8 +738,7 @@ function createStore() {
     async loadMapToml(path: string) {
       try {
         const map = await invoke<WirePinMap>("map_load_toml", { path });
-        applyWireMap(map);
-        S.mapApplied = false;
+        editMap(map);
         bump("map", "pins");
         await actions.applyMap();
       } catch (e) {
@@ -714,9 +747,9 @@ function createStore() {
     },
 
     // waveform
-    toggleMonitor(gp: number) {
-      if (S.monitored.has(gp)) S.monitored.delete(gp);
-      else S.monitored.add(gp);
+    toggleMonitor(ch: number) {
+      if (S.monitored.has(ch)) S.monitored.delete(ch);
+      else S.monitored.add(ch);
       bump("map");
     },
     setCursor(i: number, t: number) {
@@ -724,19 +757,19 @@ function createStore() {
       bump("sim");
     },
     clearWave() {
-      for (let gp = 0; gp < NUM_PINS; gp++)
-        history[gp].clear(S.pinMeta[gp].value as 0 | 1);
+      for (let ch = 0; ch < NUM_PINS; ch++)
+        history[ch].clear(S.pinMeta[ch].value as 0 | 1);
       bump("sim");
     },
     setRecording(on: boolean) {
       S.recording = on;
       S._pausedAt = on ? null : nowStreamT();
       if (on) S.streamT = nowStreamT();
-      bump("sim");
+      bump("sim", "ui");
     },
     setWindow(us: number) {
       S.windowUs = us;
-      bump("sim");
+      bump("sim", "ui");
     },
 
     // pattern
@@ -744,10 +777,7 @@ function createStore() {
       S.pattern.steps = steps;
       try {
         const accepted = await invoke<number>("pattern_load", {
-          steps: steps.map((s) => ({
-            out_bits: s.out >>> 0,
-            hold_us: s.hold,
-          })),
+          steps: stepsToWire(steps),
         });
         S.pattern.accepted = accepted;
         S.pattern.playState = "idle";
@@ -757,11 +787,11 @@ function createStore() {
       } catch (e) {
         S.pattern.accepted = null;
         bump("pattern");
-        logError("pattern load", e);
+        logError("pattern upload", e);
       }
     },
     addStep() {
-      S.pattern.steps.push({ out: 0, hold: 200 });
+      S.pattern.steps.push({ out: 0, holdTicks: DEFAULT_HOLD_TICKS });
       S.pattern.accepted = null;
       bump("pattern");
     },
@@ -803,7 +833,7 @@ function createStore() {
         S.pattern.curStep = 0;
         S.pattern.loops = 0;
         // ensure output pins are on scope
-        for (let gp = 0; gp < S.splitIndex; gp++) S.monitored.add(gp);
+        for (const ch of outputChannels(S.map)) S.monitored.add(ch);
         startPatternPoll();
         bump("pattern", "map");
       } catch (e) {
@@ -861,23 +891,21 @@ function createStore() {
           "pattern_load_toml",
           { path },
         );
-        S.pattern.steps = payload.steps.map((s) => ({
-          out: s.out_bits >>> 0,
-          hold: s.hold_us,
-        }));
+        S.pattern.steps = stepsFromWire(payload.steps);
         S.pattern.accepted = payload.accepted;
         S.pattern.playState = "idle";
         S.pattern.curStep = 0;
         S.pattern.loops = 0;
         bump("pattern");
       } catch (e) {
-        logError("pattern load", e);
+        logError("pattern toml", e);
       }
     },
 
     // timestamp
     async armTs(mask: number, edge: "rising" | "falling" | "both") {
       try {
+        checkDioMask("ts arm mask", mask >>> 0);
         await invoke("ts_arm", { mask: mask >>> 0, mode: edge });
         S.ts.armed = true;
         S.ts.mask = mask >>> 0;

@@ -1,7 +1,9 @@
 //! Push event and traffic-log forwarding: SDK channels → Tauri events.
 
-use std::sync::mpsc::Receiver;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
+use std::time::Duration;
 
 use pochi_sdk::{PushEvent, TrafficDirection, TrafficHook};
 use serde::Serialize;
@@ -40,38 +42,43 @@ pub fn traffic_hook(app: AppHandle) -> TrafficHook {
 /// Map one push event to its Tauri event name and JSON payload.
 pub fn route(event: &PushEvent) -> (&'static str, Value) {
     match event {
-        PushEvent::InputChange {
-            inputs,
-            timestamp_us,
-        } => (
+        PushEvent::InputChange { inputs, t_us } => (
             "pochi://input",
-            json!({ "inputs": inputs, "timestampUs": timestamp_us }),
+            json!({ "inputs": inputs, "timestampUs": t_us }),
         ),
         PushEvent::PatternDone { loops } => ("pochi://pattern-done", json!({ "loops": loops })),
         PushEvent::PatternTimeout { loops } => {
             ("pochi://pattern-timeout", json!({ "loops": loops }))
         }
-        PushEvent::SyncDone {
-            status,
-            devnum,
-            timestamp,
-        } => (
-            "pochi://sync-done",
-            json!({ "status": status, "devnum": devnum, "timestamp": timestamp }),
-        ),
         PushEvent::Unknown { raw } => ("pochi://unknown-event", json!({ "raw": raw })),
     }
 }
 
+/// How often the forwarder checks its stop flag while no event arrives.
+const FORWARDER_POLL: Duration = Duration::from_millis(100);
+
 /// Forward push events to the webview until the connection (and with it the
-/// sending side of the channel) is dropped.
-pub fn spawn_forwarder(app: AppHandle, rx: Receiver<PushEvent>) {
-    std::thread::spawn(move || {
-        while let Ok(event) = rx.recv() {
-            let (name, payload) = route(&event);
-            let _ = app.emit(name, payload);
+/// sending side of the channel) is dropped or the returned flag is set.
+/// Ending the forwarder drops `rx`, which tells the SDK this subscriber is
+/// gone.
+pub fn spawn_forwarder(app: AppHandle, rx: Receiver<PushEvent>) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    std::thread::spawn({
+        let stop = Arc::clone(&stop);
+        move || {
+            while !stop.load(Ordering::Relaxed) {
+                match rx.recv_timeout(FORWARDER_POLL) {
+                    Ok(event) => {
+                        let (name, payload) = route(&event);
+                        let _ = app.emit(name, payload);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
         }
     });
+    stop
 }
 
 #[cfg(test)]
@@ -82,7 +89,7 @@ mod tests {
     fn input_change_routes_to_input_event() {
         let (name, payload) = route(&PushEvent::InputChange {
             inputs: 0x1F00,
-            timestamp_us: 1_234_567,
+            t_us: 1_234_567,
         });
         assert_eq!(name, "pochi://input");
         assert_eq!(payload["inputs"], 0x1F00);
@@ -101,18 +108,6 @@ mod tests {
         let (name, payload) = route(&PushEvent::PatternTimeout { loops: 7 });
         assert_eq!(name, "pochi://pattern-timeout");
         assert_eq!(payload["loops"], 7);
-    }
-
-    #[test]
-    fn sync_done_routes_with_fields() {
-        let (name, payload) = route(&PushEvent::SyncDone {
-            status: "ok".to_string(),
-            devnum: 2,
-            timestamp: 99,
-        });
-        assert_eq!(name, "pochi://sync-done");
-        assert_eq!(payload["status"], "ok");
-        assert_eq!(payload["devnum"], 2);
     }
 
     #[test]

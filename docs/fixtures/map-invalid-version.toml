@@ -1,0 +1,7 @@
+# Unsupported schema version (only 2 is accepted).
+# expected_error: unsupported version: expected 2, got 1
+# expected_line: 4
+version = 1
+
+[pins]
+GP0 = { dir = "out" }

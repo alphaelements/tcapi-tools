@@ -1,0 +1,8 @@
+# `out_bits` must be within 0..=0xffffffff.
+# expected_error: step 1: out_bits must be between 0 and 0xffffffff
+# expected_line: 7
+version = 2
+
+[[step]]
+out_bits = 0x100000000
+hold = 5

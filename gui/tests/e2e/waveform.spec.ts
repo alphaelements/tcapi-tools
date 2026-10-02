@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { connect } from "./helpers";
+import { connect, pinCell } from "./helpers";
 
 async function canvasColorCount(page: import("@playwright/test").Page): Promise<number> {
   return page.evaluate(() => {
@@ -35,10 +35,7 @@ test("output edges appear as input activity on the scope", async ({ page }) => {
     await page.waitForTimeout(60);
   }
   // Edge counters prove the data path; the canvas keeps rendering.
-  await expect(page.locator('[title^="GP12 ·"]').first()).toHaveAttribute(
-    "title",
-    /edges: [1-9]/,
-  );
+  await expect(pinCell(page, 12)).toHaveAttribute("title", /edges: [1-9]/);
   const after = await canvasColorCount(page);
   expect(after).toBeGreaterThanOrEqual(Math.min(before, 4));
 });
@@ -47,9 +44,9 @@ test("channel toggles, window presets, pause and clear", async ({ page }) => {
   await connect(page);
   // Remove one monitored channel → 7ch (re-adding output channels is
   // only possible once they joined the scope, e.g. via a pattern run).
-  await page.getByRole("button", { name: "GP12 IN" }).click();
+  await page.getByRole("button", { name: "GP12 (ch12) IN" }).click();
   await expect(page.getByText("scope 7ch")).toBeVisible();
-  await page.getByRole("button", { name: "GP13 IN" }).click();
+  await page.getByRole("button", { name: "GP13 (ch13) IN" }).click();
   await expect(page.getByText("scope 6ch")).toBeVisible();
   // Window presets switch.
   await page.getByRole("button", { name: "12ms" }).click();

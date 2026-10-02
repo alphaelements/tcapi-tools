@@ -1,0 +1,8 @@
+# `out_bits` must be an integer (a string such as "0x5" is not).
+# expected_error: step 1: out_bits must be an integer
+# expected_line: 7
+version = 2
+
+[[step]]
+out_bits = "0x5"
+hold = 5

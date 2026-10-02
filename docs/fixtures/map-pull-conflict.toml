@@ -1,0 +1,10 @@
+# Pull-up and pull-down requested together. A pin has a single `pull`
+# setting by design, so the device-level conflict (pull_up and pull_down
+# sharing a bit) cannot be written as a valid map; the array form below
+# is rejected.
+# expected_error: GP4: pull must be "up", "down" or "none"
+# expected_line: 10
+version = 2
+
+[pins]
+GP4 = { dir = "in", pull = ["up", "down"] }

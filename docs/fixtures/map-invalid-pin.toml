@@ -1,0 +1,7 @@
+# GP23 is outside VALID_DIO_MASK (0x0c7fffff).
+# expected_error: invalid pin GP23: valid pins are GP0-GP22, GP26, GP27
+# expected_line: 7
+version = 2
+
+[pins]
+GP23 = { dir = "out" }

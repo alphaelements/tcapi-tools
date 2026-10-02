@@ -1,0 +1,12 @@
+# Step 2 sets bit 23 (GP23), which is outside VALID_DIO_MASK.
+# expected_error: step 2: out_bits 0x00800000 has bits outside VALID_DIO_MASK
+# expected_line: 11
+version = 2
+
+[[step]]
+out_bits = 0x1
+hold = 5
+
+[[step]]
+out_bits = 0x00800000
+hold = 5

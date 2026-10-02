@@ -1,0 +1,9 @@
+# Unknown top-level key.
+# expected_error: unknown key "loop"
+# expected_line: 5
+version = 2
+loop = 3
+
+[[step]]
+out = ["GP0"]
+hold = 5

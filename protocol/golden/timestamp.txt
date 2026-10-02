@@ -1,0 +1,1443 @@
+# proto=2
+# generated_by=hand
+# fw_commit=f376234f2f93
+
+# Simulated time starts at 0 in every case. Without sync, c= is the microsecond
+# counter, p=0 and s=0. Continuation lines are `in=<logical armed bits> c= p= s=`.
+
+# --- ts status: nothing armed ---
+> ts status
+< OK armed=0 pending=0 overflow=0
+
+# --- ts arm then status, get with no events returns count=0, disarm ---
+> ts arm 0x1 rising
+< OK
+> ts status
+< OK armed=1 pending=0 overflow=0
+> ts get 5
+< OK count=0 overflow=0
+> ts disarm
+< OK
+> ts status
+< OK armed=0 pending=0 overflow=0
+
+# --- ts rising: only logical rising edges are recorded ---
+> ts arm 0x1 rising
+< OK
+~ advance us=1000
+~ in=0x00000001
+~ in=0x00000000
+~ advance us=500
+~ in=0x00000001
+> ts status
+< OK armed=1 pending=2 overflow=0
+> ts get 10
+< OK count=2 overflow=0
+<   in=0x00000001 c=1000 p=0 s=0
+<   in=0x00000001 c=1500 p=0 s=0
+> ts status
+< OK armed=1 pending=0 overflow=0
+
+# --- ts falling: only logical falling edges are recorded ---
+> ts arm 0x1 falling
+< OK
+~ in=0x00000001
+~ advance us=100
+~ in=0x00000000
+~ advance us=100
+~ in=0x00000001
+~ advance us=100
+~ in=0x00000000
+> ts get 10
+< OK count=2 overflow=0
+<   in=0x00000000 c=100 p=0 s=0
+<   in=0x00000000 c=300 p=0 s=0
+
+# --- ts both: every edge is recorded ---
+> ts arm 0x1 both
+< OK
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+> ts get 10
+< OK count=3 overflow=0
+<   in=0x00000001 c=10 p=0 s=0
+<   in=0x00000000 c=20 p=0 s=0
+<   in=0x00000001 c=30 p=0 s=0
+
+# --- ts mode names are case-insensitive ---
+> ts arm 0x1 BOTH
+< OK
+> ts disarm
+< OK
+> TS ARM 0x1 Rising
+< OK
+> ts disarm
+< OK
+> Ts Arm 0x1 FALLING
+< OK
+> TS STATUS
+< OK armed=1 pending=0 overflow=0
+
+# --- ts arm mask: recorded in= only has bits inside the arm mask, other pins are 0 ---
+> ts arm 0x1 rising
+< OK
+~ advance us=50
+~ in=0x00000005
+~ advance us=50
+~ in=0x00000000
+~ advance us=50
+~ in=0x00000004
+> ts get 10
+< OK count=1 overflow=0
+<   in=0x00000001 c=50 p=0 s=0
+
+# --- ts arm mask with several pins: each armed pin produces its own event ---
+> ts arm 0x3 rising
+< OK
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000003
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000002
+> ts get 10
+< OK count=3 overflow=0
+<   in=0x00000001 c=10 p=0 s=0
+<   in=0x00000003 c=20 p=0 s=0
+<   in=0x00000002 c=40 p=0 s=0
+
+# --- ts uses logical levels: with ipol a physical falling edge is a logical rising edge ---
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7ffffe def=0x00000000 opol=0x00000000 ipol=0x00000001 edge=0x0c7fffff
+< OK
+> ts arm 0x1 rising
+< OK
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+> ts get 10
+< OK count=1 overflow=0
+<   in=0x00000001 c=20 p=0 s=0
+
+# --- ts uses logical levels: with ipol a physical rising edge is a logical falling edge ---
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7ffffe def=0x00000000 opol=0x00000000 ipol=0x00000001 edge=0x0c7fffff
+< OK
+> ts arm 0x1 falling
+< OK
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+> ts get 10
+< OK count=1 overflow=0
+<   in=0x00000000 c=10 p=0 s=0
+
+# --- ts get consumes events: max limits the batch and the rest stays pending ---
+> ts arm 0x1 both
+< OK
+~ advance us=1
+~ in=0x00000001
+~ advance us=1
+~ in=0x00000000
+~ advance us=1
+~ in=0x00000001
+> ts get 2
+< OK count=2 overflow=0
+<   in=0x00000001 c=1 p=0 s=0
+<   in=0x00000000 c=2 p=0 s=0
+> ts status
+< OK armed=1 pending=1 overflow=0
+> ts get 2
+< OK count=1 overflow=0
+<   in=0x00000001 c=3 p=0 s=0
+> ts get 2
+< OK count=0 overflow=0
+
+# --- ts get 1 returns one event ---
+> ts arm 0x1 both
+< OK
+~ advance us=1
+~ in=0x00000001
+~ advance us=1
+~ in=0x00000000
+> ts get 1
+< OK count=1 overflow=0
+<   in=0x00000001 c=1 p=0 s=0
+> ts status
+< OK armed=1 pending=1 overflow=0
+
+# --- ts get: max 85 is the largest accepted value ---
+> ts arm 0x1 both
+< OK
+> ts get 85
+< OK count=0 overflow=0
+
+# --- ts get: max outside 1-85 is refused ---
+# ASSUMPTION: values outside 1-85 are refused with BAD_PARAM (v1 truncated them to 85); the spec table gives the range 1-85
+> ts arm 0x1 both
+< OK
+> ts get 0
+< ERR BAD_PARAM
+> ts get 86
+< ERR BAD_PARAM
+> ts get 65535
+< ERR BAD_PARAM
+> ts get 65536
+< ERR BAD_PARAM
+> ts get -1
+< ERR BAD_PARAM
+> ts get abc
+< ERR BAD_PARAM
+> ts get
+< ERR BAD_PARAM
+> ts get 1 2
+< ERR BAD_PARAM
+
+# --- ts get: not armed ---
+> ts get 1
+< ERR NOT_ARMED
+> ts arm 0x1 both
+< OK
+> ts disarm
+< OK
+> ts get 1
+< ERR NOT_ARMED
+
+# --- ts ring overflow: the oldest events are overwritten, overflow is reported once (ring=256) ---
+# ASSUMPTION: the ring holds 256 events (caps ring=256) and drops the oldest on overflow
+# 257 toggles at 10 us spacing: events 2..257 remain, get 5 returns events 2..6
+> ts arm 0x1 both
+< OK
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+> ts status
+< OK armed=1 pending=256 overflow=1
+> ts get 5
+< OK count=5 overflow=1
+<   in=0x00000000 c=20 p=0 s=0
+<   in=0x00000001 c=30 p=0 s=0
+<   in=0x00000000 c=40 p=0 s=0
+<   in=0x00000001 c=50 p=0 s=0
+<   in=0x00000000 c=60 p=0 s=0
+> ts status
+< OK armed=1 pending=251 overflow=0
+> ts get 2
+< OK count=2 overflow=0
+<   in=0x00000001 c=70 p=0 s=0
+<   in=0x00000000 c=80 p=0 s=0
+
+# --- ts overflow is not reported when the ring is exactly full (ring=256) ---
+# ASSUMPTION: the ring holds 256 events
+> ts arm 0x1 both
+< OK
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+~ advance us=10
+~ in=0x00000001
+~ advance us=10
+~ in=0x00000000
+> ts status
+< OK armed=1 pending=256 overflow=0
+
+# --- ts arm: arming twice is refused and keeps the first arm ---
+> ts arm 0x1 rising
+< OK
+> ts arm 0x2 falling
+< ERR BUSY
+~ advance us=10
+~ in=0x00000001
+> ts get 10
+< OK count=1 overflow=0
+<   in=0x00000001 c=10 p=0 s=0
+
+# --- ts arm: arm again after disarm ---
+> ts arm 0x1 rising
+< OK
+> ts disarm
+< OK
+> ts arm 0x1 rising
+< OK
+
+# --- ts arm: empty mask ---
+> ts arm 0x0 rising
+< ERR BAD_PARAM
+> ts status
+< OK armed=0 pending=0 overflow=0
+
+# --- ts arm: mask outside the DIO pins ---
+> ts arm 0x10000000 rising
+< ERR BAD_PARAM
+> ts arm 0x80000000 both
+< ERR BAD_PARAM
+> ts arm 0x10000001 rising
+< ERR BAD_PARAM
+> ts status
+< OK armed=0 pending=0 overflow=0
+
+# --- ts arm: highest and lowest DIO pins ---
+> ts arm 0x0c000000 both
+< OK
+> ts disarm
+< OK
+> ts arm 0x00400001 both
+< OK
+
+# --- ts arm: mask on an output pin is refused ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> ts arm 0x1 rising
+< ERR BAD_PARAM
+> ts arm 0x1f rising
+< ERR BAD_PARAM
+> ts arm 0x10 rising
+< OK
+
+# --- ts arm: no input pins configured ---
+> map set flags=0x00 dir=0x0c7fffff pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> ts arm 0x1 rising
+< ERR NO_RESOURCE
+> ts status
+< OK armed=0 pending=0 overflow=0
+
+# --- ts arm: malformed arguments ---
+> ts arm
+< ERR BAD_PARAM
+> ts arm 0x1
+< ERR BAD_PARAM
+> ts arm 0x1 sideways
+< ERR BAD_PARAM
+> ts arm xyz rising
+< ERR BAD_PARAM
+> ts arm 0x100000000 rising
+< ERR BAD_PARAM
+> ts arm 0x1 rising extra
+< ERR BAD_PARAM
+> ts arm -1 rising
+< ERR BAD_PARAM
+> ts status
+< OK armed=0 pending=0 overflow=0
+
+# --- ts disarm: when not armed it is a no-op ---
+> ts disarm
+< OK
+> ts disarm
+< OK
+> ts status
+< OK armed=0 pending=0 overflow=0
+
+# --- ts disarm discards pending events ---
+# ASSUMPTION: disarm clears the ring and the overflow flag
+> ts arm 0x1 both
+< OK
+~ advance us=10
+~ in=0x00000001
+> ts disarm
+< OK
+> ts status
+< OK armed=0 pending=0 overflow=0
+> ts arm 0x1 both
+< OK
+> ts get 10
+< OK count=0 overflow=0
+
+# --- ts status: pending events are counted and overflow stays 0 ---
+> ts arm 0x1 both
+< OK
+~ advance us=1
+~ in=0x00000001
+~ advance us=1
+~ in=0x00000000
+> ts status
+< OK armed=1 pending=2 overflow=0
+> ts status
+< OK armed=1 pending=2 overflow=0
+
+# --- ts under sync: s=1, c counts sync clocks, p is the 40 ns phase 0..24, s returns to 0 after sync stop ---
+~ advance us=100
+> sync master
+< OK
+> sync start
+< OK
+> ts arm 0x1 both
+< OK
+~ advance ns=2500
+~ in=0x00000001
+~ advance ns=1479
+~ in=0x00000000
+~ advance ns=21
+~ in=0x00000001
+> sync stop
+< OK
+~ advance ns=3000
+~ in=0x00000000
+> ts get 10
+< OK count=4 overflow=0
+<   in=0x00000001 c=2 p=12 s=1
+<   in=0x00000000 c=3 p=24 s=1
+<   in=0x00000001 c=4 p=0 s=1
+<   in=0x00000000 c=107 p=0 s=0
+
+# --- subscribe on and off ---
+> subscribe on
+< OK
+> subscribe off
+< OK
+
+# --- subscribe: repeated on and off are accepted ---
+> subscribe on
+< OK
+> subscribe on
+< OK
+> subscribe off
+< OK
+> subscribe off
+< OK
+
+# --- subscribe: command and argument are case-insensitive ---
+> SUBSCRIBE ON
+< OK
+> Subscribe Off
+< OK
+
+# --- subscribe: malformed arguments ---
+> subscribe
+< ERR BAD_PARAM
+> subscribe maybe
+< ERR BAD_PARAM
+> subscribe 1
+< ERR BAD_PARAM
+> subscribe on off
+< ERR BAD_PARAM
+
+# --- subscribe on: no input pins configured, off is still accepted ---
+> map set flags=0x00 dir=0x0c7fffff pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> subscribe on
+< ERR NO_RESOURCE
+> subscribe off
+< OK

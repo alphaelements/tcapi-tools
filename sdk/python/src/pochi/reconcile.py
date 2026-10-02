@@ -1,6 +1,10 @@
-"""Host-side timestamp reconciliation (FW Phase 9.6). Direct port of
+"""Host-side timestamp reconciliation. Direct port of
 ``sdk/rust/src/reconcile.rs`` (itself from pochi-cli); must produce
 identical results for the shared test vectors.
+
+The phase resolution is an **argument** (``ts_res_ns``, from
+``Capabilities.ts_res_ns``) of every function that converts phase to
+nanoseconds. No phase-step constant exists in the SDK.
 
 The device sends raw ``(count, phase)`` pairs. Because the three DMA
 channels (snapshot / count / phase) latch tens of ns apart, count and
@@ -13,25 +17,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .types import timestamp_ns
+
 #: Exhaustive search limit: 3^8 = 6561 combinations.
 MAX_EXHAUSTIVE_K = 8
 
-#: Nanoseconds per raw_phase step.
-PHASE_STEP_NS = 40
+
+def as_is_ns(count: int, phase: int, ts_res_ns: int, sync_active: bool = True) -> int:
+    """Naive (uncorrected) ns value for one event. Goes through
+    :func:`pochi.types.timestamp_ns`, so free running (``sync_active``
+    False) the phase is ignored exactly as in ``TimestampEvent.ns``."""
+    return timestamp_ns(count, phase, sync_active, ts_res_ns)
 
 
-def candidates(count: int, phase: int) -> tuple[int, int, int]:
+def candidates(
+    count: int, phase: int, ts_res_ns: int, sync_active: bool = True
+) -> tuple[int, int, int]:
     """The three physically possible ns values for one event:
     ``(as-is, count-1, count+1)``. Always all three — boundary-band
     filtering is wrong (±1 count drift occurs even at mid-range phases).
     """
-    base = count * 1000 + phase * PHASE_STEP_NS
+    base = as_is_ns(count, phase, ts_res_ns, sync_active)
     return (base, base - 1000, base + 1000)
-
-
-def as_is_ns(count: int, phase: int) -> int:
-    """Naive (uncorrected) ns value for one event."""
-    return count * 1000 + phase * PHASE_STEP_NS
 
 
 def _pairwise_score(values: list[int]) -> int:
@@ -42,7 +49,9 @@ def _pairwise_score(values: list[int]) -> int:
     return total
 
 
-def reconcile(events: list[tuple[int, int]]) -> list[int]:
+def reconcile(
+    events: list[tuple[int, int]], ts_res_ns: int, sync_active: bool = True
+) -> list[int]:
     """Reconcile K events assumed to share one physical instant.
 
     Returns one ns value per input event. K=1 and K>MAX_EXHAUSTIVE_K
@@ -52,7 +61,7 @@ def reconcile(events: list[tuple[int, int]]) -> list[int]:
     k = len(events)
     if k == 0:
         return []
-    cands = [candidates(c, p) for c, p in events]
+    cands = [candidates(c, p, ts_res_ns, sync_active) for c, p in events]
     if k == 1 or k > MAX_EXHAUSTIVE_K:
         return [c[0] for c in cands]
 
@@ -98,9 +107,10 @@ class SourceEvent:
 
     #: Device identifier (UID or "local" for single-device use).
     device: str
-    #: Channel label, e.g. "GP0" (best-effort, derived from inputs diff).
+    #: Channel label, e.g. ``pin_label(26)`` = "GP26 (ch23)".
     channel: str
-    inputs: str
+    #: Logical input levels, physical GP bits.
+    inputs: int
     raw_count: int
     raw_phase: int
     sync_active: bool
@@ -123,7 +133,7 @@ class ReconcileGroup:
     warning: str | None = None
 
 
-def group_events(events: list[SourceEvent]) -> list[ReconcileGroup]:
+def group_events(events: list[SourceEvent], ts_res_ns: int) -> list[ReconcileGroup]:
     """Group events by count proximity (gap >= 2 starts a new group) and
     reconcile within each group. Groups that cannot be corrected (K=1,
     mixed sync_active, sync_active=0 across devices, K too large) keep
@@ -134,18 +144,20 @@ def group_events(events: list[SourceEvent]) -> list[ReconcileGroup]:
     current: list[SourceEvent] = []
     for ev in sorted_events:
         if current and ev.raw_count - current[0].raw_count >= 2:
-            groups.append(_finish_group(current))
+            groups.append(_finish_group(current, ts_res_ns))
             current = []
         current.append(ev)
     if current:
-        groups.append(_finish_group(current))
+        groups.append(_finish_group(current, ts_res_ns))
     return groups
 
 
-def _finish_group(events: list[SourceEvent]) -> ReconcileGroup:
+def _finish_group(events: list[SourceEvent], ts_res_ns: int) -> ReconcileGroup:
     approx_count = events[0].raw_count if events else 0
     k = len(events)
-    as_is = [as_is_ns(e.raw_count, e.raw_phase) for e in events]
+    as_is = [
+        as_is_ns(e.raw_count, e.raw_phase, ts_res_ns, e.sync_active) for e in events
+    ]
     sync_states = {e.sync_active for e in events}
     devices = {e.device for e in events}
 
@@ -173,7 +185,11 @@ def _finish_group(events: list[SourceEvent]) -> ReconcileGroup:
         )
     else:
         pairs = [(e.raw_count, e.raw_phase) for e in events]
-        reconciled_ns, reconciled, warning = reconcile(pairs), True, None
+        reconciled_ns, reconciled, warning = (
+            reconcile(pairs, ts_res_ns, events[0].sync_active),
+            True,
+            None,
+        )
 
     return ReconcileGroup(approx_count, events, reconciled_ns, reconciled, warning)
 

@@ -1,0 +1,8 @@
+# `hold` must be an integer (a float is not).
+# expected_error: step 1: hold must be an integer
+# expected_line: 8
+version = 2
+
+[[step]]
+out = ["GP0"]
+hold = 5.0

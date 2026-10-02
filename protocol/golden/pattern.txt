@@ -1,0 +1,610 @@
+# proto=2
+# generated_by=hand
+# fw_commit=f376234f2f93
+
+# Every case that needs outputs first applies map OUT2 (GP0-GP1 are outputs):
+#   map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+
+# --- pattern status: nothing loaded ---
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- pattern add: first steps move the engine to loaded ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5
+< OK total=1
+> pattern status
+< OK state=loaded step=0 loops=0 total=1
+
+# --- pattern add: totals accumulate over calls ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern add 0x2:1
+< OK total=3
+> pattern add 0x3:7 0x0:7 0x1:7
+< OK total=6
+> pattern status
+< OK state=loaded step=0 loops=0 total=6
+
+# --- pattern add: step syntax, decimal and hex ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 1:5 0x2:0xa 3:10 0x1:0xA
+< OK total=4
+
+# --- pattern add: command names are case-insensitive ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> PATTERN ADD 0x1:5
+< OK total=1
+> Pattern Status
+< OK state=loaded step=0 loops=0 total=1
+
+# --- pattern add: out_bits 0 is a valid all-low step ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x0:1
+< OK total=1
+
+# --- pattern add: out_bits may use every output pin (R-PT1) ---
+# R-PT1
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x3:1
+< OK total=1
+
+# --- pattern add: out_bits on a non-output pin is refused (R-PT1) ---
+# R-PT1
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x4:5
+< ERR BAD_PARAM
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- pattern add: out_bits partly outside the outputs is refused (R-PT1) ---
+# R-PT1
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x7:5
+< ERR BAD_PARAM
+
+# --- pattern add: default map has no outputs, so only out_bits 0 is allowed (R-PT1) ---
+# R-PT1
+> pattern add 0x1:5
+< ERR BAD_PARAM
+> pattern add 0x0:5
+< OK total=1
+
+# --- pattern add is atomic: one bad step rejects the whole call (R-PT3) ---
+# R-PT3
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x2:5
+< OK total=2
+> pattern add 0x1:5 0x4:5 0x2:5
+< ERR BAD_PARAM
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+> pattern add 0x1:5 0x2:0
+< ERR BAD_PARAM
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+> pattern add 0x1:5 oops
+< ERR BAD_PARAM
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+
+# --- pattern add: hold_ticks 0 is refused ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:0
+< ERR BAD_PARAM
+
+# --- pattern add: hold_ticks does not fit in u32 ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:4294967296
+< ERR BAD_PARAM
+
+# --- pattern add: no steps ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add
+< ERR BAD_PARAM
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- pattern add: malformed steps ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1
+< ERR BAD_PARAM
+> pattern add 0x1:
+< ERR BAD_PARAM
+> pattern add :5
+< ERR BAD_PARAM
+> pattern add 0x1:5:6
+< ERR BAD_PARAM
+> pattern add 0x1:abc
+< ERR BAD_PARAM
+> pattern add xyz:5
+< ERR BAD_PARAM
+> pattern add 0x100000000:5
+< ERR BAD_PARAM
+> pattern add -1:5
+< ERR BAD_PARAM
+> pattern add 0x1:-5
+< ERR BAD_PARAM
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- pattern add is refused while running (R-PT3) ---
+# R-PT3
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+> pattern add 0x1:5
+< ERR BUSY
+> pattern status
+< OK state=running step=0 loops=0 total=2
+
+# --- pattern run once: running until the last step has finished (R-PT5: step = hold_ticks*200ns + 133ns) ---
+# R-PT5
+# step 0 = 5*200+133 = 1133 ns, step 1 = 10*200+133 = 2133 ns, total 3266 ns
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+> pattern run once
+< OK
+> pattern status
+< OK state=running step=0 loops=0 total=2
+~ advance ns=1132
+> pattern status
+< OK state=running step=0 loops=0 total=2
+~ advance ns=1
+> pattern status
+< OK state=running step=1 loops=0 total=2
+~ advance ns=2132
+> pattern status
+< OK state=running step=1 loops=0 total=2
+~ advance ns=1
+< ! PATTERN_DONE loops=1
+# ASSUMPTION: after completion step is back at 0
+> pattern status
+< OK state=done step=0 loops=1 total=2
+
+# --- pattern run once: explicit repeat 1 is the same as the default ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once 1
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+
+# --- pattern run: mode is case-insensitive ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> Pattern Run ONCE
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+
+# --- pattern run loop 3: loops counts completed passes, DONE after the last one ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 3
+< OK
+~ advance ns=3266
+> pattern status
+< OK state=running step=0 loops=1 total=2
+~ advance ns=3265
+> pattern status
+< OK state=running step=1 loops=1 total=2
+~ advance ns=3266
+> pattern status
+< OK state=running step=1 loops=2 total=2
+~ advance ns=1
+< ! PATTERN_DONE loops=3
+> pattern status
+< OK state=done step=0 loops=3 total=2
+
+# --- pattern run loop 1 finishes after one pass ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 1
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+
+# --- pattern run loop: repeat range is u16, 0 and a missing value are refused ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 65535
+< OK
+> pattern stop
+< OK
+> pattern run loop 65536
+< ERR BAD_PARAM
+> pattern run loop 0
+< ERR BAD_PARAM
+> pattern run loop -1
+< ERR BAD_PARAM
+> pattern run loop
+< ERR BAD_PARAM
+> pattern run loop abc
+< ERR BAD_PARAM
+> pattern run loop 1 2
+< ERR BAD_PARAM
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+
+# --- pattern run: unknown or missing mode ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run
+< ERR BAD_PARAM
+> pattern run twice 1
+< ERR BAD_PARAM
+> pattern run once abc
+< ERR BAD_PARAM
+> pattern run once 65536
+< ERR BAD_PARAM
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+
+# --- pattern run: nothing loaded ---
+# ASSUMPTION: the not-loaded case is reported as BAD_PARAM
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern run once
+< ERR BAD_PARAM
+> pattern run loop 1
+< ERR BAD_PARAM
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- pattern run while running ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 5
+< OK
+> pattern run once
+< ERR BUSY
+> pattern run loop 5
+< ERR BUSY
+> pattern status
+< OK state=running step=0 loops=0 total=2
+
+# --- pattern run again after done replays the same steps ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+> pattern run once
+< OK
+> pattern status
+< OK state=running step=0 loops=0 total=2
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+
+# --- R-PT5: one step of 1000 ticks lasts 200133 ns ---
+# R-PT5
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:1000
+< OK total=1
+> pattern run once
+< OK
+~ advance ns=200132
+> pattern status
+< OK state=running step=0 loops=0 total=1
+~ advance ns=1
+< ! PATTERN_DONE loops=1
+
+# --- R-PT5: the 133 ns overhead is paid by every step, three 1-tick steps take 999 ns ---
+# R-PT5
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:1 0x2:1 0x0:1
+< OK total=3
+> pattern run once
+< OK
+~ advance ns=998
+> pattern status
+< OK state=running step=2 loops=0 total=3
+~ advance ns=1
+< ! PATTERN_DONE loops=1
+
+# --- pattern outputs: pins follow the step being held, the last step stays after done ---
+# ASSUMPTION: the output latch keeps the last step's value after completion
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x2:10
+< OK total=2
+> pattern run once
+< OK
+> state
+< OK in=0x00000000 out=0x00000001
+~ advance ns=1133
+> state
+< OK in=0x00000000 out=0x00000002
+~ advance ns=2133
+< ! PATTERN_DONE loops=1
+> state
+< OK in=0x00000000 out=0x00000002
+
+# --- pattern stop: running pattern stops, steps stay loaded, no DONE event ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 5
+< OK
+~ advance ns=1133
+> pattern stop
+< OK
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+~ advance ns=100000
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+
+# --- pattern stop: not running is refused ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern stop
+< ERR NOT_RUNNING
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern stop
+< ERR NOT_RUNNING
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+> pattern stop
+< ERR NOT_RUNNING
+> pattern status
+< OK state=done step=0 loops=1 total=2
+
+# --- pattern stop: second stop is refused ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 5
+< OK
+> pattern stop
+< OK
+> pattern stop
+< ERR NOT_RUNNING
+
+# --- pattern reset: clears loaded steps ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern reset
+< OK
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+> pattern run once
+< ERR BAD_PARAM
+
+# --- pattern reset: aborts a running pattern, no DONE event ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 5
+< OK
+~ advance ns=1133
+> pattern reset
+< OK
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+~ advance ns=100000
+> pattern add 0x2:1
+< OK total=1
+
+# --- pattern reset: idle and done states ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern reset
+< OK
+> pattern reset
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+> pattern reset
+< OK
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- pattern reset: a fresh add after reset starts counting from zero ---
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern reset
+< OK
+> pattern add 0x1:5
+< OK total=1
+
+# --- pattern run once <repeat>: once is a single pass, repeat is accepted and ignored ---
+# REVISED: the A0 draft assumed once N == loop N; the firmware plays `once` as exactly one pass
+# (only `loop` repeats), one PATTERN_DONE with loops=1
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once 3
+< OK
+~ advance ns=3265
+> pattern status
+< OK state=running step=1 loops=0 total=2
+~ advance ns=1
+< ! PATTERN_DONE loops=1
+> pattern status
+< OK state=done step=0 loops=1 total=2
+
+# --- pattern add after done: Done -> Loaded, earlier steps are kept and the new ones are appended (R-PT3) ---
+# R-PT3
+# ASSUMPTION: the pass counter is cleared when Done -> Loaded
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+> pattern status
+< OK state=done step=0 loops=1 total=2
+> pattern add 0x2:1
+< OK total=3
+> pattern status
+< OK state=loaded step=0 loops=0 total=3
+> pattern run once
+< OK
+~ advance ns=3598
+> pattern status
+< OK state=running step=2 loops=0 total=3
+~ advance ns=1
+< ! PATTERN_DONE loops=1
+
+# --- pattern add after stop: the stopped pattern is Loaded and accepts more steps (R-PT3) ---
+# R-PT3
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run loop 5
+< OK
+~ advance ns=1133
+> pattern stop
+< OK
+> pattern add 0x2:1
+< OK total=3
+> pattern status
+< OK state=loaded step=0 loops=0 total=3
+> pattern run once
+< OK
+~ advance ns=3599
+< ! PATTERN_DONE loops=1
+
+# --- R-PT4: pattern out_bits are logical values, the pins are driven with out_bits XOR opol ---
+# R-PT4
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000003 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x2:10
+< OK total=2
+> pattern run once
+< OK
+~ expect_pins out=0x00000002
+> state
+< OK in=0x00000000 out=0x00000001
+~ advance ns=1133
+~ expect_pins out=0x00000001
+> state
+< OK in=0x00000000 out=0x00000002
+~ advance ns=2133
+< ! PATTERN_DONE loops=1
+~ expect_pins out=0x00000001
+> state
+< OK in=0x00000000 out=0x00000002
+
+# --- R-PT4: opol on only one pin ---
+# R-PT4
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000002 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x3:10
+< OK total=2
+> pattern run once
+< OK
+~ expect_pins out=0x00000003
+~ advance ns=1133
+~ expect_pins out=0x00000001
+~ advance ns=2133
+< ! PATTERN_DONE loops=1
+> state
+< OK in=0x00000000 out=0x00000003
+
+# --- R-PT4: after pattern stop state out= is the last output step, logical, and matches the pins ---
+# R-PT4
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x2:10
+< OK total=2
+> pattern run loop 5
+< OK
+~ advance ns=1133
+> pattern stop
+< OK
+> state
+< OK in=0x00000000 out=0x00000002
+~ expect_pins out=0x00000002
+
+# --- R-PT4: stop during the first step leaves that step's value, with opol the pins are inverted ---
+# R-PT4
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000003 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x2:10
+< OK total=2
+> pattern run loop 5
+< OK
+~ advance ns=1000
+> pattern stop
+< OK
+> state
+< OK in=0x00000000 out=0x00000001
+~ expect_pins out=0x00000002
+
+# --- R-PT4: pattern reset aborts a run, the output latch keeps the last step ---
+# ASSUMPTION: pattern reset has the same output effect as stop
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x2:10
+< OK total=2
+> pattern run loop 5
+< OK
+~ advance ns=1133
+> pattern reset
+< OK
+> state
+< OK in=0x00000000 out=0x00000002
+~ expect_pins out=0x00000002

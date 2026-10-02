@@ -17,12 +17,15 @@ test("arm → capture shows rows and statistics", async ({ page }) => {
   await armAndPulse(page);
   await pulse(page, 0); // falling — filtered out by the default rising arm
   await page.getByRole("button", { name: "Capture" }).click();
-  await expect(page.getByText("ts get 512", { exact: true }).first()).toBeVisible();
+  // The protocol answers at most 85 events per `ts get`; the backend asks
+  // for the 512-event capture in protocol-sized chunks.
+  await expect(page.getByText("ts get 85", { exact: true }).first()).toBeVisible();
   // Stats grid renders with the captured event.
   await expect(page.getByText("events", { exact: true })).toBeVisible();
   await expect(page.getByText("span", { exact: true })).toBeVisible();
-  // The row shows the input word at capture time (11 inputs high).
-  await expect(page.getByText(/0x0{1,3}7ff/i).first()).toBeVisible();
+  // The row shows the input word at capture time (12 loopback inputs high:
+  // GP12-GP22 and GP26, as a GP-bit word).
+  await expect(page.getByText("0x047FF000").first()).toBeVisible();
   await page.getByRole("button", { name: "Disarm" }).click();
   await expect(page.getByText("DISARMED")).toBeVisible();
 });
@@ -33,7 +36,8 @@ test("edge filter: falling re-arms and captures the falling transition", async (
   // Selecting an edge re-arms with that filter.
   await page.getByRole("button", { name: "falling" }).click();
   await expect(page.getByText("ARMED", { exact: true })).toBeVisible();
-  await expect(page.getByText(/ts arm 0x7ff falling/).first()).toBeVisible();
+  // "All inputs" is every non-output DIO pin: GP12-GP22, GP26, GP27.
+  await expect(page.getByText(/ts arm 0xc7ff000 falling/).first()).toBeVisible();
   await pulse(page, 0xfff); // rising: filtered out
   await pulse(page, 0); // falling: captured
   await page.getByRole("button", { name: "Capture" }).click();
@@ -78,7 +82,7 @@ test("reconcile toggle switches between raw and reconciled capture", async ({ pa
   await armAndPulse(page);
   // Reconcile defaults ON → ts_get_reconciled path.
   await page.getByRole("button", { name: "Capture" }).click();
-  await expect(page.getByText("ts get 512", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("ts get 85", { exact: true }).first()).toBeVisible();
   // Toggle OFF → raw path.
   await page.getByText("Reconcile timestamps").click();
   await pulse(page, 0);

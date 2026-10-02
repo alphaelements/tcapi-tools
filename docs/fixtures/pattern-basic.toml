@@ -1,0 +1,19 @@
+# Basic pattern, tick units (1 tick = 200 ns).
+# `out` takes pin names; `out_bits` takes a raw mask in physical GP bit positions.
+# expected_step: out_bits=0x00000005 hold_ticks=5
+# expected_step: out_bits=0x00000000 hold_ticks=10
+# expected_step: out_bits=0x04000000 hold_ticks=1
+version = 2
+unit = "tick"
+
+[[step]]
+out = ["GP0", "GP2"]
+hold = 5
+
+[[step]]
+out_bits = 0x0
+hold = 10
+
+[[step]]
+out = ["GP26"]
+hold = 1

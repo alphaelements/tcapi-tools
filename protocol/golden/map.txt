@@ -1,0 +1,486 @@
+# proto=2
+# generated_by=hand
+# fw_commit=f376234f2f93
+
+# --- map get: default map ---
+# R-T3: masks are 0x%08x, flags is 0x%02x
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map get: command names are case-insensitive ---
+> MAP GET
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+> Map Get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set: full map, then get echoes it ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+
+# --- map set: optional v=2 prefix is accepted ---
+# R-M2
+> map set v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+
+# --- map set: keys may come in any order ---
+# R-M2
+> map set edge=0x0c7ffff0 ipol=0x00000100 opol=0x00000008 def=0x00000005 pd=0x0c7fff00 pu=0x000000f0 dir=0x0000000f flags=0x00
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+
+# --- map set: decimal and short hex input, canonical output ---
+> map set flags=0 dir=15 pu=0xf0 pd=0xC7FFF00 def=0x5 opol=8 ipol=256 edge=0xc7ffff0
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+
+# --- map set: highest valid bits 22, 26, 27 are accepted as outputs ---
+# R-M1(dir)
+> map set flags=0x00 dir=0x0c400000 pu=0x00000000 pd=0x00000000 def=0x04000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0c400000 pu=0x00000000 pd=0x00000000 def=0x04000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+
+# --- map set: pull-up and pull-down on disjoint pins ---
+# R-M1(pu&pd)
+> map set flags=0x00 dir=0x00000000 pu=0x00000003 pd=0x0000000c def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000003 pd=0x0000000c def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+
+# --- map set replaces RAM only: reset restores the default map ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> reset
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map save persists: the saved map is applied after reset ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> reset
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+
+# --- map default resets RAM only: the saved map returns after reset ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> map default
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+> reset
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+
+# --- map default then map save erases the saved map ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> map default
+< OK
+> map save
+< OK
+> reset
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map default and map save on the default map ---
+> map default
+< OK
+> map save
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map save: flash write failure ---
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+~ fault flash_write
+> map save
+< ERR FLASH
+> reset
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: flags has a reserved bit set ---
+# R-M1(flags)
+> map set flags=0x01 dir=0x00000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: flags 0x80 ---
+# R-M1(flags)
+> map set flags=0x80 dir=0x00000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: dir bit 23 is not a DIO pin ---
+# R-M1(dir)
+> map set flags=0x00 dir=0x00800000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: dir bit 24 is not a DIO pin ---
+# R-M1(dir)
+> map set flags=0x00 dir=0x01000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: dir bit 25 is not a DIO pin ---
+# R-M1(dir)
+> map set flags=0x00 dir=0x02000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: dir bit 28 is not a DIO pin ---
+# R-M1(dir)
+> map set flags=0x00 dir=0x10000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: dir bit 31 ---
+# R-M1(dir)
+> map set flags=0x00 dir=0x80000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: pu outside VALID ---
+# R-M1(pu)
+> map set flags=0x00 dir=0x00000000 pu=0x00800000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: pu overlaps dir ---
+# R-M1(pu)
+> map set flags=0x00 dir=0x00000001 pu=0x00000001 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: pd outside VALID ---
+# R-M1(pd)
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x01000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: pd overlaps dir ---
+# R-M1(pd)
+> map set flags=0x00 dir=0x00000002 pu=0x00000000 pd=0x00000002 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: pu and pd on the same pin ---
+# R-M1(pu&pd)
+> map set flags=0x00 dir=0x00000000 pu=0x00000004 pd=0x00000004 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: pu and pd overlap on one of several pins ---
+# R-M1(pu&pd)
+> map set flags=0x00 dir=0x00000000 pu=0x00000004 pd=0x00000006 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: def has a pin that is not an output ---
+# R-M1(def)
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x00000000 def=0x00000001 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: def partly outside dir ---
+# R-M1(def)
+> map set flags=0x00 dir=0x00000001 pu=0x00000000 pd=0x00000000 def=0x00000003 opol=0x00000000 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: opol has a pin that is not an output ---
+# R-M1(opol)
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000001 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: opol partly outside dir ---
+# R-M1(opol)
+> map set flags=0x00 dir=0x00000001 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000003 ipol=0x00000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: ipol overlaps dir ---
+# R-M1(ipol)
+> map set flags=0x00 dir=0x00000001 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000001 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: ipol outside VALID ---
+# R-M1(ipol)
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x02000000 edge=0x00000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: edge overlaps dir ---
+# R-M1(edge)
+> map set flags=0x00 dir=0x00000001 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000001
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: edge outside VALID ---
+# R-M1(edge)
+> map set flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x10000000
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key flags is missing ---
+# R-M2
+> map set dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key dir is missing ---
+# R-M2
+> map set flags=0x00 pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key pu is missing ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key pd is missing ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key def is missing ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key opol is missing ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key ipol is missing ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key edge is missing ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: duplicate key ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0 dir=0x0000000f
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: unknown key ---
+# R-M2
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0 foo=0x00000000
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: unsupported version ---
+# R-M2
+> map set v=3 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: value is not a number ---
+# R-M2
+> map set flags=0x00 dir=xyz pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: value does not fit in u32 ---
+# R-M2
+> map set flags=0x00 dir=0x100000000 pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: key without value ---
+# R-M2
+> map set flags=0x00 dir= pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: no arguments ---
+# R-M2
+> map set
+< ERR BAD_PARAM
+
+# --- map set rejected: removed hex blob form ---
+# R-M2
+> map set 010C0C0B02010000000000000000000000000000000000000000
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: single key form is removed ---
+# R-M2
+> map set dir=0x00000003
+< ERR BAD_PARAM
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+
+# --- map set rejected: version alone ---
+# R-M2
+> map set v=2
+< ERR BAD_PARAM
+
+# --- map set and map default are refused while a pattern is running ---
+# R-M5
+# ASSUMPTION: map default is refused like map set because it replaces the RAM map
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:100 0x0:100
+< OK total=2
+> pattern run loop 1000
+< OK
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< ERR BUSY
+> map default
+< ERR BUSY
+> map get
+< OK v=2 flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+> pattern stop
+< OK
+> map set flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x000000f0 pd=0x0c7fff00 def=0x00000005 opol=0x00000008 ipol=0x00000100 edge=0x0c7ffff0
+
+# --- map get is still served while a pattern is running ---
+# R-M5
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:100 0x0:100
+< OK total=2
+> pattern run loop 1000
+< OK
+> map get
+< OK v=2 flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+
+# --- a successful map set returns the pattern engine to idle and erases the loaded steps ---
+# R-M5
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- a successful map default returns the pattern engine to idle and erases the loaded steps ---
+# R-M5
+# ASSUMPTION: map default has the same side effects as map set because it replaces the RAM map
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> map default
+< OK
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- a successful map set also clears a finished pattern ---
+# R-M5
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< OK
+~ advance ns=3266
+< ! PATTERN_DONE loops=1
+> pattern status
+< OK state=done step=0 loops=1 total=2
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+
+# --- a successful map set disarms the timestamp recorder ---
+# R-M5
+> ts arm 0x1 both
+< OK
+> ts status
+< OK armed=1 pending=0 overflow=0
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> ts status
+< OK armed=0 pending=0 overflow=0
+> ts get 1
+< ERR NOT_ARMED
+
+# --- a successful map default disarms the timestamp recorder ---
+# R-M5
+# ASSUMPTION: map default has the same side effects as map set because it replaces the RAM map
+> ts arm 0x1 both
+< OK
+> map default
+< OK
+> ts status
+< OK armed=0 pending=0 overflow=0

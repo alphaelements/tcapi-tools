@@ -1,0 +1,6 @@
+# Check order: `version` is checked before unknown keys, so a v1-style file
+# is reported as an unsupported version (not as an unknown key).
+# expected_error: unsupported version: expected 2, got 1
+# expected_line: 5
+version = 1
+legacy_layout = 0

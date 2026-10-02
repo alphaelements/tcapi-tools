@@ -1,0 +1,7 @@
+# `invert` must be a boolean.
+# expected_error: GP0: invert must be a boolean
+# expected_line: 7
+version = 2
+
+[pins]
+GP0 = { dir = "out", invert = "yes" }

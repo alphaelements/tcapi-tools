@@ -1,5 +1,8 @@
-"""In-memory fake port + mock firmware for transport/E2E tests.
-Mirrors the Rust PTY MockFw (`sdk/rust/tests/pty_e2e.rs`)."""
+"""In-memory duplex port for transport / connection tests.
+
+The device side lives in :mod:`tests.golden` (``ReplayPort``): every device
+response in this suite comes from the golden transcripts (R-C4). This module
+only moves bytes."""
 
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ from collections.abc import Callable
 class FakePort:
     """Duplex in-memory port satisfying ``pochi.transport.PortLike``.
     ``read`` blocks with the configured timeout; ``feed`` injects
-    device → host lines; written host → device lines invoke
+    device -> host lines; written host -> device lines invoke
     ``on_command``."""
 
     def __init__(self) -> None:
@@ -46,203 +49,13 @@ class FakePort:
 
     def close(self) -> None:
         self.closed = True
+        self._rx.put(b"")  # wake a blocked reader so shutdown is immediate
 
     def feed(self, *lines: str) -> None:
-        """Simulate device → host lines."""
+        """Simulate device -> host lines."""
         for line in lines:
             self._rx.put(f"{line}\r\n".encode())
 
     def feed_raw(self, data: str) -> None:
-        """Simulate device → host raw bytes (no line ending added)."""
+        """Simulate device -> host raw bytes (no line ending added)."""
         self._rx.put(data.encode())
-
-
-#: PinMapV2 valid pin bitmask (GP0-22, GP26, GP27) — mirrors
-#: ``pochi.types.VALID_DIO_MASK``. Duplicated here (rather than imported)
-#: so the mock firmware stays a self-contained protocol simulator.
-_VALID_DIO_MASK = 0x0C7FFFFF
-
-
-def _v2_channel_lines(direction_mask: int) -> list[str]:
-    """Render the 25 ``chN: OUT/IN`` detail lines for a v2 direction_mask
-    (ch0-22 -> GP0-22, ch23 -> GP26, ch24 -> GP27)."""
-    lines = []
-    for ch in range(25):
-        gp = ch if ch <= 22 else (26 if ch == 23 else 27)
-        direction = "OUT" if direction_mask & (1 << gp) else "IN"
-        lines.append(f"  ch{ch}: {direction}")
-    return lines
-
-
-class MockFw:
-    """Stateful mock firmware implementing the FW Phase 9.6 command set.
-    ``protocol_version`` selects the pin-map protocol dialect: ``1``
-    (legacy base:count/pull model) or ``2`` (unified-DIO bitmask model,
-    the default — matches FW ``feat/unified-dio-pinmap-v2``)."""
-
-    def __init__(self, protocol_version: int = 2) -> None:
-        if protocol_version not in (1, 2):
-            raise ValueError(f"unsupported protocol_version: {protocol_version}")
-        self.protocol_version = protocol_version
-        self.outputs = 0
-        self.inputs = 0x05
-        self.map = "v=1 out=0:12 in=12:11 pull=up flags=0x01"
-        self.map_v2_direction_mask = 0x00000FFF  # ch0-11 OUT, ch12-24 IN
-        self.map_v2_flags = 0x01
-        self.pattern_loaded = 0
-        self.pattern_state = "idle"
-        self.ts_armed = False
-        self.ts_events = [
-            "  0x00000005 c=1000 p=7 s=1",
-            "  0x0000000A c=2000 p=12 s=0",
-        ]
-        self.ts_overflow = False
-        self.sync_clocking = False
-        self.old_firmware = False
-
-    def _map_v2_response(self) -> list[str]:
-        mask = self.map_v2_direction_mask
-        out_count = bin(mask & _VALID_DIO_MASK).count("1")
-        header = f"OK v=2 out={out_count} in={25 - out_count} flags=0x{self.map_v2_flags:02x}"
-        return [header, *_v2_channel_lines(mask)]
-
-    def handle(self, cmd: str) -> list[str]:
-        parts = cmd.strip().lower().split()
-        key = " ".join(parts)
-        if key == "version":
-            return ["OK v0.1.0 proto=1"]
-        if key == "caps":
-            ts_res = 1000 if self.old_firmware else 40
-            dio = 25 if self.protocol_version == 2 else 23
-            return [
-                f"OK dio={dio} out=12 in=11 ts_res={ts_res}ns pattern=256 ring=256 "
-                "feat=0x00000001"
-            ]
-        if key == "info":
-            return ["OK uid=AABBCCDD11223344 devnum=42"]
-        if parts and parts[0] == "devnum":
-            return ["OK"]
-        if key == "read":
-            return [f"OK 0x{self.inputs:06X}"]
-        if parts and parts[0] == "write":
-            try:
-                v = int(parts[1], 0)
-                m = int(parts[2], 0)
-            except (ValueError, IndexError):
-                return ["ERR BAD_PARAM"]
-            self.outputs = (self.outputs & ~m) | (v & m)
-            return ["OK"]
-        if key == "state":
-            return [f"OK in=0x{self.inputs:06X} out=0x{self.outputs:06X} flags=0x00"]
-        if key == "map get":
-            if self.protocol_version == 2:
-                return self._map_v2_response()
-            return [f"OK {self.map}"]
-        if parts[:2] == ["map", "set"]:
-            hex_str = parts[2] if len(parts) > 2 else ""
-            if len(hex_str) == 48:
-                data = bytes.fromhex(hex_str)
-                if data[2] != 0 and data[4] != 0 and data[3] < data[1] + data[2]:
-                    return ["ERR BAD_MAP"]
-                if self.protocol_version == 2:
-                    # FW v1_to_v2() auto-conversion: v1 base:count -> a
-                    # contiguous direction_mask (out block first).
-                    self.map_v2_direction_mask = (
-                        (1 << data[2]) - 1 << data[1]
-                    ) & _VALID_DIO_MASK
-                    self.map_v2_flags = data[6]
-                    return ["OK"]
-                pull = {0: "none", 1: "up", 2: "down"}.get(data[5], "down")
-                self.map = (
-                    f"v={data[0]} out={data[1]}:{data[2]} in={data[3]}:{data[4]} "
-                    f"pull={pull} flags=0x{data[6]:02x}"
-                )
-                return ["OK"]
-            if len(hex_str) == 64:
-                if self.protocol_version != 2:
-                    return ["ERR BAD_PARAM"]
-                data = bytes.fromhex(hex_str)
-                self.map_v2_direction_mask = (
-                    int.from_bytes(data[4:8], "little") & _VALID_DIO_MASK
-                )
-                self.map_v2_flags = data[1]
-                return ["OK"]
-            return ["ERR BAD_PARAM"]
-        if key == "map save":
-            return ["OK"]
-        if key == "map default":
-            if self.protocol_version == 2:
-                self.map_v2_direction_mask = 0
-                self.map_v2_flags = 0x01
-                return ["OK"]
-            self.map = "v=1 out=0:0 in=0:23 pull=down flags=0x01"
-            return ["OK"]
-        if parts and parts[0] == "subscribe":
-            return ["OK"]
-        if parts[:2] == ["pattern", "load"]:
-            try:
-                data = bytes.fromhex(parts[2])
-            except (ValueError, IndexError):
-                return ["ERR BAD_PARAM"]
-            if len(data) < 10:
-                return ["ERR BAD_PARAM"]
-            count = int.from_bytes(data[0:2], "little")
-            if len(data) != 2 + count * 8:
-                return ["ERR BAD_PARAM"]
-            self.pattern_loaded = count
-            self.pattern_state = "loaded"
-            return [f"OK accepted={count}"]
-        if parts[:2] == ["pattern", "run"]:
-            if self.pattern_loaded == 0:
-                return ["ERR BAD_PARAM"]
-            if parts[2:4] == ["loop", "0"]:
-                return ["ERR BAD_PARAM"]
-            if self.pattern_state == "running":
-                return ["ERR BUSY"]
-            self.pattern_state = "running"
-            return ["OK"]
-        if key == "pattern stop":
-            if self.pattern_state != "running":
-                return ["ERR NOT_RUNNING"]
-            self.pattern_state = "loaded" if self.pattern_loaded > 0 else "idle"
-            return ["OK"]
-        if key == "pattern reset":
-            self.pattern_state = "idle"
-            self.pattern_loaded = 0
-            return ["OK"]
-        if key in ("reset", "bootsel"):
-            return ["OK"]
-        if key == "pattern status":
-            return [f"OK state={self.pattern_state} step=0 loops=0"]
-        if parts[:2] == ["ts", "arm"]:
-            if self.ts_armed:
-                return ["ERR BUSY"]
-            self.ts_armed = True
-            return ["OK"]
-        if parts[:2] == ["ts", "get"]:
-            if not self.ts_armed:
-                return ["ERR NOT_ARMED"]
-            if self.old_firmware:
-                return ["OK count=1", "  0x00000005 t=1234567890"]
-            max_events = int(parts[2]) if len(parts) > 2 else 0
-            events = self.ts_events[:max_events]
-            overflow_flag = 1 if self.ts_overflow else 0
-            return [
-                f"OK count={len(events)} overflow={overflow_flag}",
-                *events,
-            ]
-        if key == "ts disarm":
-            self.ts_armed = False
-            return ["OK"]
-        if key in ("sync arm", "sync master", "sync disarm"):
-            return ["OK"]
-        if key == "sync start":
-            self.sync_clocking = True
-            return ["OK"]
-        if key == "sync stop":
-            self.sync_clocking = False
-            return ["OK"]
-        if key == "sync count":
-            # `OK count=N` with NO data lines (unlike `ts get`).
-            return ["OK count=1000000"] if self.sync_clocking else ["ERR SYNC_STATE"]
-        return ["ERR UNKNOWN_CMD"]

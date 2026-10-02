@@ -1,0 +1,7 @@
+# `default` must be 0 or 1.
+# expected_error: GP0: default must be 0 or 1
+# expected_line: 7
+version = 2
+
+[pins]
+GP0 = { dir = "out", default = 2 }

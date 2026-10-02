@@ -23,9 +23,11 @@ public static class Discovery
     private const int PochiVid = 0x2E8A;
     private const int PochiPid = 0x000A;
 
-    /// <summary>True if the USB descriptor identifies a Pochi-DIO. The
-    /// legacy "Tachyon" product string is accepted: devices in the field
-    /// may still run pre-rename firmware.</summary>
+    /// <summary>True if the USB descriptor identifies a Pochi-DIO: VID
+    /// 0x2E8A, PID 0x000A and a product string that starts with "Pochi". No
+    /// other product name is accepted. A port whose OS descriptor has no
+    /// product string is not listed here; the <c>version</c> probe is the final
+    /// check for the ports that are.</summary>
     public static bool MatchesPochi(int? vid, int? pid, string? product)
     {
         if (vid != PochiVid || pid != PochiPid)
@@ -33,14 +35,12 @@ public static class Discovery
             return false;
         }
 
-        return product is not null
-            && (product.StartsWith("Pochi", StringComparison.Ordinal)
-                || product.StartsWith("Tachyon", StringComparison.Ordinal));
+        return product is not null && product.StartsWith("Pochi", StringComparison.Ordinal);
     }
 
     /// <summary>List serial port paths whose USB descriptors match a
-    /// Pochi-DIO (VID 0x2E8A / PID 0x000A / product "Pochi*", legacy
-    /// "Tachyon*"). No ports are opened. Results are sorted by port path:
+    /// Pochi-DIO (VID 0x2E8A / PID 0x000A / product "Pochi*"). No ports are
+    /// opened. Results are sorted by port path:
     /// the OS enumeration order is unspecified, and callers rely on a
     /// deterministic device order.</summary>
     public static IReadOnlyList<string> EnumeratePorts()
@@ -131,28 +131,32 @@ public static class Discovery
         return Path.GetFullPath(resolved?.FullName ?? path);
     }
 
-    /// <summary>Probe one port: open it and query <c>info</c> (best-effort
-    /// <c>version</c>).</summary>
+    /// <summary>Probe one port: open it (DTR asserted), require <c>version</c>
+    /// to report <c>proto=2</c>, then query <c>info</c>. A device on another
+    /// protocol fails with <see cref="ErrorCode.UnsupportedFirmware"/> and is
+    /// reported among the failures, never listed as usable.</summary>
     public static DeviceInfo Probe(string portPath)
     {
         using var transport = Transport.Open(portPath);
-        var (uid, deviceNumber) = Protocol.ParseInfo(transport.Command("info"));
+        return Probe(transport, portPath);
+    }
 
-        // Version is informational; an old or odd firmware should not make
-        // the device invisible to discovery.
-        string? version;
+    internal static DeviceInfo Probe(Transport transport, string portPath)
+    {
+        var firmware = Connection.RequireProto(transport);
+        var data = transport.Command("info");
         try
         {
-            version = transport.Command("version")
-                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault();
+            var (uid, deviceNumber) = Protocol.ParseInfo(data);
+            return new DeviceInfo(
+                uid, deviceNumber, portPath,
+                $"{firmware.Major}.{firmware.Minor}.{firmware.Patch}");
         }
-        catch (SdkException)
+        catch (SdkException ex) when (ex.Code == ErrorCode.Parse)
         {
-            version = null;
+            transport.MarkDesync();
+            throw;
         }
-
-        return new DeviceInfo(uid, deviceNumber, portPath, version);
     }
 
     /// <summary>Enumerate and probe all connected Pochi-DIO devices,

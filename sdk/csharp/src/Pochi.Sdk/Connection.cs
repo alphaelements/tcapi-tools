@@ -1,26 +1,43 @@
+using System.Globalization;
+
 namespace Pochi.Sdk;
 
 /// <summary>High-level typed connection to one Pochi-DIO device.
-/// Mirrors <c>sdk/rust/src/connection.rs</c>. Push events are delivered via
-/// <see cref="Events"/> on the transport reader thread; the connection is
-/// <see cref="IDisposable"/> and closes the port on dispose.</summary>
+/// Mirrors <c>sdk/rust/src/connection.rs</c>. Opening a connection asserts
+/// DTR and requires <c>version</c> to report <c>proto=2</c>; any other
+/// protocol fails with <see cref="ErrorCode.UnsupportedFirmware"/>.
+///
+/// The SDK owns the device subscription: attaching the first observer to
+/// <see cref="Events"/> sends <c>subscribe on</c>, detaching the last sends
+/// <c>subscribe off</c>. There is no public subscribe switch and
+/// <see cref="Raw"/> rejects the command. Observers are called on the
+/// transport reader thread and must not call back into the connection.
+/// The connection is <see cref="IDisposable"/> and closes the port on
+/// dispose.</summary>
 public sealed class Connection : IDisposable
 {
     private readonly Transport _transport;
     private readonly string _portPath;
-    private readonly PushEventSource _events = new();
+    private readonly string _firmware;
+    private readonly PushEventSource _events;
 
-    private Connection(Transport transport, string portPath)
+    private Connection(Transport transport, string portPath, VersionInfo firmware)
     {
         _transport = transport;
         _portPath = portPath;
+        _firmware = $"{firmware.Major}.{firmware.Minor}.{firmware.Patch}";
+        Firmware = firmware;
+        _events = new PushEventSource(
+            onFirstSubscriber: () => Ok("subscribe on"),
+            onLastUnsubscribed: SubscribeOff);
         _transport.SetEventCallback(_events.Publish);
+        _transport.Closed = _events.Complete;
     }
 
     // --- constructors ---
 
     /// <summary>Open a connection to the device at the given serial port path.</summary>
-    public static Connection Open(string port) => new(Transport.Open(port), port);
+    public static Connection Open(string port) => Handshake(Transport.Open(port), port);
 
     /// <summary>Discover devices and connect to the one with the given UID.</summary>
     public static Connection OpenByUid(string uid) =>
@@ -34,10 +51,65 @@ public sealed class Connection : IDisposable
     public static Connection OpenSoleDevice() =>
         Open(Discovery.SelectSoleDevice(Discovery.Discover()).Port);
 
-    /// <summary>Wrap an already-open port (fake-port tests, custom transports).</summary>
-    public static Connection FromPort(IDuplexPort port) => new(new Transport(port), "");
+    /// <summary>Wrap an already-open port (fake-port tests, custom
+    /// transports). The protocol handshake is performed like for
+    /// <see cref="Open"/>.</summary>
+    public static Connection FromPort(IDuplexPort port) => Handshake(new Transport(port), "");
+
+    private static Connection Handshake(Transport transport, string portPath)
+    {
+        try
+        {
+            return new Connection(transport, portPath, RequireProto(transport));
+        }
+        catch
+        {
+            transport.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Send <c>version</c> and require the protocol this SDK speaks.
+    /// A device that reports any other <c>proto</c> (or a version line the SDK
+    /// cannot read but that names another protocol) is
+    /// <see cref="ErrorCode.UnsupportedFirmware"/>; nothing is parsed
+    /// leniently.</summary>
+    internal static VersionInfo RequireProto(Transport transport)
+    {
+        var data = transport.Command("version");
+        VersionInfo version;
+        try
+        {
+            version = Protocol.ParseVersion(data);
+        }
+        catch (SdkException ex) when (ex.Code == ErrorCode.Parse)
+        {
+            var proto = Array.Find(
+                data.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries),
+                p => p.StartsWith("proto=", StringComparison.Ordinal));
+            if (proto is not null && proto != $"proto={Pins.ProtoVersion}")
+            {
+                throw SdkException.UnsupportedFirmware(
+                    $"device reports {proto}, this SDK speaks proto={Pins.ProtoVersion}");
+            }
+
+            throw;
+        }
+
+        if (version.ProtocolVersion != Pins.ProtoVersion)
+        {
+            throw SdkException.UnsupportedFirmware(
+                $"device reports proto={version.ProtocolVersion}, "
+                    + $"this SDK speaks proto={Pins.ProtoVersion}");
+        }
+
+        return version;
+    }
 
     // --- lifecycle ---
+
+    /// <summary>The firmware version reported by the opening handshake.</summary>
+    public VersionInfo Firmware { get; }
 
     /// <summary>Command response timeout (default 2 seconds).</summary>
     public TimeSpan CommandTimeout
@@ -46,9 +118,22 @@ public sealed class Connection : IDisposable
         set => _transport.CommandTimeout = value;
     }
 
-    /// <summary>Push events (<c>! ...</c> lines), delivered on the reader
-    /// thread, including while commands are in flight. Subscribing after
-    /// close completes immediately.</summary>
+    /// <summary>Receives errors with no caller to throw to: unknown event
+    /// lines (discarded) and exceptions thrown by observers. Defaults to
+    /// <see cref="System.Diagnostics.Trace.TraceError(string)"/> when null.</summary>
+    public Action<string>? ErrorLog
+    {
+        get => _transport.ErrorLog;
+        set => _transport.ErrorLog = value;
+    }
+
+    /// <summary>Push events (<c>! INPUT</c>, <c>! PATTERN_DONE</c>,
+    /// <c>! PATTERN_TIMEOUT</c>), delivered on the reader thread, including
+    /// while commands are in flight. Subscribing to the first observer sends
+    /// <c>subscribe on</c> and throws the device error if it is refused (for
+    /// example <see cref="ErrorCode.NoResource"/> with no input pins);
+    /// disposing the last subscription sends <c>subscribe off</c>. Subscribing
+    /// after close completes immediately.</summary>
     public IObservable<PushEvent> Events => _events;
 
     /// <summary>Close the connection.</summary>
@@ -60,163 +145,256 @@ public sealed class Connection : IDisposable
 
     public void Dispose() => Close();
 
+    // --- command helpers ---
+
+    /// <summary>Send a command whose success response is a bare <c>OK</c>.</summary>
+    private void Ok(string command)
+    {
+        var data = _transport.Command(command);
+        if (data.Length != 0)
+        {
+            _transport.MarkDesync();
+            throw new SdkException(
+                ErrorCode.Parse, $"unexpected data in response to {command}: OK {data}");
+        }
+    }
+
+    /// <summary>Send a command and parse its OK data. A response that cannot
+    /// be parsed leaves the stream out of step, so the next operation
+    /// resynchronises.</summary>
+    private T Query<T>(string command, Func<string, T> parse) =>
+        Parsed(_transport.Command(command), parse);
+
+    private T Parsed<T>(string data, Func<string, T> parse)
+    {
+        try
+        {
+            return parse(data);
+        }
+        catch (SdkException ex) when (ex.Code == ErrorCode.Parse)
+        {
+            _transport.MarkDesync();
+            throw;
+        }
+    }
+
+    private void SubscribeOff()
+    {
+        try
+        {
+            Ok("subscribe off");
+        }
+        catch (SdkException ex) when (ex.Code == ErrorCode.Disconnected)
+        {
+            // The connection is gone, and the device subscription ends with
+            // it (DTR falling turns it off); there is nothing left to switch.
+        }
+    }
+
     // --- device information ---
 
     /// <summary><c>version</c> — firmware and protocol version.</summary>
-    public VersionInfo Version() => Protocol.ParseVersion(_transport.Command("version"));
+    public VersionInfo Version() => Query("version", Protocol.ParseVersion);
 
-    /// <summary><c>caps</c> — device capabilities (protocol version filled in
-    /// from <c>version</c>). Throws UnsupportedFirmware on pre-9.6 FW.</summary>
-    public Capabilities Caps()
-    {
-        var caps = Protocol.ParseCaps(_transport.Command("caps"));
-        return caps with { ProtocolVersion = Version().ProtocolVersion };
-    }
+    /// <summary><c>caps</c> — device capabilities.</summary>
+    public Capabilities Caps() => Query("caps", Protocol.ParseCaps);
 
     /// <summary><c>info</c> — device identification (UID, device number).</summary>
     public DeviceInfo Info()
     {
-        var (uid, deviceNumber) = Protocol.ParseInfo(_transport.Command("info"));
-        return new DeviceInfo(uid, deviceNumber, _portPath, null);
+        var (uid, deviceNumber) = Query("info", Protocol.ParseInfo);
+        return new DeviceInfo(uid, deviceNumber, _portPath, _firmware);
     }
 
     /// <summary><c>devnum &lt;n&gt;</c> — set the device number (0-254; 255 unassigns).</summary>
-    public void SetDeviceNumber(byte n) => _transport.Command($"devnum {n}");
+    public void SetDeviceNumber(byte n) => Ok(Protocol.DevnumCommand(n));
+
+    /// <summary><c>ping &lt;value&gt;</c> — returns the echoed value. A different
+    /// echo is a <see cref="ErrorCode.Parse"/> error. Also the transport's
+    /// resynchronisation primitive.</summary>
+    public uint Ping(uint value)
+    {
+        var pong = Query(Protocol.PingCommand(value), Protocol.ParsePong);
+        if (pong != value)
+        {
+            _transport.MarkDesync();
+            throw new SdkException(
+                ErrorCode.Parse, $"ping {value} was answered with pong={pong}");
+        }
+
+        return pong;
+    }
 
     // --- digital I/O ---
 
-    /// <summary><c>read</c> — current input values.</summary>
-    public uint Read() => Protocol.ParseRead(_transport.Command("read"));
+    /// <summary><c>read</c> — logical levels of the input pins.</summary>
+    public uint Read() => Query("read", Protocol.ParseRead);
 
-    /// <summary><c>write &lt;values&gt; &lt;mask&gt;</c> — set outputs (masked bits only).</summary>
-    public void Write(uint values, uint mask) =>
-        _transport.Command($"write 0x{values:x} 0x{mask:x}");
+    /// <summary><c>write &lt;values&gt; &lt;mask&gt;</c> — set outputs (masked bits
+    /// only). Bits outside the DIO pins are rejected before anything is sent;
+    /// a mask on a non-output pin is refused by the device
+    /// (<see cref="ErrorCode.BadParam"/>).</summary>
+    public void Write(uint values, uint mask) => Ok(Protocol.WriteCommand(values, mask));
 
-    /// <summary><c>state</c> — complete I/O state.</summary>
-    public IoState State() => Protocol.ParseState(_transport.Command("state"));
+    /// <summary><c>state</c> — input levels and the output latch.</summary>
+    public IoState State() => Query("state", Protocol.ParseState);
 
     // --- pin map ---
 
-    /// <summary><c>map get</c> — current pin map.</summary>
-    public PinMap MapGet() => Protocol.ParseMap(_transport.Command("map get"));
+    /// <summary><c>map get</c> — the current pin map (validated).</summary>
+    public PinMap MapGet() => Query("map get", PinMap.ParseGet);
 
-    /// <summary><c>map set</c> from a typed PinMap (extended fields zero).</summary>
-    public void MapSet(PinMap pinMap) => MapSetHex(Protocol.MapToHex(pinMap));
-
-    /// <summary><c>map set &lt;hex&gt;</c> — raw 48-char hex map.</summary>
-    public void MapSetHex(string hex) => _transport.Command($"map set {hex}");
+    /// <summary><c>map set</c> — validates <paramref name="map"/> first. Fails
+    /// with <see cref="ErrorCode.Busy"/> while a pattern is running; on success
+    /// the pattern engine returns to idle and the timestamp recorder is
+    /// disarmed.</summary>
+    public void MapSet(PinMap map) => Ok(Protocol.MapSetCommand(map));
 
     /// <summary><c>map save</c> — persist the current map to flash.</summary>
-    public void MapSave() => _transport.Command("map save");
+    public void MapSave() => Ok("map save");
 
-    /// <summary><c>map default</c> — reset to the default map (all inputs).</summary>
-    public void MapDefault() => _transport.Command("map default");
+    /// <summary><c>map default</c> — reset the RAM map to the default map.</summary>
+    public void MapDefault() => Ok("map default");
 
     // --- pattern ---
 
-    /// <summary><c>pattern load</c> from typed steps. Returns accepted count.</summary>
-    public ushort PatternLoad(IReadOnlyList<PatternStep> steps) =>
-        PatternLoadHex(Protocol.PatternToHex(steps));
+    /// <summary>One <c>pattern add</c> line (atomic on the device). Returns the
+    /// total number of steps now in the buffer. The steps must fit one 256-byte
+    /// line; use <see cref="PatternLoad"/> for longer patterns.</summary>
+    public ushort PatternAdd(IReadOnlyList<PatternStep> steps)
+    {
+        var lines = Protocol.PatternAddCommands(steps);
+        if (lines.Count != 1)
+        {
+            throw new SdkException(
+                ErrorCode.InvalidArgument,
+                $"{steps.Count} steps do not fit one {Protocol.MaxLineBytes}-byte line; "
+                    + "use PatternLoad");
+        }
 
-    /// <summary><c>pattern load &lt;hex&gt;</c> — raw count-prefixed step data.</summary>
-    public ushort PatternLoadHex(string hex) =>
-        Protocol.ParseAccepted(_transport.Command($"pattern load {hex}"));
+        return Query(lines[0], Protocol.ParsePatternTotal);
+    }
 
-    /// <summary><c>pattern run &lt;mode&gt; &lt;repeat&gt;</c> — start playback. Note:
-    /// <c>loop</c> with repeat=0 is rejected by FW (no infinite mode).</summary>
+    /// <summary><c>pattern reset</c>, then <c>pattern add</c> in as many chunks
+    /// as needed, each packed to at most 256 bytes per line. Returns the final
+    /// total. All steps are validated before anything is sent.</summary>
+    public ushort PatternLoad(IReadOnlyList<PatternStep> steps)
+    {
+        var lines = Protocol.PatternAddCommands(steps);
+        PatternReset();
+        ushort total = 0;
+        foreach (var line in lines)
+        {
+            total = Query(line, Protocol.ParsePatternTotal);
+        }
+
+        return total;
+    }
+
+    /// <summary><c>pattern run</c> — <see cref="PatternMode.Once"/> plays one
+    /// pass (the repeat is ignored); <see cref="PatternMode.Loop"/> requires a
+    /// repeat of 1-65535. Completion arrives as a <see cref="PatternDoneEvent"/>,
+    /// a firmware safety timeout as a <see cref="PatternTimeoutEvent"/>.</summary>
     public void PatternRun(PatternMode mode, ushort repeat) =>
-        _transport.Command(Protocol.PatternRunCommand(mode, repeat));
+        Ok(Protocol.PatternRunCommand(mode, repeat));
 
-    /// <summary><c>pattern stop</c> — stop playback immediately.</summary>
-    public void PatternStop() => _transport.Command("pattern stop");
+    /// <summary><c>pattern stop</c> — stop playback; the steps stay loaded.
+    /// Fails with <see cref="ErrorCode.NotRunning"/> when the engine is not
+    /// running.</summary>
+    public void PatternStop() => Ok("pattern stop");
 
     /// <summary><c>pattern status</c> — current playback status.</summary>
-    public PatternStatus PatternStatus() =>
-        Protocol.ParsePatternStatus(_transport.Command("pattern status"));
+    public PatternStatus PatternStatus() => Query("pattern status", Protocol.ParsePatternStatus);
 
-    /// <summary><c>pattern reset</c> — pattern engine soft reset (FW v0.1.3+,
-    /// <see cref="Feature.Reset"/>).
-    /// <para>Stops the state machine, clears the loaded pattern buffer, and
-    /// returns the engine to <c>Idle</c>. USB stays up; the connection
-    /// remains usable.</para></summary>
-    public void PatternReset() => _transport.Command("pattern reset");
+    /// <summary><c>pattern reset</c> — abort any run, clear the buffer and
+    /// return to idle. USB stays up.</summary>
+    public void PatternReset() => Ok("pattern reset");
 
     // --- reset ---
 
-    /// <summary><c>reset</c> — full chip soft reset (FW v0.1.3+,
-    /// <see cref="Feature.Reset"/>).
-    /// <para>The device responds <c>OK</c>, drains its CDC TX ring for ~50 ms,
-    /// then calls <c>SCB::sys_reset()</c>. The USB port re-enumerates, so
-    /// the caller must dispose this connection and rediscover the device
-    /// afterwards.</para></summary>
-    public void SystemReset() => _transport.Command("reset");
+    /// <summary><c>reset</c> — reboot the device. USB re-enumerates, so this
+    /// connection must be disposed and the device rediscovered. RAM state
+    /// returns to defaults; flash state is kept.</summary>
+    public void Reset() => Ok("reset");
 
-    /// <summary><c>bootsel</c> — reboot into BOOTSEL mass-storage mode for
-    /// UF2 reflash (FW v0.1.3+, <see cref="Feature.Reset"/>).
-    /// <para>Like <see cref="SystemReset"/>, the device re-enumerates
-    /// afterwards (as a USB mass-storage device). Callers must dispose this
-    /// connection.</para></summary>
-    public void BootselReset() => _transport.Command("bootsel");
+    /// <summary><c>bootsel</c> — reboot into BOOTSEL mass-storage mode for UF2
+    /// reflash. The connection must be disposed afterwards.</summary>
+    public void Bootsel() => Ok("bootsel");
 
     // --- timestamp ---
 
-    /// <summary><c>ts arm &lt;mask&gt; &lt;mode&gt;</c> — arm timestamp capture.</summary>
-    public void TsArm(uint mask, EdgeMode mode) =>
-        _transport.Command(Protocol.TsArmCommand(mask, mode));
+    /// <summary><c>ts arm &lt;mask&gt; &lt;mode&gt;</c> — arm timestamp capture. The
+    /// mask must be non-zero and inside the DIO pins.</summary>
+    public void TsArm(uint mask, EdgeMode mode) => Ok(Protocol.TsArmCommand(mask, mode));
 
     /// <summary><c>ts get &lt;max&gt;</c> — retrieve captured events (counted
-    /// read). TimestampNs is the host-computed as-is value; apply
-    /// <see cref="Reconciler"/> for straddle correction across events.
-    /// <para>The returned <see cref="TimestampResult.Overflow"/> is
-    /// <c>true</c> if the FW reported a ring overflow since the last
-    /// <c>ts get</c> (FW v0.1.2+). <paramref name="maxEvents"/> is clamped
-    /// FW-side: as of FW v0.1.2 a single response carries at most 85 events,
-    /// so draining a full 256-event ring may need multiple calls.</para>
-    /// </summary>
+    /// read of exactly the announced number of lines). <paramref name="maxEvents"/>
+    /// must be 1-85; draining a full ring takes several calls. The result carries
+    /// no nanosecond values: use <see cref="TimestampEvent.Ns"/> or
+    /// <see cref="Reconciler"/> with <see cref="Capabilities.TsResNs"/>.</summary>
     public TimestampResult TsGet(ushort maxEvents)
     {
-        var (data, lines) = _transport.CommandCounted($"ts get {maxEvents}");
-        var (_, overflow) = Protocol.ParseCountOverflowField(data);
-        return new TimestampResult(
-            lines.Select(Protocol.ParseTsEventLine).ToArray(),
-            Reconciled: false,
-            Overflow: overflow
-        );
+        var (data, lines) = _transport.CommandCounted(Protocol.TsGetCommand(maxEvents));
+        return Parsed(data, header =>
+        {
+            var (count, overflow) = Protocol.ParseTsGetHeader(header);
+            if (count > maxEvents)
+            {
+                throw new SdkException(
+                    ErrorCode.Parse, $"ts get {maxEvents} answered with count={count}");
+            }
+
+            return new TimestampResult(
+                lines.Select(Protocol.ParseTsEventLine).ToArray(), overflow);
+        });
     }
 
+    /// <summary><c>ts status</c> — recorder state (does not clear the overflow flag).</summary>
+    public TsStatus TsStatus() => Query("ts status", Protocol.ParseTsStatus);
+
     /// <summary><c>ts disarm</c> — disarm capture and discard buffered events.</summary>
-    public void TsDisarm() => _transport.Command("ts disarm");
-
-    // --- events ---
-
-    /// <summary><c>subscribe on|off</c> — toggle input change push notifications.</summary>
-    public void Subscribe(bool enable) =>
-        _transport.Command(enable ? "subscribe on" : "subscribe off");
+    public void TsDisarm() => Ok("ts disarm");
 
     // --- sync ---
 
     /// <summary><c>sync arm</c> — prepare as slave.</summary>
-    public void SyncArm() => _transport.Command("sync arm");
+    public void SyncArm() => Ok("sync arm");
 
     /// <summary><c>sync master</c> — prepare as master.</summary>
-    public void SyncMaster() => _transport.Command("sync master");
+    public void SyncMaster() => Ok("sync master");
 
     /// <summary><c>sync start</c> — start sync pulse + 1 MHz clock (master only).</summary>
-    public void SyncStart() => _transport.Command("sync start");
+    public void SyncStart() => Ok("sync start");
 
     /// <summary><c>sync stop</c> — stop clock output (master only).</summary>
-    public void SyncStop() => _transport.Command("sync stop");
+    public void SyncStop() => Ok("sync stop");
 
-    /// <summary><c>sync count</c> — current sync clock count. Single-line
-    /// response (<c>OK count=N</c>, no data lines) — plain read path, never
-    /// counted.</summary>
-    public ulong SyncCount() => Protocol.ParseSyncCount(_transport.Command("sync count"));
+    /// <summary><c>sync count</c> — current sync clock count. A single line
+    /// (<c>OK clocks=N</c>), not a counted response.</summary>
+    public ulong SyncCount() => Query("sync count", Protocol.ParseSyncCount);
 
-    /// <summary><c>sync disarm</c> — release sync state (safe in any state).</summary>
-    public void SyncDisarm() => _transport.Command("sync disarm");
+    /// <summary><c>sync disarm</c> — return to idle (always accepted).</summary>
+    public void SyncDisarm() => Ok("sync disarm");
 
     // --- escape hatch ---
 
-    /// <summary>Send an arbitrary command, returning the raw response line.</summary>
-    public string Raw(string command) => _transport.Raw(command);
+    /// <summary>Send an arbitrary text command and return <b>every</b> line of
+    /// the response (for a counted response: the header and all N lines),
+    /// under the same rules as every other command. A line over 256 bytes, a
+    /// line holding CR/LF, and <c>subscribe</c> (owned by the SDK) are
+    /// rejected locally with <see cref="ErrorCode.InvalidArgument"/>.</summary>
+    public IReadOnlyList<string> Raw(string command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        var first = command.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        if (string.Equals(first, "subscribe", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SdkException(
+                ErrorCode.InvalidArgument,
+                "subscribe is owned by the SDK; subscribe to Connection.Events instead");
+        }
+
+        return _transport.Raw(command);
+    }
 }
