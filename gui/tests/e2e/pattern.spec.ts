@@ -91,7 +91,7 @@ test("an invalid hold is rejected at upload with a clear error", async ({ page }
   await page.getByRole("button", { name: "+ Step" }).click();
   await page.getByLabel("hold ticks").fill("300ns");
   await page.getByRole("button", { name: "↑ Upload" }).click();
-  await expect(page.getByText(/pattern load: .*at least one tick/)).toBeVisible();
+  await expect(page.getByText(/pattern upload: .*at least one tick/)).toBeVisible();
   await expect(page.getByText("accepted")).toHaveCount(0);
 });
 

@@ -61,7 +61,7 @@ export function PatternEditor() {
 
   async function loadFile() {
     if (!tauriAvailable) {
-      PochiStore.addLog("error", "pattern load: file dialog requires the Tauri runtime");
+      PochiStore.addLog("error", "pattern file: file dialog requires the Tauri runtime");
       return;
     }
     const path = await open({ filters: [{ name: "TOML", extensions: ["toml"] }], multiple: false });

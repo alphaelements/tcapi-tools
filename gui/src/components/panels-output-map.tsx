@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { parseHexInput } from "../lib/fmt";
-import type { ChannelFlag, PullMode } from "../lib/pinmap";
+import type { ChannelFlag, PullDir } from "../lib/pinmap";
 import { chBit, pinLabel } from "../lib/pins";
 import { tauriAvailable } from "../lib/tauri";
 import { NUM_PINS, PochiStore, useStore } from "../store/store";
@@ -73,7 +73,7 @@ export function OutputControl() {
 }
 
 // ---------------- PinMapEditor ----------------
-const PULL_MODES: readonly PullMode[] = ["up", "down", "none"];
+const PULL_DIRS: readonly PullDir[] = ["up", "down", "none"];
 const GRID = "78px 34px 54px repeat(4, 1fr)";
 /// Narrowest table that still shows all seven columns; a narrower dock scrolls it sideways.
 const TABLE_MIN_W = 300;
@@ -104,9 +104,9 @@ function MapRow({ ch }: { ch: number }) {
         <span className="mono dim" style={{ textAlign: "center", fontSize: 10 }}>—</span>
       ) : (
         <select className="field" aria-label={`${pinLabel(ch)} pull`} data-testid={`map-pull-${ch}`} value={c.pull}
-          onChange={(e) => PochiStore.setChannelPull(ch, e.target.value as PullMode)}
+          onChange={(e) => PochiStore.setChannelPull(ch, e.target.value as PullDir)}
           style={{ padding: "1px 2px", fontSize: 10 }}>
-          {PULL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+          {PULL_DIRS.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
       )}
       <FlagCell ch={ch} flag="out_default" label="def" applies={isOut} on={c.outDefault} />

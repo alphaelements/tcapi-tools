@@ -24,7 +24,7 @@ import {
   type ChannelConfig,
   type ChannelFlag,
   type ChannelRole,
-  type PullMode,
+  type PullDir,
   type WirePinMap,
 } from "../lib/pinmap";
 import {
@@ -697,7 +697,7 @@ function createStore() {
       S.outputs = (S.outputs & outputMask()) >>> 0;
       bump("map", "pins");
     },
-    setChannelPull(ch: number, mode: PullMode) {
+    setChannelPull(ch: number, mode: PullDir) {
       editMap(withChannelPull(S.map, ch, mode));
       bump("map");
     },
@@ -787,7 +787,7 @@ function createStore() {
       } catch (e) {
         S.pattern.accepted = null;
         bump("pattern");
-        logError("pattern load", e);
+        logError("pattern upload", e);
       }
     },
     addStep() {
@@ -898,7 +898,7 @@ function createStore() {
         S.pattern.loops = 0;
         bump("pattern");
       } catch (e) {
-        logError("pattern load", e);
+        logError("pattern toml", e);
       }
     },
 

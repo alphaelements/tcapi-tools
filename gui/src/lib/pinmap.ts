@@ -24,7 +24,7 @@ export interface WirePinMap {
   edge: number;
 }
 
-export type PullMode = "up" | "down" | "none";
+export type PullDir = "up" | "down" | "none";
 export type ChannelRole = "output" | "input";
 
 /// The per-channel switches of the map: `out_default` / `out_polarity` for
@@ -39,7 +39,7 @@ export interface ChannelConfig {
   gp: number;
   role: ChannelRole;
   /// `none` for outputs (they carry no pull).
-  pull: PullMode;
+  pull: PullDir;
   outDefault: boolean;
   outPolarity: boolean;
   inPolarity: boolean;
@@ -88,7 +88,7 @@ function has(mask: number, bit: number): boolean {
 export function channelConfig(map: WirePinMap, ch: number): ChannelConfig {
   const bit = chMask(ch); // throws RangeError outside ch0-ch24
   const role: ChannelRole = has(map.direction, bit) ? "output" : "input";
-  let pull: PullMode = "none";
+  let pull: PullDir = "none";
   if (role === "input") {
     if (has(map.pull_up, bit)) pull = "up";
     else if (has(map.pull_down, bit)) pull = "down";
@@ -136,7 +136,7 @@ export function withChannelRole(map: WirePinMap, ch: number, role: ChannelRole):
 }
 
 /// Set the pull of input channel `ch` (up / down are exclusive).
-export function withChannelPull(map: WirePinMap, ch: number, mode: PullMode): WirePinMap {
+export function withChannelPull(map: WirePinMap, ch: number, mode: PullDir): WirePinMap {
   const bit = chMask(ch);
   if (has(map.direction, bit)) {
     throw new RangeError(`ch${ch} is an output: an output carries no pull`);
