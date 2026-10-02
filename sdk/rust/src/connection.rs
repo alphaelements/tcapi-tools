@@ -31,7 +31,7 @@ impl Connection {
     }
 
     /// Verify the protocol version of a freshly opened transport.
-    fn establish(mut transport: Transport, port_path: String) -> Result<Self> {
+    pub(crate) fn establish(mut transport: Transport, port_path: String) -> Result<Self> {
         let data = transport.command("version")?;
         // A pre-v2 device answers `version` in a different shape; say so
         // instead of reporting a bare parse error.
@@ -207,11 +207,23 @@ impl Connection {
         self.pattern_add(steps)
     }
 
-    /// `pattern run <mode> <repeat>` — start playback.
+    /// `pattern run <mode> <repeat>` — start playback. `Once` plays one pass
+    /// and ignores `repeat`; `Loop` needs a `repeat` of 1-65535.
     pub fn pattern_run(&mut self, mode: PatternMode, repeat: u16) -> Result<()> {
         self.transport
-            .command(&protocol::pattern_run_command(mode, repeat))?;
+            .command(&protocol::pattern_run_command(mode, repeat)?)?;
         Ok(())
+    }
+
+    /// `pattern run once` — play the loaded pattern one time.
+    pub fn pattern_run_once(&mut self) -> Result<()> {
+        self.pattern_run(PatternMode::Once, 1)
+    }
+
+    /// `pattern run loop <repeat>` — play the loaded pattern `repeat` times
+    /// (1-65535; there is no infinite mode).
+    pub fn pattern_run_loop(&mut self, repeat: u16) -> Result<()> {
+        self.pattern_run(PatternMode::Loop, repeat)
     }
 
     /// `pattern stop` — stop playback immediately.
@@ -277,19 +289,19 @@ impl Connection {
         protocol::parse_ts_status(&data)
     }
 
-    /// `ts get <max>` — retrieve captured events (counted multi-line read).
+    /// `ts get <max>` — retrieve captured events (counted multi-line read);
+    /// `max_events` must be 1-85, anything else is rejected locally.
     /// Use [`crate::TimestampEvent::ns`] for the nanosecond value and
     /// [`crate::reconcile`] for straddle correction across events.
     ///
     /// The returned [`TimestampResult::overflow`] is `true` if the FW
     /// reported a ring overflow since the last `ts get` (FW v0.1.2+).
-    /// Note that `max_events` is clamped FW-side: as of FW v0.1.2 a single
-    /// response carries at most 85 events, so draining a full 256-event
-    /// ring may need multiple calls.
+    /// A single response carries at most 85 events, so draining a full
+    /// 256-event ring takes several calls.
     pub fn ts_get(&mut self, max_events: u16) -> Result<TimestampResult> {
         let (data, lines) = self
             .transport
-            .command_counted(&format!("ts get {max_events}"))?;
+            .command_counted(&protocol::ts_get_command(max_events)?)?;
         let (count, overflow) = protocol::parse_ts_get_header(&data)?;
         if count as usize != lines.len() {
             return Err(SdkError::Parse(format!(
@@ -367,6 +379,30 @@ impl Connection {
     pub fn sync_disarm(&mut self) -> Result<()> {
         self.transport.command("sync disarm")?;
         Ok(())
+    }
+
+    // --- help ---
+
+    /// `help` — the device's command list, one entry per line (counted
+    /// response); the two-space indent of the wire form is removed.
+    pub fn help(&mut self) -> Result<Vec<String>> {
+        let (data, lines) = self.transport.command_counted("help")?;
+        let count = protocol::parse_count_field(&data)?;
+        if count != lines.len() as u64 {
+            return Err(SdkError::Parse(format!(
+                "help header announced {count} lines but {} were read",
+                lines.len()
+            )));
+        }
+        Ok(lines
+            .iter()
+            .map(|line| {
+                line.trim_end()
+                    .strip_prefix("  ")
+                    .unwrap_or(line.trim_end())
+                    .to_string()
+            })
+            .collect())
     }
 
     // --- escape hatch ---
@@ -480,6 +516,157 @@ mod tests {
         let _a = conn.subscribe_events().unwrap();
         let _b = conn.subscribe_events().unwrap();
         assert_eq!(dev.commands(), ["version", "subscribe on"]);
+    }
+
+    const FW: &str = "OK fw=0.1.3 proto=2";
+
+    #[test]
+    fn help_returns_the_counted_lines_without_their_indent() {
+        let (conn, dev) = connect(FW, |cmd| {
+            (cmd == "help").then(|| {
+                vec![
+                    "OK count=2".to_string(),
+                    "  version                                  Get firmware version".to_string(),
+                    "  help                                     Show this help".to_string(),
+                ]
+            })
+        });
+        let lines = conn.unwrap().help().unwrap();
+        assert_eq!(
+            lines,
+            [
+                "version                                  Get firmware version",
+                "help                                     Show this help"
+            ]
+        );
+        assert_eq!(dev.commands(), ["version", "help"]);
+    }
+
+    #[test]
+    fn pattern_run_once_and_loop_send_the_documented_text() {
+        let (conn, dev) = connect(FW, |cmd| {
+            cmd.starts_with("pattern run")
+                .then(|| vec!["OK".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        conn.pattern_run_once().unwrap();
+        conn.pattern_run_loop(10).unwrap();
+        conn.pattern_run(PatternMode::Once, 7).unwrap();
+        conn.pattern_run(PatternMode::Loop, 65535).unwrap();
+        assert_eq!(
+            dev.commands(),
+            [
+                "version",
+                "pattern run once",
+                "pattern run loop 10",
+                "pattern run once",
+                "pattern run loop 65535"
+            ]
+        );
+    }
+
+    #[test]
+    fn pattern_run_loop_rejects_zero_without_sending() {
+        let (conn, dev) = connect(FW, |_| None);
+        let mut conn = conn.unwrap();
+        assert_matches!(conn.pattern_run_loop(0), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(dev.commands(), ["version"]);
+    }
+
+    #[test]
+    fn ts_get_rejects_a_max_outside_1_to_85_without_sending() {
+        let (conn, dev) = connect(FW, |cmd| {
+            (cmd == "ts get 85").then(|| vec!["OK count=0 overflow=0".to_string()])
+        });
+        let mut conn = conn.unwrap();
+        for bad in [0, 86, 256] {
+            assert_matches!(conn.ts_get(bad), Err(SdkError::InvalidArgument(_)), "{bad}");
+        }
+        assert!(conn.ts_get(85).unwrap().events.is_empty());
+        assert_eq!(dev.commands(), ["version", "ts get 85"]);
+    }
+
+    #[test]
+    fn ts_get_returns_the_events_of_the_counted_response() {
+        let (conn, _dev) = connect(FW, |cmd| {
+            (cmd == "ts get 5").then(|| {
+                vec![
+                    "OK count=2 overflow=1".to_string(),
+                    "  in=0x00000005 c=1000 p=7 s=1".to_string(),
+                    "  in=0x0000000a c=2000 p=0 s=0".to_string(),
+                ]
+            })
+        });
+        let result = conn.unwrap().ts_get(5).unwrap();
+        assert!(result.overflow);
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0].ns(40), 1_000_280);
+        assert_eq!(result.events[1].ns(40), 2_000_000);
+    }
+
+    #[test]
+    fn ts_status_reports_armed_pending_and_overflow() {
+        let (conn, _dev) = connect(FW, |cmd| {
+            (cmd == "ts status").then(|| vec!["OK armed=1 pending=3 overflow=1".to_string()])
+        });
+        let status = conn.unwrap().ts_status().unwrap();
+        assert_eq!(
+            (status.armed, status.pending, status.overflow),
+            (true, 3, true)
+        );
+    }
+
+    /// 256 steps (the pattern buffer size) go out as `pattern reset` plus
+    /// several `pattern add` lines, none over the 256-byte line limit.
+    #[test]
+    fn pattern_load_sends_256_steps_in_multiple_lines() {
+        let total = std::sync::Arc::new(std::sync::Mutex::new(0u16));
+        let (conn, dev) = connect(FW, {
+            let total = std::sync::Arc::clone(&total);
+            move |cmd| {
+                if cmd == "pattern reset" {
+                    *total.lock().unwrap() = 0;
+                    return Some(vec!["OK".to_string()]);
+                }
+                let steps = cmd.strip_prefix("pattern add ")?;
+                let mut t = total.lock().unwrap();
+                *t += steps.split(' ').count() as u16;
+                Some(vec![format!("OK total={}", *t)])
+            }
+        });
+        let steps: Vec<PatternStep> = (0..256u32)
+            .map(|i| PatternStep {
+                out_bits: i & 0x3,
+                hold_ticks: i + 1,
+            })
+            .collect();
+        assert_eq!(conn.unwrap().pattern_load(&steps).unwrap(), 256);
+
+        let sent = dev.commands();
+        assert_eq!(sent[1], "pattern reset");
+        let adds: Vec<&String> = sent[2..].iter().collect();
+        assert!(adds.len() > 1, "256 steps must not fit in one line");
+        assert!(adds.iter().all(|l| l.len() <= protocol::MAX_LINE_BYTES));
+        // The steps arrive in order, none lost or duplicated.
+        let wire: Vec<&str> = adds
+            .iter()
+            .flat_map(|l| l.strip_prefix("pattern add ").unwrap().split(' '))
+            .collect();
+        let expected: Vec<String> = steps.iter().map(|s| s.to_text().unwrap()).collect();
+        assert_eq!(wire, expected);
+    }
+
+    #[test]
+    fn pattern_load_rejects_a_bad_pattern_before_resetting_the_device() {
+        let (conn, dev) = connect(FW, |_| None);
+        let mut conn = conn.unwrap();
+        let bad = [PatternStep {
+            out_bits: 0x1,
+            hold_ticks: 0,
+        }];
+        assert_matches!(conn.pattern_load(&bad), Err(SdkError::InvalidArgument(_)));
+        assert_matches!(conn.pattern_load(&[]), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(dev.commands(), ["version"]);
     }
 
     #[test]

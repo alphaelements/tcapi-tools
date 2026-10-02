@@ -17,6 +17,7 @@
 //! # Ok::<(), pochi_sdk::SdkError>(())
 //! ```
 
+pub mod config;
 pub mod connection;
 pub mod discovery;
 pub mod error;
@@ -26,11 +27,14 @@ pub mod transport;
 pub mod types;
 
 #[cfg(test)]
+mod golden_api;
+#[cfg(test)]
 mod testutil;
 
 pub use connection::Connection;
 pub use discovery::{discover, discover_detailed, enumerate_ports, Discovery, ProbeFailure};
 pub use error::{Result, SdkError};
+pub use protocol::TS_GET_MAX;
 pub use transport::{TrafficDirection, TrafficHook};
 pub use types::{
     ch_to_gp, check_dio_mask, gp_to_ch, hold_ticks_from_ns, pin_label, Capabilities, DeviceInfo,

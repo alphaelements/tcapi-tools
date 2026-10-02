@@ -21,7 +21,7 @@
 
 use pochi_sdk::{
     discover, discover_detailed, hold_ticks_from_ns, Connection, EdgeMode, PatternMode,
-    PatternState, PatternStep, PinMap, PushEvent, VALID_DIO_MASK,
+    PatternState, PatternStep, PinMap, PushEvent, TS_GET_MAX, VALID_DIO_MASK,
 };
 
 /// One pattern tick in microseconds is 0.2, so a hold given in whole
@@ -195,7 +195,7 @@ fn hw_full_smoke() {
 
     // --- timestamp: arm / get / disarm (counted read, incl. count=0) ---
     conn.ts_arm(0x07FF, EdgeMode::Both).expect("ts arm");
-    let result = conn.ts_get(256).expect("ts get");
+    let result = conn.ts_get(TS_GET_MAX).expect("ts get");
     println!(
         "ts events without stimulus: {} (expected 0 unless inputs are wired)",
         result.events.len()

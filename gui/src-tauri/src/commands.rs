@@ -306,7 +306,7 @@ pub struct TsResultPayload {
     pub overflow: bool,
 }
 
-fn as_is_rows(result: &TimestampResult) -> Vec<TsRow> {
+fn as_is_rows(result: &TimestampResult, ts_res_ns: u32) -> Vec<TsRow> {
     result
         .events
         .iter()
@@ -315,7 +315,7 @@ fn as_is_rows(result: &TimestampResult) -> Vec<TsRow> {
             raw_count: e.raw_count,
             raw_phase: e.raw_phase,
             sync_active: e.sync_active,
-            timestamp_ns: reconcile::as_is_ns(e.raw_count, e.raw_phase),
+            timestamp_ns: e.ns(ts_res_ns),
             reconciled: false,
         })
         .collect()
@@ -328,9 +328,11 @@ pub async fn ts_get(
 ) -> Result<TsResultPayload, String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        let result = inner.conn()?.ts_get(max_events).map_err(err)?;
+        let conn = inner.conn()?;
+        let ts_res_ns = conn.caps().map_err(err)?.ts_res_ns;
+        let result = conn.ts_get(max_events).map_err(err)?;
         Ok(TsResultPayload {
-            events: as_is_rows(&result),
+            events: as_is_rows(&result, ts_res_ns),
             reconciled: false,
             overflow: result.overflow,
         })
@@ -345,16 +347,18 @@ pub async fn ts_get_reconciled(
 ) -> Result<TsResultPayload, String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        let result = inner.conn()?.ts_get(max_events).map_err(err)?;
-        Ok(reconcile_rows(&result))
+        let conn = inner.conn()?;
+        let ts_res_ns = conn.caps().map_err(err)?.ts_res_ns;
+        let result = conn.ts_get(max_events).map_err(err)?;
+        Ok(reconcile_rows(&result, ts_res_ns))
     })
     .await
 }
 
 /// Apply host-side straddle reconciliation to a raw capture, preserving
 /// the device's event order.
-fn reconcile_rows(result: &TimestampResult) -> TsResultPayload {
-    let mut rows = as_is_rows(result);
+fn reconcile_rows(result: &TimestampResult, ts_res_ns: u32) -> TsResultPayload {
+    let mut rows = as_is_rows(result, ts_res_ns);
 
     let source_events: Vec<SourceEvent> = result
         .events
@@ -375,7 +379,7 @@ fn reconcile_rows(result: &TimestampResult) -> TsResultPayload {
     let mut order: Vec<usize> = (0..result.events.len()).collect();
     order.sort_by_key(|&i| (result.events[i].raw_count, result.events[i].raw_phase));
 
-    let groups = reconcile::group_events(&source_events);
+    let groups = reconcile::group_events(&source_events, ts_res_ns);
     let mut sorted_pos = 0usize;
     for group in &groups {
         for ns in &group.reconciled_ns {
@@ -463,6 +467,9 @@ mod tests {
     use super::*;
     use pochi_sdk::TimestampEvent;
 
+    /// Capabilities.ts_res_ns of the v2 firmware.
+    const TS_RES_NS: u32 = 40;
+
     // --- reconcile_rows ---
 
     fn ev(raw_count: u32, raw_phase: u8) -> TimestampEvent {
@@ -483,7 +490,7 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.reconciled);
         assert_eq!(payload.events.len(), 2);
         let adjusted: Vec<bool> = payload.events.iter().map(|r| r.reconciled).collect();
@@ -497,9 +504,12 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.events.iter().all(|r| !r.reconciled));
-        assert_eq!(payload.events[0].timestamp_ns, reconcile::as_is_ns(1000, 5));
+        assert_eq!(
+            payload.events[0].timestamp_ns,
+            reconcile::as_is_ns(1000, 5, TS_RES_NS)
+        );
     }
 
     #[test]
@@ -510,7 +520,7 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert_eq!(payload.events[0].raw_count, 5000);
         assert_eq!(payload.events[1].raw_count, 1000);
     }
@@ -522,7 +532,7 @@ mod tests {
             reconciled: false,
             overflow: false,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.events.is_empty());
         assert!(payload.reconciled);
     }
@@ -534,7 +544,7 @@ mod tests {
             reconciled: false,
             overflow: true,
         };
-        let payload = reconcile_rows(&result);
+        let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.overflow);
     }
 }

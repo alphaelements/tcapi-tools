@@ -344,11 +344,15 @@ pub fn parse_pattern_total(data: &str) -> Result<u16> {
     Fields::parse("pattern add", data, &["total"])?.dec("total")
 }
 
-/// Build the `pattern run` command string.
-pub fn pattern_run_command(mode: PatternMode, repeat: u16) -> String {
+/// Build the `pattern run` command string. `once` plays a single pass and
+/// ignores `repeat`; `loop` needs a `repeat` of 1-65535.
+pub fn pattern_run_command(mode: PatternMode, repeat: u16) -> Result<String> {
     match mode {
-        PatternMode::Once => "pattern run once 1".to_string(),
-        PatternMode::Loop => format!("pattern run loop {repeat}"),
+        PatternMode::Once => Ok("pattern run once".to_string()),
+        PatternMode::Loop if repeat == 0 => Err(SdkError::InvalidArgument(
+            "pattern run loop needs a repeat of 1-65535".into(),
+        )),
+        PatternMode::Loop => Ok(format!("pattern run loop {repeat}")),
     }
 }
 
@@ -394,6 +398,20 @@ pub fn parse_ts_status(data: &str) -> Result<TsStatus> {
         pending: f.dec("pending")?,
         overflow: f.flag("overflow")?,
     })
+}
+
+/// Most events one `ts get` response can carry (line buffer limit).
+pub const TS_GET_MAX: u16 = 85;
+
+/// Build the `ts get <max>` command. `max` must be 1-[`TS_GET_MAX`]; the
+/// device refuses anything else, so it is not sent.
+pub fn ts_get_command(max: u16) -> Result<String> {
+    if !(1..=TS_GET_MAX).contains(&max) {
+        return Err(SdkError::InvalidArgument(format!(
+            "ts get max {max} is out of range (1-{TS_GET_MAX})"
+        )));
+    }
+    Ok(format!("ts get {max}"))
 }
 
 /// Parse the header of a `ts get` response, `count=3 overflow=0`, into the
@@ -877,18 +895,45 @@ mod tests {
 
     #[test]
     fn pattern_run_commands() {
+        // `once` plays one pass; the repeat is ignored and not sent.
         assert_eq!(
-            pattern_run_command(PatternMode::Once, 1),
-            "pattern run once 1"
+            pattern_run_command(PatternMode::Once, 1).unwrap(),
+            "pattern run once"
         );
         assert_eq!(
-            pattern_run_command(PatternMode::Loop, 10),
+            pattern_run_command(PatternMode::Once, 0).unwrap(),
+            "pattern run once"
+        );
+        assert_eq!(
+            pattern_run_command(PatternMode::Loop, 10).unwrap(),
             "pattern run loop 10"
         );
         assert_eq!(
-            pattern_run_command(PatternMode::Loop, 0),
-            "pattern run loop 0"
+            pattern_run_command(PatternMode::Loop, 1).unwrap(),
+            "pattern run loop 1"
         );
+        assert_eq!(
+            pattern_run_command(PatternMode::Loop, u16::MAX).unwrap(),
+            "pattern run loop 65535"
+        );
+        // `loop` needs 1-65535; there is no infinite mode.
+        assert_matches!(
+            pattern_run_command(PatternMode::Loop, 0),
+            Err(SdkError::InvalidArgument(_))
+        );
+    }
+
+    #[test]
+    fn ts_get_commands() {
+        assert_eq!(ts_get_command(1).unwrap(), "ts get 1");
+        assert_eq!(ts_get_command(85).unwrap(), "ts get 85");
+        for bad in [0, 86, 256, u16::MAX] {
+            assert_matches!(
+                ts_get_command(bad),
+                Err(SdkError::InvalidArgument(_)),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

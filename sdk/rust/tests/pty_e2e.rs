@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use pochi_sdk::{
     Connection, EdgeMode, PatternMode, PatternState, PatternStep, PinMap, PushEvent, SdkError,
-    VALID_DIO_MASK,
+    TS_GET_MAX, VALID_DIO_MASK,
 };
 use serialport::{SerialPort, TTYPort};
 
@@ -151,7 +151,7 @@ impl MockFw {
                 self.pattern_state = "loaded";
                 vec![format!("OK total={total}")]
             }
-            ["pattern", "run", _, _] => {
+            ["pattern", "run", "once"] | ["pattern", "run", "loop", _] => {
                 if self.pattern_loaded == 0 {
                     vec!["ERR BAD_PARAM".into()]
                 } else if self.pattern_state == "running" {
@@ -405,7 +405,7 @@ fn full_command_sweep() {
 
     // Timestamp (counted read)
     conn.ts_arm(0x07FF, EdgeMode::Both).unwrap();
-    let result = conn.ts_get(256).unwrap();
+    let result = conn.ts_get(TS_GET_MAX).unwrap();
     assert_eq!(result.events.len(), 2);
     assert_eq!(result.events[0].raw_count, 1000);
     assert_eq!(result.events[0].ns(40), 1_000_280);
@@ -578,7 +578,7 @@ fn ts_get_empty_ring() {
     fw.ts_events = vec![];
     let (mut conn, _dev) = connect_mock(fw, vec![]);
     conn.ts_arm(0x01, EdgeMode::Rising).unwrap();
-    let result = conn.ts_get(256).unwrap();
+    let result = conn.ts_get(TS_GET_MAX).unwrap();
     assert!(result.events.is_empty());
     assert!(!result.overflow);
     // The connection is still usable right away (no stray lines pending).
@@ -592,7 +592,7 @@ fn ts_get_overflow_flag_propagates() {
     fw.ts_overflow = true;
     let (mut conn, _dev) = connect_mock(fw, vec![]);
     conn.ts_arm(0x0F, EdgeMode::Rising).unwrap();
-    let result = conn.ts_get(256).unwrap();
+    let result = conn.ts_get(TS_GET_MAX).unwrap();
     assert!(result.overflow);
     assert_eq!(result.events.len(), 2);
 }
@@ -610,7 +610,7 @@ fn reconcile_pipeline_from_ts_get() {
     ];
     let (mut conn, _dev) = connect_mock(fw, vec![]);
     conn.ts_arm(0x03, EdgeMode::Rising).unwrap();
-    let result = conn.ts_get(256).unwrap();
+    let result = conn.ts_get(TS_GET_MAX).unwrap();
 
     let source_events: Vec<pochi_sdk::reconcile::SourceEvent> = result
         .events
@@ -624,11 +624,29 @@ fn reconcile_pipeline_from_ts_get() {
             sync_active: ev.sync_active,
         })
         .collect();
-    let groups = pochi_sdk::reconcile::group_events(&source_events);
+    let groups = pochi_sdk::reconcile::group_events(&source_events, 40);
     assert_eq!(groups.len(), 1);
     assert!(groups[0].reconciled);
     // Straddle corrected: naive values were 1000ns apart, reconcile picks
     // a zero-diff combination. (Which µs the pair lands on is a tie and
     // depends on enumeration order, so assert the diff, not the absolute.)
     assert_eq!(groups[0].reconciled_ns[0], groups[0].reconciled_ns[1]);
+}
+
+#[test]
+fn pattern_load_sends_a_full_256_step_buffer_in_several_lines() {
+    let (mut conn, _dev) = connect_mock(MockFw::new(), vec![]);
+    let steps: Vec<PatternStep> = (0..256u32)
+        .map(|i| PatternStep {
+            out_bits: i % 4,
+            hold_ticks: 1 + i,
+        })
+        .collect();
+    assert_eq!(conn.pattern_load(&steps).unwrap(), 256);
+    assert_eq!(conn.pattern_status().unwrap().total, 256);
+    // The buffer is full: one more step is refused by the device.
+    assert!(matches!(
+        conn.pattern_add(&steps[..1]).unwrap_err(),
+        SdkError::TooLong
+    ));
 }

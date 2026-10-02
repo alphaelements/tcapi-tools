@@ -547,6 +547,8 @@ impl Connection {
     pub fn pattern_load(&mut self, steps: &[PatternStep]) -> Result<u16>
 
     pub fn pattern_run(&mut self, mode: PatternMode, repeat: u16) -> Result<()>
+    pub fn pattern_run_once(&mut self) -> Result<()>
+    pub fn pattern_run_loop(&mut self, repeat: u16) -> Result<()>
     pub fn pattern_stop(&mut self) -> Result<()>
     pub fn pattern_status(&mut self) -> Result<PatternStatus>
     pub fn pattern_reset(&mut self) -> Result<()>
@@ -626,6 +628,16 @@ impl Connection {
 `sync_count` parses the single line `OK clocks=<n>`; it is not a counted
 response. Wrong-state calls fail with `SyncState`.
 
+### Help
+
+```rust
+impl Connection {
+    /// `help`: the device command list, one entry per line (counted
+    /// response), without the two-space wire indent.
+    pub fn help(&mut self) -> Result<Vec<String>>
+}
+```
+
 ### Raw Command
 
 ```rust
@@ -639,6 +651,25 @@ Sends an arbitrary text command and returns **every line** of the response
 same rules as every other command. A line longer than 256 bytes is rejected
 locally (`InvalidArgument`). `subscribe` is rejected the same way: the SDK owns the subscription. This is the
 only way applications send protocol text; REPL front-ends use it.
+
+### Config Files (Rust)
+
+```rust
+pub mod config {
+    pub fn parse_map(src: &str, file: &str) -> Result<PinMap, ConfigError>
+    pub fn parse_pattern(src: &str, file: &str) -> Result<Vec<PatternStep>, ConfigError>
+    pub fn load_map(path: &Path) -> Result<PinMap>
+    pub fn load_pattern(path: &Path) -> Result<Vec<PatternStep>>
+
+    pub struct ConfigError { pub file: String, pub line: usize, pub message: String }
+    // Display: "<file>:<line>: <message>"
+}
+```
+
+Implements [`config-files.md`](config-files.md) exactly (schema v2, no lenient
+mode). Every fixture in `docs/fixtures/` yields the documented masks, steps,
+message and line (`sdk/rust/tests/config_fixtures.rs`). `ConfigError` converts
+into `SdkError::Parse` with the same text.
 
 ### Traffic Hook (Rust)
 
