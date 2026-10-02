@@ -1,9 +1,10 @@
 // ============================================================
-// panels-gpio.tsx — GpioMonitor (center top, 23 pins live)
+// panels-gpio.tsx — GpioMonitor (center top, 25 channels live)
 // Ported from design-reference panels-gpio.jsx (mechanical
 // ESM/TSX conversion; data source is the live store instead of
 // the simulation snapshot helpers).
 // ============================================================
+import { chToGp, gpLabel } from "../lib/pins";
 import { fmt, NUM_PINS, PochiStore, useStore } from "../store/store";
 import type { Tweaks } from "./settings";
 
@@ -35,7 +36,7 @@ function PinCell({ gp, layout, shape }: { gp: number; layout: string; shape: str
   const isInput = dir === "input";
   const stateColor = val ? "#22c55e" : "#64748b";
   const last = S.pinMeta[gp].lastChangeMs;
-  const tip = `GP${gp} · ${dir.toUpperCase()} · ${val ? "HIGH" : "LOW"}\npull: ${isInput ? S.pullDefault : "—"}\nlast Δ: ${last != null ? (last / 1000).toFixed(2) + " ms" : "—"} · edges: ${S.pinMeta[gp].edges}`;
+  const tip = `GP${chToGp(gp)} · ${dir.toUpperCase()} · ${val ? "HIGH" : "LOW"}\nch${gp} · pull: ${S.pinMeta[gp].pull}\nlast Δ: ${last != null ? (last / 1000).toFixed(2) + " ms" : "—"} · edges: ${S.pinMeta[gp].edges}`;
 
   const row = layout === "row";
   return (
@@ -51,7 +52,7 @@ function PinCell({ gp, layout, shape }: { gp: number; layout: string; shape: str
       transition: "background .12s, border-color .12s",
     }}>
       <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", order: row ? 0 : -1 }}>
-        GP{String(gp).padStart(2, "0")}
+        {gpLabel(gp)}
       </span>
       <PinIndicator shape={shape} state={val ? "high" : "low"} color={stateColor} />
       <span className={"chip " + (isInput ? "in" : "out")} style={{ fontSize: 8.5, padding: "1px 5px" }}>{isInput ? "IN" : "OUT"}</span>

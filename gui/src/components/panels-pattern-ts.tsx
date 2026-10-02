@@ -8,22 +8,32 @@ import { useMemo, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { fmt } from "../lib/fmt";
 import { invoke, tauriAvailable } from "../lib/tauri";
-import { NUM_PINS, PatternStepUi, PochiStore, useStore } from "../store/store";
+import { pinName } from "../lib/pins";
+import { PatternStepUi, PochiStore, useStore } from "../store/store";
+
+/// Hold field text → µs. Fractions are allowed (a tick is 0.2 µs); text that
+/// is not a number becomes 0, which the upload rejects with a clear error.
+function parseHoldUs(text: string): number {
+  const v = Number.parseFloat(text);
+  return Number.isFinite(v) ? v : 0;
+}
 
 // ---------------- PatternEditor ----------------
-function PatternPreview({ steps, nOut, curStep, playing }: { steps: PatternStepUi[]; nOut: number; curStep: number; playing: boolean }) {
+function PatternPreview({ steps, outs, curStep, playing }: { steps: PatternStepUi[]; outs: number[]; curStep: number; playing: boolean }) {
+  const nOut = outs.length;
   const total = steps.reduce((a, s) => a + s.hold, 0) || 1;
   const H = 11, GAP = 3, W = 100;
   const rows: React.JSX.Element[] = [];
-  for (let ch = 0; ch < nOut; ch++) {
+  for (let row = 0; row < nOut; row++) {
+    const ch = outs[row];
     let x = 0; const segs: React.JSX.Element[] = [];
     steps.forEach((s, si) => {
       const w = (s.hold / total) * W;
-      const on = (s.out >> ch) & 1;
+      const on = (s.out >>> ch) & 1;
       segs.push(<rect key={si} x={x} y={on ? 0 : H * 0.55} width={Math.max(0.4, w - 0.3)} height={on ? H * 0.5 : H * 0.42} fill={on ? "var(--high)" : "#3a3a52"} rx="0.5" />);
       x += w;
     });
-    rows.push(<g key={ch} transform={`translate(0 ${ch * (H + GAP)})`}><line x1="0" y1={H} x2={W} y2={H} stroke="#23232f" strokeWidth="0.4" />{segs}</g>);
+    rows.push(<g key={ch} transform={`translate(0 ${row * (H + GAP)})`}><line x1="0" y1={H} x2={W} y2={H} stroke="#23232f" strokeWidth="0.4" />{segs}</g>);
   }
   // current step marker
   let cx = 0; for (let i = 0; i < curStep; i++) cx += (steps[i]?.hold || 0) / total * W;
@@ -40,7 +50,8 @@ export function PatternEditor() {
   const S = PochiStore.get();
   const p = S.pattern;
   const connected = S.connStatus === "connected";
-  const nOut = S.splitIndex;
+  const outs = PochiStore.outputChannels();
+  const nOut = outs.length;
   const running = p.playState === "running";
 
   async function loadFile() {
@@ -57,7 +68,7 @@ export function PatternEditor() {
       {/* preview */}
       <div style={{ background: "var(--scope-bg)", border: "1px solid var(--border)", borderRadius: "var(--r-sm)", padding: "8px 8px 6px" }}>
         <div className="eyebrow" style={{ marginBottom: 6 }}>Timing Preview · {nOut}ch</div>
-        <PatternPreview steps={p.steps} nOut={nOut} curStep={p.curStep} playing={running} />
+        <PatternPreview steps={p.steps} outs={outs} curStep={p.curStep} playing={running} />
       </div>
 
       {/* step table */}
@@ -69,7 +80,7 @@ export function PatternEditor() {
         </div>
         <div className="scroll-y" style={{ maxHeight: 188 }}>
           {p.steps.map((s, i) => (
-            <StepRow key={i} step={s} idx={i} nOut={nOut} active={running && p.curStep === i} />
+            <StepRow key={i} step={s} idx={i} outs={outs} active={running && p.curStep === i} />
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, padding: 7, borderTop: "1px solid var(--border-soft)" }}>
@@ -113,12 +124,35 @@ export function PatternEditor() {
   );
 }
 
-function StepRow({ step, idx, nOut, active }: { step: PatternStepUi; idx: number; nOut: number; active: boolean }) {
+/// Hold field that keeps its own text so partial input such as "0." survives
+/// while typing; the parsed value is pushed to the store on every change.
+function HoldInput({ hold, onChange }: { hold: number; onChange: (hold: number) => void }) {
+  const [text, setText] = useState(String(hold));
+  const [lastHold, setLastHold] = useState(hold);
+  if (hold !== lastHold) {
+    // Changed from outside (TOML load, step removal): follow the store.
+    setLastHold(hold);
+    setText(String(hold));
+  }
+  return (
+    <input className="field" value={text}
+      onChange={(e) => {
+        const value = parseHoldUs(e.target.value);
+        setText(e.target.value);
+        setLastHold(value);
+        onChange(value);
+      }}
+      style={{ width: 52, padding: "3px 6px", fontSize: 11, textAlign: "right" }} />
+  );
+}
+
+function StepRow({ step, idx, outs, active }: { step: PatternStepUi; idx: number; outs: number[]; active: boolean }) {
   const bits = [];
-  for (let b = nOut - 1; b >= 0; b--) {
-    const on = (step.out >> b) & 1;
+  for (let i = outs.length - 1; i >= 0; i--) {
+    const b = outs[i];
+    const on = (step.out >>> b) & 1;
     bits.push(
-      <button key={b} onClick={() => PochiStore.updateStep(idx, { out: (step.out ^ (1 << b)) >>> 0 })}
+      <button key={b} title={pinName(b)} onClick={() => PochiStore.updateStep(idx, { out: (step.out ^ (1 << b)) >>> 0 })}
         style={{ width: 15, height: 17, borderRadius: 2, border: "1px solid " + (on ? "var(--high)" : "var(--border)"), background: on ? "var(--high)" : "var(--scope-bg)", cursor: "pointer", padding: 0, color: on ? "#0d0d15" : "var(--text-dim)", fontSize: 8, fontWeight: 700, fontFamily: "var(--font-mono)" }}>
         {on ? "1" : "0"}
       </button>
@@ -128,7 +162,7 @@ function StepRow({ step, idx, nOut, active }: { step: PatternStepUi; idx: number
     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border-soft)", background: active ? "color-mix(in oklab, var(--accent) 14%, transparent)" : "transparent" }}>
       <span className="mono" style={{ width: 22, fontSize: 10.5, color: "var(--text-dim)" }}>{String(idx).padStart(2, "0")}</span>
       <div style={{ flex: 1, display: "flex", gap: 2, flexWrap: "wrap" }}>{bits}</div>
-      <input className="field" value={step.hold} onChange={(e) => PochiStore.updateStep(idx, { hold: parseInt(e.target.value) || 0 })} style={{ width: 52, padding: "3px 6px", fontSize: 11, textAlign: "right" }} />
+      <HoldInput hold={step.hold} onChange={(hold) => PochiStore.updateStep(idx, { hold })} />
       <button className="btn ghost icon sm" style={{ width: 20, height: 20 }} onClick={() => PochiStore.removeStep(idx)} title="remove">×</button>
     </div>
   );
@@ -144,14 +178,11 @@ export function TimestampViewer() {
   const res = ts.result;
   const tsDepth = S.capabilities?.tsDepth ?? 4096;
 
-  // ts arm takes an *input-channel* bitmask (bit c = channel c), not GPs.
-  // The FW rejects mask bits beyond caps.in_count even when the pin map
-  // assigns more inputs, so clamp to whichever is smaller.
+  // ts arm takes a physical GP bit mask that must be a subset of the input
+  // pins (R-PIN2); "all inputs" is exactly the complement of the direction
+  // mask within the DIO pins.
   function allInputsMask() {
-    const n = Math.min(NUM_PINS - S.splitIndex, S.capabilities?.inCount ?? NUM_PINS);
-    let m = 0;
-    for (let c = 0; c < n; c++) m |= 1 << c;
-    return m >>> 0;
+    return PochiStore.inputMask();
   }
 
   const stats = useMemo(() => {

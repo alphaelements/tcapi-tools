@@ -7,10 +7,15 @@
 // unchanged: invoke() hits the virtual device below and listen()
 // receives the same `pochi://*` events the Rust backend emits.
 //
-// The virtual device mirrors the rig wiring: output channel c is
-// looped back to input channel c (GP0→GP12 style), so toggling an
-// output flips the matching input, generates waveform edges and —
-// when armed — timestamp events.
+// The device itself is MockDeviceCore (mock-device-core.ts), a v2 text
+// protocol model that is replayed against the golden transcripts. This file
+// is the thin counterpart of the Rust backend: every Tauri command is turned
+// into the wire line(s) the SDK would send, the response is parsed back, and
+// the traffic is logged as `pochi://log` like the SDK's traffic hook does.
+//
+// The virtual device mirrors the rig wiring: the k-th output pin is looped
+// back to the k-th input pin, so toggling an output flips the matching input,
+// generates waveform edges and, when armed, timestamp events.
 //
 // Test hooks live on window.__POCHI_MOCK__ (files written via
 // write_text_file, forced ts overflow, raw device state).
@@ -18,50 +23,56 @@
 
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
+import {
+  GOLDEN_UID,
+  MockDeviceCore,
+  UnsupportedCommand,
+} from "./mock-device-core";
+import { PIN_MAP_DEFAULT, type WirePinMap } from "./pinmap";
+import { VALID_DIO_MASK } from "./pins";
 
-const NUM_PINS = 23;
-const TS_RING = 256;
+/// Largest `ts get` the protocol answers in one response.
+const TS_GET_MAX = 85;
+/// Longest `pattern add` line the device accepts.
+const MAX_LINE_BYTES = 256;
+/// How often virtual time follows the wall clock.
+const CLOCK_TICK_MS = 5;
 
-interface MockMap {
-  version: number;
-  out_base: number;
-  out_count: number;
-  in_base: number;
-  in_count: number;
-  pull: "none" | "up" | "down";
-  flags: number;
-}
-
-interface MockTsRow {
-  inputs: number;
-  raw_count: number;
-  raw_phase: number;
-  sync_active: boolean;
-  timestamp_ns: number;
-  reconciled: boolean;
-}
-
-interface MockStep {
-  out_bits: number;
-  hold_us: number;
-}
-
-const DEFAULT_MAP: MockMap = {
-  version: 1,
-  out_base: 0,
-  out_count: 12,
-  in_base: 12,
-  in_count: 11,
-  pull: "up",
-  flags: 0,
+/// Map the rig boots with (saved in the virtual flash): GP0-GP11 are
+/// outputs, every other pin an input with pull-down and edge events.
+const RIG_MAP: WirePinMap = {
+  ...PIN_MAP_DEFAULT,
+  direction: 0x00000fff,
+  pull_down: (VALID_DIO_MASK & ~0x00000fff) >>> 0,
+  edge: (VALID_DIO_MASK & ~0x00000fff) >>> 0,
 };
+
+/// Map the canned `sample.toml` of the file dialog evaluates to: GP0-GP7 are
+/// outputs.
+const SAMPLE_MAP: WirePinMap = {
+  ...PIN_MAP_DEFAULT,
+  direction: 0x000000ff,
+  pull_down: (VALID_DIO_MASK & ~0x000000ff) >>> 0,
+  edge: (VALID_DIO_MASK & ~0x000000ff) >>> 0,
+};
+
+/// Steps the canned `sample.toml` pattern evaluates to (200 ns ticks).
+const SAMPLE_PATTERN = [
+  { out_bits: 0x1, hold_ticks: 500 },
+  { out_bits: 0x3, hold_ticks: 1000 },
+  { out_bits: 0x7, hold_ticks: 500 },
+  { out_bits: 0xf, hold_ticks: 1500 },
+];
+
+/// Device number of the healthy mock unit.
+const GOOD_DEVICE_NUMBER = 42;
 
 const DEVICES = [
   {
     uid: "MOCKA1B2C3D4E5F6",
-    device_number: 42,
+    device_number: GOOD_DEVICE_NUMBER,
     port: "/dev/mock0",
-    version: "0.1.2",
+    version: "0.1.3",
   },
   {
     uid: "MOCKOLDFW0000001",
@@ -71,6 +82,21 @@ const DEVICES = [
   },
 ];
 
+const ERROR_TEXT: Record<string, string> = {
+  BAD_CMD: "unknown command",
+  UNKNOWN_CMD: "unknown command",
+  BAD_PARAM: "invalid parameter",
+  BAD_MAP: "map validation failed",
+  BUSY: "device is busy",
+  FLASH: "flash write/read failed",
+  TOO_LONG: "payload too long",
+  LINE_TOO_LONG: "payload too long",
+  NOT_ARMED: "timestamp not armed",
+  SYNC_STATE: "invalid sync state transition",
+  NO_RESOURCE: "required resource not configured",
+  NOT_RUNNING: "pattern not running",
+};
+
 export interface MockHandle {
   /// Force the next ts_get to report a device-side ring overflow.
   forceOverflow: boolean;
@@ -78,9 +104,9 @@ export interface MockHandle {
   files: Record<string, string>;
   /// Drive the output word directly (loopback feeds the inputs), as if
   /// an external source toggled the wires — for tests that need edges
-  /// while the Output tab is not on screen.
+  /// while the Output tab is not on screen. Wire word: bit = GP.
   pulse: (values: number) => void;
-  /// Raw device state, for assertions.
+  /// Raw device state, for assertions (wire words: bit = GP).
   state: {
     connected: boolean;
     subscribed: boolean;
@@ -97,38 +123,102 @@ declare global {
   }
 }
 
+function hex(v: number): string {
+  return "0x" + (v >>> 0).toString(16);
+}
+
+/// `OK k=v k=v` → fields. Values stay text.
+function fields(header: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const tok of header.split(/\s+/).slice(1)) {
+    const eq = tok.indexOf("=");
+    if (eq > 0) out[tok.slice(0, eq)] = tok.slice(eq + 1);
+  }
+  return out;
+}
+
+function num(fieldsOf: Record<string, string>, key: string): number {
+  const v = Number(fieldsOf[key]);
+  if (!Number.isFinite(v)) throw `mock device: missing or bad field ${key}`;
+  return v >>> 0;
+}
+
+function parseMap(header: string): WirePinMap {
+  const f = fields(header);
+  return {
+    flags: num(f, "flags"),
+    direction: num(f, "dir"),
+    pull_up: num(f, "pu"),
+    pull_down: num(f, "pd"),
+    out_default: num(f, "def"),
+    out_polarity: num(f, "opol"),
+    in_polarity: num(f, "ipol"),
+    edge: num(f, "edge"),
+  };
+}
+
+function mapSetArgs(m: WirePinMap): string {
+  return (
+    `v=2 flags=${"0x" + (m.flags & 0xff).toString(16).padStart(2, "0")} ` +
+    `dir=${hex8(m.direction)} pu=${hex8(m.pull_up)} pd=${hex8(m.pull_down)} ` +
+    `def=${hex8(m.out_default)} opol=${hex8(m.out_polarity)} ipol=${hex8(m.in_polarity)} ` +
+    `edge=${hex8(m.edge)}`
+  );
+}
+
+function hex8(v: number): string {
+  return "0x" + (v >>> 0).toString(16).padStart(8, "0");
+}
+
+interface WireStep {
+  out_bits: number;
+  hold_ticks: number;
+}
+
+/// `pattern add` lines for `steps`, packed up to the line limit.
+function patternAddLines(steps: WireStep[]): string[] {
+  if (steps.length === 0) throw "invalid argument: pattern must have at least one step";
+  const prefix = "pattern add";
+  const lines: string[] = [];
+  let line = prefix;
+  for (const s of steps) {
+    const text = `${hex(s.out_bits)}:${s.hold_ticks}`;
+    if (line.length + 1 + text.length > MAX_LINE_BYTES) {
+      lines.push(line);
+      line = prefix;
+    }
+    line += " " + text;
+  }
+  lines.push(line);
+  return lines;
+}
+
 export function installMockDevice(): void {
   let connected = false;
-  let subscribed = false;
-  let deviceNumber = 42;
-  let map: MockMap = { ...DEFAULT_MAP };
-  let outputs = 0;
-  let inputs = 0;
-  let connectT = 0;
-
-  let tsArmed = false;
-  let tsMask = 0;
-  let tsMode: "rising" | "falling" | "both" = "rising";
-  let tsEvents: MockTsRow[] = [];
-  let tsOverflowed = false;
-
-  let patSteps: MockStep[] = [];
-  let patState: "idle" | "loaded" | "running" | "done" = "idle";
-  let patStep = 0;
-  let patLoops = 0;
-  let patTimer: ReturnType<typeof setTimeout> | null = null;
+  /// Whether the UI forwarder is attached (the backend only forwards push
+  /// events to the webview while it is).
+  let forwarding = false;
+  let core = new MockDeviceCore({
+    uid: GOLDEN_UID,
+    flashMap: RIG_MAP,
+    devnum: GOOD_DEVICE_NUMBER,
+    loopback: true,
+  });
+  let clockOriginMs = performance.now();
 
   const handle: MockHandle = {
     forceOverflow: false,
     files: {},
-    pulse: (values: number) => setOutputs(values, outMask()),
+    pulse: (values: number) => {
+      run(`write ${hex(values)} ${hex(core.currentMap.direction)}`);
+    },
     state: {
       connected,
-      subscribed,
-      outputs,
-      inputs,
-      tsArmed,
-      deviceNumber,
+      subscribed: false,
+      outputs: 0,
+      inputs: 0,
+      tsArmed: false,
+      deviceNumber: core.deviceNumber,
     },
   };
   window.__POCHI_MOCK__ = handle;
@@ -136,134 +226,119 @@ export function installMockDevice(): void {
   function syncHandle() {
     handle.state = {
       connected,
-      subscribed,
-      outputs,
-      inputs,
-      tsArmed,
-      deviceNumber,
+      subscribed: core.isSubscribed,
+      outputs: core.outputs,
+      inputs: core.inputs,
+      tsArmed: core.isTsArmed,
+      deviceNumber: core.deviceNumber,
     };
-  }
-
-  function nowUs(): number {
-    return Math.round((performance.now() - connectT) * 1000);
   }
 
   function log(direction: "sent" | "received" | "event", line: string) {
     void emit("pochi://log", { direction, line });
   }
 
-  function wire(sent: string, received = "OK") {
-    log("sent", sent);
-    log("received", received);
-  }
-
-  function outMask(): number {
-    let m = 0;
-    for (let c = 0; c < map.out_count; c++) m |= 1 << c;
-    return m >>> 0;
-  }
-
-  function hex(v: number): string {
-    return "0x" + (v >>> 0).toString(16);
-  }
-
-  /// Loopback channel c → input channel c; spare inputs idle at pull level.
-  function computeInputs(): number {
-    const loopback = Math.min(map.out_count, map.in_count);
-    const idle = map.pull === "up" ? 1 : 0;
-    let word = 0;
-    for (let c = 0; c < map.in_count; c++) {
-      const v = c < loopback ? (outputs >> c) & 1 : idle;
-      word |= v << c;
-    }
-    return word >>> 0;
-  }
-
-  function captureTsEdges(oldIn: number, newIn: number) {
-    if (!tsArmed) return;
-    const changed = (oldIn ^ newIn) & tsMask;
-    if (!changed) return;
-    let match = false;
-    for (let c = 0; c < NUM_PINS; c++) {
-      if (!((changed >> c) & 1)) continue;
-      const rising = ((newIn >> c) & 1) === 1;
-      if (tsMode === "both" || (tsMode === "rising") === rising) {
-        match = true;
-        break;
+  /// Turn the device's queued `! ...` lines into log lines and, like the
+  /// backend forwarder, into `pochi://*` events.
+  function flushEvents() {
+    for (const line of core.takeEvents()) {
+      log("event", line);
+      if (!forwarding) continue;
+      const input = /^! INPUT in=(0x[0-9a-f]+) t=(\d+)$/.exec(line);
+      const done = /^! PATTERN_DONE loops=(\d+)$/.exec(line);
+      if (input) {
+        void emit("pochi://input", {
+          inputs: Number(input[1]) >>> 0,
+          timestampUs: Number(input[2]),
+        });
+      } else if (done) {
+        void emit("pochi://pattern-done", { loops: Number(done[1]) });
+      } else {
+        void emit("pochi://unknown-event", { raw: line });
       }
     }
-    if (!match) return;
-    const ns = nowUs() * 1000;
-    const rawCount = Math.floor(ns / 1000);
-    const rawPhase = Math.floor((ns % 1000) / 40);
-    tsEvents.push({
-      inputs: newIn,
-      raw_count: rawCount,
-      raw_phase: rawPhase,
-      sync_active: false,
-      timestamp_ns: rawCount * 1000 + rawPhase * 40,
-      reconciled: false,
-    });
-    if (tsEvents.length > TS_RING) {
-      tsEvents.shift();
-      tsOverflowed = true;
-    }
   }
 
-  function setOutputs(values: number, mask: number) {
-    outputs = (((values & mask) | (outputs & ~mask)) & outMask()) >>> 0;
-    const oldIn = inputs;
-    inputs = computeInputs();
+  /// Let virtual time catch up with the wall clock.
+  function tick() {
+    const target = Math.round((performance.now() - clockOriginMs) * 1e6);
+    if (target > core.nowNs) core.advanceTo(target);
+    flushEvents();
     syncHandle();
-    if (inputs !== oldIn) {
-      captureTsEdges(oldIn, inputs);
-      if (subscribed) {
-        const t = nowUs();
-        log("event", `! INPUT ${hex(inputs)} t=${t}`);
-        void emit("pochi://input", { inputs, timestampUs: t });
-      }
-    }
-  }
-
-  function stopPattern() {
-    if (patTimer !== null) {
-      clearTimeout(patTimer);
-      patTimer = null;
-    }
-  }
-
-  function runPattern(mode: "once" | "loop", repeat: number) {
-    patState = "running";
-    patStep = 0;
-    patLoops = 0;
-    const playStep = () => {
-      if (patState !== "running") return;
-      const step = patSteps[patStep];
-      setOutputs(step.out_bits, outMask());
-      const holdMs = Math.max(1, step.hold_us / 1000);
-      patTimer = setTimeout(() => {
-        patStep++;
-        if (patStep < patSteps.length) {
-          playStep();
-          return;
-        }
-        patLoops++;
-        if (mode === "loop" && patLoops < repeat) {
-          patStep = 0;
-          playStep();
-          return;
-        }
-        patState = "done";
-        patStep = 0;
-        log("event", `! PATTERN_DONE loops=${patLoops}`);
-        void emit("pochi://pattern-done", { loops: patLoops });
-      }, holdMs);
-    };
-    playStep();
   }
 
   function requireConnected() {
-    if (!connected) throw "not connected";
+    if (!connected) throw "Not connected";
+  }
+
+  /// Send one line, log the traffic and return the response lines.
+  /// Device errors throw the message the Rust backend would return.
+  function run(line: string): string[] {
+    requireConnected();
+    tick();
+    log("sent", line);
+    const lines = core.execute(line);
+    for (const l of lines) log("received", l);
+    flushEvents();
+    syncHandle();
+    const header = lines[0] ?? "";
+    if (header.startsWith("ERR ")) {
+      const code = header.slice(4).trim();
+      throw `device error: ${code} (${ERROR_TEXT[code] ?? code})`;
+    }
+    return lines;
+  }
+
+  /// `run` that returns the fields of the header line.
+  function runFields(line: string): Record<string, string> {
+    return fields(run(line)[0]);
+  }
+
+  function loadPattern(steps: WireStep[]): number {
+    patternAddLines(steps); // reject an empty pattern before touching the device
+    run("pattern reset");
+    let total = 0;
+    for (const line of patternAddLines(steps)) {
+      total = num(runFields(line), "total");
+    }
+    return total;
+  }
+
+  function tsGet(maxEvents: number, reconciled: boolean) {
+    const rows: {
+      inputs: number;
+      raw_count: number;
+      raw_phase: number;
+      sync_active: boolean;
+      timestamp_ns: number;
+      reconciled: boolean;
+    }[] = [];
+    let overflow = false;
+    let remaining = maxEvents;
+    if (handle.forceOverflow) core.markTsOverflow();
+    while (remaining > 0) {
+      const chunk = Math.min(remaining, TS_GET_MAX);
+      const lines = run(`ts get ${chunk}`);
+      const head = fields(lines[0]);
+      overflow = overflow || head.overflow === "1";
+      for (const l of lines.slice(1)) {
+        const f = fields("OK " + l.trim());
+        const count = num(f, "c");
+        const phase = num(f, "p");
+        const sync = f.s === "1";
+        rows.push({
+          inputs: num(f, "in"),
+          raw_count: count,
+          raw_phase: phase,
+          sync_active: sync,
+          timestamp_ns: count * 1000 + (sync ? phase * 40 : 0),
+          reconciled: false,
+        });
+      }
+      remaining -= chunk;
+      if (lines.length - 1 < chunk) break;
+    }
+    return { events: rows, reconciled, overflow };
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -282,252 +357,155 @@ export function installMockDevice(): void {
         if (args.port === "/dev/mock1") {
           throw `connect ${args.port}: unsupported firmware (old ts format, ts_res=1000)`;
         }
+        // Power-cycle semantics: RAM state resets, flash (saved map,
+        // device number) survives.
+        core = new MockDeviceCore({
+          uid: GOLDEN_UID,
+          flashMap: core.savedMap ?? RIG_MAP,
+          devnum: core.deviceNumber,
+          loopback: true,
+        });
+        clockOriginMs = performance.now();
         connected = true;
-        connectT = performance.now();
-        outputs = 0;
-        inputs = computeInputs();
-        tsArmed = false;
-        tsEvents = [];
-        tsOverflowed = false;
-        stopPattern();
-        patState = "idle";
+        forwarding = false;
         syncHandle();
         return DEVICES[0];
       }
       case "disconnect":
         connected = false;
-        subscribed = false;
-        tsArmed = false;
-        stopPattern();
-        patState = "idle";
+        forwarding = false;
         syncHandle();
         return null;
-      case "get_version":
-        requireConnected();
-        wire("version", "OK v0.1.2 proto=1");
-        return { major: 0, minor: 1, patch: 2, protocol_version: 1 };
-      case "get_caps":
-        requireConnected();
-        wire(
-          "caps",
-          "OK proto=1 dio=23 out=12 in=11 ts_res=40 pattern=256 ring=256 features=1",
-        );
+      case "get_version": {
+        const f = runFields("version");
+        const [major, minor, patch] = (f.fw ?? "").split(".").map(Number);
+        return { major, minor, patch, protocol_version: num(f, "proto") };
+      }
+      case "get_caps": {
+        const f = runFields("caps");
         return {
-          protocol_version: 1,
-          max_dio: NUM_PINS,
-          out_count: map.out_count,
-          in_count: map.in_count,
-          ts_resolution_ns: 40,
-          max_pattern_steps: 256,
-          ts_ring_events: TS_RING,
-          features: 1,
+          dio: num(f, "dio"),
+          out: num(f, "out"),
+          in: num(f, "in"),
+          ts_res_ns: num(f, "ts_res_ns"),
+          tick_ns: num(f, "tick_ns"),
+          pattern_max: num(f, "pattern"),
+          ring: num(f, "ring"),
+          features: num(f, "feat"),
         };
-      case "get_info":
-        requireConnected();
-        return DEVICES[0];
+      }
+      case "get_info": {
+        const f = runFields("info");
+        const n = num(f, "devnum");
+        return { ...DEVICES[0], device_number: n === 255 ? null : n };
+      }
       case "set_device_number":
-        requireConnected();
-        deviceNumber = args.n;
-        syncHandle();
-        wire(`devnum ${args.n}`);
+        run(`devnum ${args.n}`);
         return null;
 
       // --- io ---
       case "read_inputs":
-        requireConnected();
-        wire("read", `OK ${hex(inputs)}`);
-        return inputs;
-      case "read_state":
-        requireConnected();
-        wire("state", `OK in=${hex(inputs)} out=${hex(outputs)} flags=0x0`);
-        return { inputs, outputs, flags: 0 };
+        return num(runFields("read"), "in");
+      case "read_state": {
+        const f = runFields("state");
+        return { inputs: num(f, "in"), outputs: num(f, "out") };
+      }
       case "write_outputs":
-        requireConnected();
-        wire(`write ${hex(args.values)} ${hex(args.mask)}`);
-        setOutputs(args.values, args.mask);
+        run(`write ${hex(args.values)} ${hex(args.mask)}`);
         return null;
       case "subscribe":
-        requireConnected();
-        subscribed = args.enable;
-        syncHandle();
-        wire(`subscribe ${args.enable ? "on" : "off"}`);
+        run(`subscribe ${args.enable ? "on" : "off"}`);
+        forwarding = Boolean(args.enable);
         return null;
 
       // --- pin map ---
       case "map_get":
-        requireConnected();
-        wire("map get");
-        return { ...map };
+        return parseMap(run("map get")[0]);
       case "map_set":
-        requireConnected();
-        map = { ...args.map };
-        wire("map set <hex>");
-        setOutputs(outputs, outMask());
-        return null;
-      case "map_set_hex":
-        requireConnected();
-        wire(`map set ${args.hex}`);
+        run(`map set ${mapSetArgs(args.map)}`);
         return null;
       case "map_save":
-        requireConnected();
-        wire("map save");
+        run("map save");
         return null;
       case "map_default":
-        requireConnected();
-        map = { ...DEFAULT_MAP };
-        wire("map default");
-        setOutputs(outputs, outMask());
+        run("map default");
         return null;
       case "map_load_toml":
-        return {
-          version: 1,
-          out_base: 0,
-          out_count: 8,
-          in_base: 8,
-          in_count: 15,
-          pull: "down",
-          flags: 1,
-        };
+        // Evaluating a file does not touch the device (the real backend
+        // parses it through the SDK config parser); the dialog always
+        // yields /mock/sample.toml.
+        return { ...SAMPLE_MAP };
 
       // --- pattern ---
-      case "pattern_load": {
-        requireConnected();
-        patSteps = args.steps;
-        patState = "loaded";
-        const accepted = Math.min(patSteps.length, 256);
-        wire(`pattern load ${patSteps.length}`, `OK accepted=${accepted}`);
-        return accepted;
-      }
+      case "pattern_load":
+        return loadPattern(args.steps);
       case "pattern_load_toml": {
         // Like the real backend, parsing the file also uploads the steps.
-        patSteps = [
-          { out_bits: 0x1, hold_us: 100 },
-          { out_bits: 0x3, hold_us: 200 },
-          { out_bits: 0x7, hold_us: 100 },
-          { out_bits: 0xf, hold_us: 300 },
-        ];
-        patState = "loaded";
-        wire("pattern load 4", "OK accepted=4");
-        return { steps: [...patSteps], accepted: patSteps.length };
+        const accepted = loadPattern(SAMPLE_PATTERN);
+        return { steps: SAMPLE_PATTERN.map((s) => ({ ...s })), accepted };
       }
       case "pattern_run":
-        requireConnected();
-        if (!patSteps.length) throw "pattern empty";
-        // FW parity: repeat=0 is BAD_PARAM (no infinite mode).
-        if (args.repeat === 0) {
-          wire(`pattern run ${args.mode} ${args.repeat}`, "ERR BAD_PARAM");
-          throw "pattern run: device error: BAD_PARAM (invalid parameter)";
-        }
-        wire(`pattern run ${args.mode} ${args.repeat}`);
-        runPattern(args.mode, args.repeat);
+        run(args.mode === "loop" ? `pattern run loop ${args.repeat}` : "pattern run once");
         return null;
       case "pattern_stop":
-        requireConnected();
-        if (patState !== "running") {
-          wire("pattern stop", "ERR NOT_RUNNING");
-          throw "pattern stop: device error: NOT_RUNNING (pattern not running)";
-        }
-        stopPattern();
-        patState = "idle";
-        wire("pattern stop");
+        run("pattern stop");
         return null;
       case "pattern_reset":
-        requireConnected();
-        stopPattern();
-        patState = "idle";
-        patSteps.length = 0;
-        wire("pattern reset");
+        run("pattern reset");
         return null;
       case "system_reset":
-        requireConnected();
-        stopPattern();
-        patState = "idle";
-        wire("reset");
+        run("reset");
         connected = false;
+        forwarding = false;
+        syncHandle();
         return null;
       case "bootsel_reset":
-        requireConnected();
-        stopPattern();
-        patState = "idle";
-        wire("bootsel");
+        run("bootsel");
         connected = false;
+        forwarding = false;
+        syncHandle();
         return null;
-      case "pattern_status":
-        requireConnected();
+      case "pattern_status": {
+        const f = runFields("pattern status");
         return {
-          state: patState,
-          current_step: patStep,
-          loops_done: patLoops,
+          state: f.state,
+          step: num(f, "step"),
+          loops: num(f, "loops"),
+          total: num(f, "total"),
         };
+      }
 
       // --- timestamps ---
-      case "ts_arm": {
-        requireConnected();
-        // FW parity: mask bits beyond caps.in_count are BAD_PARAM.
-        const valid = ((1 << map.in_count) - 1) >>> 0;
-        if (((args.mask >>> 0) & ~valid) !== 0) {
-          wire(`ts arm ${hex(args.mask)} ${args.mode}`, "ERR BAD_PARAM");
-          throw "ts arm: device error: BAD_PARAM (invalid parameter)";
-        }
-        tsArmed = true;
-        tsMask = args.mask >>> 0;
-        tsMode = args.mode;
-        tsEvents = [];
-        tsOverflowed = false;
-        syncHandle();
-        wire(`ts arm ${hex(args.mask)} ${args.mode}`);
+      case "ts_arm":
+        run(`ts arm ${hex(args.mask)} ${args.mode}`);
         return null;
-      }
       case "ts_disarm":
-        requireConnected();
-        tsArmed = false;
-        syncHandle();
-        wire("ts disarm");
+        run("ts disarm");
         return null;
       case "ts_get":
-      case "ts_get_reconciled": {
-        requireConnected();
-        const rows = tsEvents.slice(0, args.maxEvents);
-        tsEvents = tsEvents.slice(rows.length);
-        const overflow = tsOverflowed || handle.forceOverflow;
-        tsOverflowed = false;
-        wire(
-          `ts get ${args.maxEvents}`,
-          `OK count=${rows.length} overflow=${overflow ? 1 : 0}`,
-        );
-        return {
-          events: rows,
-          reconciled: cmd === "ts_get_reconciled",
-          overflow,
-        };
-      }
+      case "ts_get_reconciled":
+        return tsGet(args.maxEvents, cmd === "ts_get_reconciled");
 
-      // --- sync (no GUI yet; REPL/backend parity) ---
+      // --- sync (no GUI yet; backend parity only) ---
       case "sync_arm":
       case "sync_master":
       case "sync_start":
       case "sync_stop":
-      case "sync_disarm":
-        requireConnected();
-        wire(cmd.replace("_", " "));
-        return null;
       case "sync_count":
-        requireConnected();
-        wire("sync count", "OK count=0");
-        return 0;
+      case "sync_disarm":
+        throw "mock device: sync is not modelled";
 
       // --- misc ---
       case "raw_command": {
         requireConnected();
+        tick();
         const text: string = args.text;
-        let resp = "OK";
-        if (text.startsWith("version")) resp = "OK v0.1.2 proto=1";
-        else if (text.startsWith("caps"))
-          resp =
-            "OK proto=1 dio=23 out=12 in=11 ts_res=40 pattern=256 ring=256 features=1";
-        else if (text.startsWith("read")) resp = `OK ${hex(inputs)}`;
-        wire(text, resp);
-        return resp;
+        log("sent", text);
+        const lines = core.execute(text);
+        for (const l of lines) log("received", l);
+        flushEvents();
+        syncHandle();
+        return lines.join("\n");
       }
       case "write_text_file":
         handle.files[args.path] = args.contents;
@@ -538,11 +516,16 @@ export function installMockDevice(): void {
     }
   }
 
+  window.setInterval(() => {
+    if (connected) tick();
+  }, CLOCK_TICK_MS);
+
   mockIPC(
     (cmd, args) => {
       try {
         return command(cmd, args);
       } catch (e) {
+        if (e instanceof UnsupportedCommand) return Promise.reject(e.message);
         return Promise.reject(e);
       }
     },

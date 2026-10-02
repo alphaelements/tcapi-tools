@@ -50,15 +50,34 @@ The application is configured in `gui/src-tauri/tauri.conf.json`:
 
 ### Testing
 
-- **Unit (frontend)**: vitest, `npm test` — scoped to `src/**/*.test.ts`.
-- **Unit (backend)**: `cargo test -p pochi-gui` — event routing, map hex
-  decode, reconcile rows, state.
-- **E2E**: Playwright, `npm run test:e2e` — runs the full UI against a
-  browser-only virtual device (`src/lib/mock-device.ts`, activated with
-  `/?mock` on the dev server). The mock implements every Tauri command,
-  mirrors the rig's loopback wiring (output ch c → input ch c) and the
-  FW's BAD_PARAM behaviours, and exposes `window.__POCHI_MOCK__` test
-  hooks (forced ts overflow, saved-file capture, direct edge injection).
+- **Unit (frontend)**: vitest, `npm test` — scoped to `src/**/*.test.ts`:
+  channel/GP helpers (`pins.ts`), the v2 map editor helpers (`pinmap.ts`),
+  pattern tick conversion (`pattern.ts`), and the mock device conformance
+  test (below).
+- **Unit (backend)**: `cargo test -p pochi-gui` — event routing, reconcile
+  rows, `ts get` draining, TOML loading through the SDK config parsers,
+  state.
+- **Mock device conformance (golden)**: the browser-only virtual device is
+  `src/lib/mock-device-core.ts`, a v2 text-protocol model (`execute("map
+  get")` returns the wire lines a firmware answers). `mock-device-golden
+  .test.ts` replays every golden case of `protocol/golden/*.txt` whose
+  requests and directives the model implements (map, io, pattern incl.
+  timing, timestamp, events, errors, reset — a few hundred cases) and
+  compares the emitted lines byte for byte. Cases that need multi-device
+  `sync`, fault injection, binary framing or the pattern timeout are
+  excluded with a stated reason; floors on the replayed count keep the
+  filter from silently dropping the corpus. The mock must therefore be
+  updated whenever the golden transcripts are revised.
+- **E2E**: Playwright, `npm run test:e2e` — runs the full UI against the
+  virtual device (`src/lib/mock-device.ts`, activated with `/?mock` on
+  the dev server). `mock-device.ts` is the browser-side counterpart of the
+  Rust backend: it turns each Tauri command into the wire line(s) the SDK
+  sends (so the command log shows real v2 lines), parses the response, and
+  forwards `! INPUT` / `! PATTERN_DONE` as `pochi://*` events. It mirrors
+  the rig's loopback wiring (the k-th output pin drives the k-th input pin:
+  GP0 → GP12 … GP11 → GP26) and boots with a saved map of GP0-GP11 as
+  outputs. `window.__POCHI_MOCK__` offers test hooks (forced ts overflow,
+  saved-file capture, direct edge injection). `sync *` is not modelled.
 - **Hardware**: manual pass driven over Xvfb + xdotool (see
   `tmp/` handoffs); requires a connected Pochi-DIO.
 
@@ -267,7 +286,7 @@ interface PinState {
 fn read_state() -> Result<IoState, String>
 
 #[tauri::command]
-fn get_pin_map() -> Result<PinMap, String>
+fn map_get() -> Result<PinMap, String>
 
 #[tauri::command]
 fn subscribe(enable: bool) -> Result<(), String>
@@ -275,7 +294,8 @@ fn subscribe(enable: bool) -> Result<(), String>
 
 **Tauri Events** (backend to frontend):
 ```rust
-app.emit("input-change", InputChangePayload { inputs: u32, timestamp_us: u64 });
+// `inputs` is the logical input word, bit = GP pin
+app.emit("pochi://input", json!({ "inputs": inputs, "timestampUs": t_us }));
 ```
 
 ### OutputControl
@@ -287,7 +307,8 @@ app.emit("input-change", InputChangePayload { inputs: u32, timestamp_us: u64 });
   current pin map).
 - Each row: GP label, toggle switch, current state indicator.
 - "Set All High" / "Set All Low" / "Invert All" bulk action buttons.
-- Hex value input field for direct bit pattern entry.
+- Hex value input field for direct bit pattern entry (a wire word: bit =
+  GP pin; bits outside the outputs are ignored by the device).
 
 **State**:
 ```typescript
@@ -315,14 +336,26 @@ interface OutputPin {
 **Purpose**: View and edit the GPIO pin map configuration.
 
 **Visual Design**:
-- Visual representation of ch0-ch24 (GP0-GP22, GP26, GP27) as a horizontal strip.
-- Per channel: direction toggle (in/out), pull (none/up/down, inputs only),
-  default level and polarity.
-- Per input channel: edge-event checkbox (the `edge` mask that raises
-  `! INPUT` events).
+- Visual representation of ch0-ch24 (GP0-GP22, GP26, GP27) as a horizontal
+  strip; each cell is coloured by the channel's `dir` bit and its tooltip
+  names the pin (`pin_label`, e.g. `GP26 (ch23)`).
+- A draggable boundary rewrites `dir` as "ch0..n-1 outputs, the rest
+  inputs"; channels that change role get the map's current pull / notify
+  setting and lose the masks that no longer apply (R-M1).
+- Pull buttons (none/up/down) set `pu`/`pd` for every input; the active
+  button is the shared setting, none is active when inputs differ (a loaded
+  `map.toml` may set them per pin).
+- "Change-notify on inputs" sets the `edge` mask (all inputs / none); it
+  controls which inputs raise `! INPUT` events.
+- `flags` is reserved and always 0; `def`, `opol` and `ipol` are preserved
+  from the device or a loaded `map.toml` (they are not editable on the
+  strip yet).
 - "Apply" button sends `map set`, "Save to Flash" sends `map save`.
-- "Reset to Default" sends `map default`.
-- "Load from File" opens a file dialog for TOML map files.
+- "Reset to Default" sends `map default` (every pin an input, pull-down,
+  edge events on).
+- "Load TOML" opens a file dialog; the file is evaluated by the SDK config
+  parser (`map_load_toml`, `docs/config-files.md`) and applied. Errors are
+  shown in the command log as `<file>:<line>: <message>`.
 
 **State**:
 ```typescript
@@ -338,24 +371,35 @@ interface PinMapEditorState {
 - On connection: load current map from device.
 - Editing creates a local copy; "Apply" sends to device.
 - Visual feedback: green border on applied map, yellow on unsaved edits.
-- Validation: prevent overlapping ranges, out-of-bound pins.
+- A successful `map set` / `map default` returns the device's pattern
+  engine to idle with its steps erased and disarms timestamp capture
+  (R-M5); the GUI mirrors this (pattern "accepted" count cleared, ARMED
+  off) and re-reads `state`, because the output latch restarts at `def`.
 
 **Editable surface**:
-The v2 map is per channel: the editor edits the eight map values `flags`
+The v2 map is per channel: it holds the eight map values `flags`
 (reserved, always 0), `dir`, `pu`, `pd`, `def`, `opol`, `ipol` and `edge`
-(see `protocol-reference.md`, `map set`). There is no split point and no
-global pull mode. All masks use physical GP bit positions; the editor goes
-through the SDK helpers (`ch_to_gp`, `gp_to_ch`, `VALID_DIO_MASK`) and never
-does its own bit arithmetic. Validation mirrors the device: a channel cannot
-be both output and input, pull-up and pull-down are exclusive and inputs
-only, and `def`/`opol` apply to outputs only.
+(see `protocol-reference.md`, `map set`). The store keeps the whole map as
+sent by the device (`WirePinMap`, serde field names of the SDK `PinMap`);
+the strip edits it through `src/lib/pinmap.ts` (`withSplit`, `withPull`,
+`withEdgeNotify`), which keeps every R-M1 rule true. All masks on the wire
+use physical GP bit positions; the UI indexes pins by channel and converts
+only through `src/lib/pins.ts` (`chToGp`, `gpToCh`, `chBit`, word packers —
+the TypeScript twin of the SDK helpers `ch_to_gp` / `gp_to_ch` /
+`VALID_DIO_MASK`). Validation mirrors the device: a channel cannot be both
+output and input, pull-up and pull-down are exclusive and inputs only, and
+`def`/`opol` apply to outputs only; the SDK re-validates on `map set`.
 
 ### PatternEditor
 
 **Purpose**: Create, load, and control output patterns.
 
 **Visual Design**:
-- Step table: rows of (output bits, hold time). Editable cells.
+- Step table: rows of (output bits, hold time). Editable cells. One bit
+  button per output channel (channel order); the hold is edited in
+  microseconds and sent as pattern ticks (1 tick = 200 ns, `hold_ticks`).
+  A hold that is not a whole number of ticks is rejected with an error in
+  the log, never rounded (`src/lib/pattern.ts`).
 - "Add Step" / "Remove Step" buttons.
 - Waveform preview showing the pattern as a timing diagram.
 - "Load from File" for TOML pattern files.
@@ -488,8 +532,8 @@ interface TimestampViewerState {
 3. Tauri routes to: #[tauri::command] fn read_inputs(state) -> IoState
 4. Rust handler calls: state.connection.read()
 5. pochi-sdk sends: "read\r\n" over serial
-6. Device responds: "OK 0x000005\r\n"
-7. pochi-sdk parses response -> IoState { inputs: 5, ... }
+6. Device responds: "OK in=0x00000005\r\n"
+7. pochi-sdk parses response -> the logical input word 5 (bit = GP pin)
 8. Tauri serializes IoState to JSON and returns to frontend
 9. React component updates state via the global store
 10. GpioMonitor re-renders with new pin values
@@ -502,7 +546,7 @@ interface TimestampViewerState {
 2. Device sends: "! INPUT in=0x00000005 t=1234567\r\n"
 3. pochi-sdk background reader receives the line
 4. Rust backend parses the push event
-5. Backend calls: app.emit("input-change", payload)
+5. Backend calls: app.emit("pochi://input", { inputs, timestampUs })
 6. Frontend listener receives the event
 7. The global store is updated
 8. GpioMonitor + WaveformViewer re-render
@@ -625,17 +669,24 @@ fn map_get() -> Result<PinMap, String>
 fn map_set(map: PinMap) -> Result<(), String>
 
 #[tauri::command]
-fn map_set_hex(hex: String) -> Result<(), String>
-
-#[tauri::command]
 fn map_save() -> Result<(), String>
 
 #[tauri::command]
 fn map_default() -> Result<(), String>
 
+/// Evaluates a map.toml (schema v2, docs/config-files.md) with the SDK
+/// config parser (`pochi_sdk::config::load_map`) and returns the map
+/// without touching the device; the frontend applies it via `map_set`.
+/// Errors read `<path>:<line>: <message>`.
 #[tauri::command]
 fn map_load_toml(path: String) -> Result<PinMap, String>
 ```
+
+The v1 hex form (`map_set_hex`, the 7-byte blob decoder `pin_map_from_hex`)
+no longer exists: the GUI backend decodes no wire text itself, it only
+calls the typed SDK methods. `PinMap` serializes with the SDK field names
+`flags`, `direction`, `pull_up`, `pull_down`, `out_default`, `out_polarity`,
+`in_polarity`, `edge` (all masks are GP bits).
 
 ### Pattern
 
@@ -643,8 +694,15 @@ fn map_load_toml(path: String) -> Result<PinMap, String>
 #[tauri::command]
 fn pattern_load(steps: Vec<PatternStep>) -> Result<u16, String>
 
-/// Returns the parsed steps alongside the accepted count so the editor
-/// can display what was uploaded.
+/// `pattern reset` + `pattern add` lines (SDK `pattern_load`). A step is
+/// `PatternStep { out_bits: u32 (GP bits), hold_ticks: u32 }`, 1 tick =
+/// 200 ns.
+// (pattern_load above)
+
+/// Parses a pattern.toml with the SDK config parser
+/// (`pochi_sdk::config::load_pattern`, holds already converted to ticks),
+/// uploads it, and returns the parsed steps alongside the accepted count so
+/// the editor can display what was uploaded.
 #[tauri::command]
 fn pattern_load_toml(path: String) -> Result<PatternTomlPayload, String>
 // struct PatternTomlPayload { steps: Vec<PatternStep>, accepted: u16 }
@@ -659,18 +717,23 @@ fn pattern_stop() -> Result<(), String>
 
 #[tauri::command]
 fn pattern_status() -> Result<PatternStatus, String>
+// struct PatternStatus { state: idle|loaded|running|done, step, loops, total }
 ```
 
 ### Timestamp
 
 ```rust
-/// mask bits beyond caps.in_count are rejected by the FW (BAD_PARAM)
-/// even when the pin map assigns more inputs; the frontend clamps its
-/// all-inputs mask to min(map inputs, caps.in_count).
+/// `mask` is a physical GP bit mask; the FW requires it to be non-zero and
+/// a subset of the input pins (BAD_PARAM otherwise). The frontend arms
+/// "all inputs" as `VALID_DIO_MASK & !direction`.
 #[tauri::command]
 fn ts_arm(mask: u32, mode: EdgeMode) -> Result<(), String>
 
 /// Rows carry a per-event `reconciled` flag (false for plain ts_get).
+/// One `ts get` answers at most 85 events (TS_GET_MAX), so the backend
+/// drains `max_events` in protocol-sized calls and stops at the first short
+/// answer; the overflow flag of any call is kept. `ns` is computed with the
+/// device's `caps.ts_res_ns`.
 #[tauri::command]
 fn ts_get(max_events: u16) -> Result<TsResultPayload, String>
 
@@ -734,6 +797,23 @@ fn write_text_file(path: String, contents: String) -> Result<(), String>
 | `pochi://pattern-timeout` | `{ loops }` | `! PATTERN_TIMEOUT` push |
 | `pochi://unknown-event` | `{ raw }` | unrecognized push lines |
 
+`inputs` is the logical input word, bit = GP pin. v2 has no sync push event
+(the v1 `SyncDone` / `pochi://sync-done` are gone).
+
+### Wire types seen by the frontend
+
+The backend returns the SDK types as serde JSON; the frontend mirrors them
+in `src/store/store.ts` / `src/lib/pinmap.ts` / `src/lib/pattern.ts`:
+
+| Type | Fields |
+|---|---|
+| `VersionInfo` | `major, minor, patch, protocol_version` (2) |
+| `Capabilities` | `dio` (25), `out`, `in`, `ts_res_ns` (40), `tick_ns` (200), `pattern_max`, `ring`, `features` (bit 0 sync, bit 1 reset) |
+| `IoState` | `inputs, outputs` (GP-bit words) |
+| `PinMap` | `flags, direction, pull_up, pull_down, out_default, out_polarity, in_polarity, edge` |
+| `PatternStep` | `out_bits` (GP bits), `hold_ticks` |
+| `PatternStatus` | `state, step, loops, total` |
+
 ## 10. Backend State Management
 
 The Tauri backend maintains a shared application state that holds the
@@ -766,16 +846,13 @@ fn start_event_listener(app: tauri::AppHandle, rx: mpsc::Receiver<PushEvent>) {
     std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             match event {
-                PushEvent::InputChange { inputs, timestamp_us } => {
-                    app.emit("input-change", InputChangePayload {
-                        inputs,
-                        timestamp_us,
-                    }).ok();
+                PushEvent::InputChange { inputs, t_us } => {
+                    app.emit("pochi://input", json!({ "inputs": inputs, "timestampUs": t_us })).ok();
                 }
                 PushEvent::PatternDone { loops } => {
-                    app.emit("pattern-done", PatternDonePayload { loops }).ok();
+                    app.emit("pochi://pattern-done", json!({ "loops": loops })).ok();
                 }
-                // ...
+                // PatternTimeout, Unknown ...; there is no sync event in v2
             }
         }
     });

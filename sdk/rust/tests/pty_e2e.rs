@@ -1,15 +1,32 @@
-//! End-to-end tests against a mock firmware running on a PTY.
+//! End-to-end tests against a fake firmware running on a PTY.
 //!
-//! The mock implements the v2 text command set with enough state
-//! (outputs, pin map, pattern, ts ring, sync, subscription) to exercise the
-//! full `Connection` API including counted reads, push event multiplexing,
-//! device errors, and pre-v2 firmware rejection.
+//! The fake firmware is **not** hand-written: it answers from the v2 golden
+//! transcripts (`protocol/golden/*.txt`, R-SDK-RS4 / R-C4). A test picks one
+//! golden *test case* (a blank-line separated block, identified by the file
+//! and the title of its `# --- ... ---` comment), drives the typed
+//! [`Connection`] API through it, and the fake device replies with the
+//! response recorded in the transcript, followed by the asynchronous `! ...`
+//! events recorded after it.
+//!
+//! The replay is strict. The next command the SDK puts on the wire must equal
+//! (modulo spelling: case, number base, `map set` field order) the next
+//! request of the case; anything else is answered with `ERR UNKNOWN_CMD` and
+//! fails the test when the device is finished. The only exception is the
+//! `version` handshake `Connection` performs when it opens the port, which is
+//! answered with the transcript's `version` response.
+//!
+//! Only the negative tests at the bottom (pre-v2 firmware, wrong `proto`,
+//! silence) hand-write responses: the golden set has no such traffic by
+//! definition.
 
+use std::collections::BTreeSet;
+use std::fs;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pochi_sdk::{
     Connection, EdgeMode, PatternMode, PatternState, PatternStep, PinMap, PushEvent, SdkError,
@@ -17,253 +34,215 @@ use pochi_sdk::{
 };
 use serialport::{SerialPort, TTYPort};
 
-/// Mock device state.
-struct MockFw {
-    outputs: u32,
-    inputs: u32,
-    map: PinMap,
-    subscribed: bool,
-    pattern_loaded: u16,
-    pattern_state: &'static str,
-    ts_armed: bool,
-    ts_events: Vec<&'static str>,
-    ts_overflow: bool,
-    sync_clocking: bool,
-    /// Reply with the pre-v2 (v1) formats for `caps` and `ts get`.
-    old_firmware: bool,
-    /// Protocol number reported by `version`.
-    proto: u8,
-    /// Commands that are ignored the first time they arrive (timeout tests).
-    silent_once: Vec<&'static str>,
+// ------------------------------------------------------------ golden loading
+
+const GOLDEN_FILES: [&str; 10] = [
+    "version-info",
+    "map",
+    "io",
+    "pattern",
+    "timestamp",
+    "sync",
+    "reset",
+    "errors",
+    "boundary",
+    "events",
+];
+
+/// Longest request line the device accepts (the SDK refuses longer ones
+/// before sending).
+const MAX_LINE: usize = 256;
+
+/// One request, the device's response lines and the events that followed
+/// the response (before the next request).
+#[derive(Clone, Debug)]
+struct Step {
+    request: String,
+    response: Vec<String>,
+    events: Vec<String>,
 }
 
-impl MockFw {
-    fn new() -> Self {
-        Self {
-            outputs: 0,
-            inputs: 0x05,
-            map: PinMap::default(),
-            subscribed: false,
-            pattern_loaded: 0,
-            pattern_state: "idle",
-            ts_armed: false,
-            ts_events: vec![
-                "  in=0x00000005 c=1000 p=7 s=1",
-                "  in=0x0000000a c=2000 p=12 s=0",
-            ],
-            ts_overflow: false,
-            sync_clocking: false,
-            old_firmware: false,
-            proto: 2,
-            silent_once: Vec::new(),
-        }
-    }
-
-    /// Process one command line, returning response lines to send.
-    fn handle(&mut self, cmd: &str) -> Vec<String> {
-        let cmd = cmd.trim();
-        if let Some(at) = self.silent_once.iter().position(|c| *c == cmd) {
-            self.silent_once.remove(at);
-            return vec![];
-        }
-        let lower = cmd.to_lowercase();
-        let parts: Vec<&str> = lower.split_whitespace().collect();
-        match parts.as_slice() {
-            ["version"] => vec![format!("OK fw=0.1.3 proto={}", self.proto)],
-            ["ping", n] => vec![format!("OK pong={n}")],
-            ["caps"] => {
-                if self.old_firmware {
-                    vec![
-                        "OK dio=23 out=12 in=11 ts_res=1000ns pattern=256 ring=256 feat=0x00000001"
-                            .into(),
-                    ]
-                } else {
-                    vec![
-                        "OK dio=25 out=12 in=13 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 \
-                         feat=0x00000003"
-                            .into(),
-                    ]
-                }
-            }
-            ["info"] => vec!["OK uid=AABBCCDD11223344 devnum=42".into()],
-            ["devnum", n] => match n.parse::<u16>() {
-                Ok(0..=255) => vec!["OK".into()],
-                _ => vec!["ERR BAD_PARAM".into()],
-            },
-            ["read"] => vec![format!("OK in=0x{:08x}", self.inputs)],
-            ["write", values, mask] => {
-                let v = parse_num(values);
-                let m = parse_num(mask);
-                match (v, m) {
-                    (Some(v), Some(m)) => {
-                        self.outputs = (self.outputs & !m) | (v & m);
-                        vec!["OK".into()]
-                    }
-                    _ => vec!["ERR BAD_PARAM".into()],
-                }
-            }
-            ["state"] => vec![format!(
-                "OK in=0x{:08x} out=0x{:08x}",
-                self.inputs, self.outputs
-            )],
-            ["map", "get"] => vec![format!(
-                "OK {}",
-                self.map.to_set_args().expect("mock map is valid")
-            )],
-            ["map", "set", ..] => {
-                let args = lower.strip_prefix("map set ").unwrap_or_default();
-                match pochi_sdk::protocol::parse_map(args) {
-                    Ok(map) => {
-                        self.map = map;
-                        vec!["OK".into()]
-                    }
-                    Err(_) => vec!["ERR BAD_MAP".into()],
-                }
-            }
-            ["map", "save"] => vec!["OK".into()],
-            ["map", "default"] => {
-                self.map = PinMap::default();
-                vec!["OK".into()]
-            }
-            ["subscribe", "on"] => {
-                self.subscribed = true;
-                vec!["OK".into()]
-            }
-            ["subscribe", "off"] => {
-                self.subscribed = false;
-                vec!["OK".into()]
-            }
-            ["pattern", "add", steps @ ..] => {
-                let valid = !steps.is_empty()
-                    && steps.iter().all(|step| {
-                        step.split_once(':').is_some_and(|(bits, ticks)| {
-                            parse_num(bits).is_some() && ticks.parse::<u32>().is_ok_and(|t| t > 0)
-                        })
-                    });
-                if !valid {
-                    return vec!["ERR BAD_PARAM".into()];
-                }
-                let total = usize::from(self.pattern_loaded) + steps.len();
-                if total > 256 {
-                    return vec!["ERR TOO_LONG".into()];
-                }
-                self.pattern_loaded = total as u16;
-                self.pattern_state = "loaded";
-                vec![format!("OK total={total}")]
-            }
-            ["pattern", "run", "once"] | ["pattern", "run", "loop", _] => {
-                if self.pattern_loaded == 0 {
-                    vec!["ERR BAD_PARAM".into()]
-                } else if self.pattern_state == "running" {
-                    vec!["ERR BUSY".into()]
-                } else {
-                    self.pattern_state = "running";
-                    vec!["OK".into()]
-                }
-            }
-            ["pattern", "stop"] => {
-                if self.pattern_state != "running" {
-                    vec!["ERR NOT_RUNNING".into()]
-                } else {
-                    self.pattern_state = if self.pattern_loaded > 0 {
-                        "loaded"
-                    } else {
-                        "idle"
-                    };
-                    vec!["OK".into()]
-                }
-            }
-            ["pattern", "status"] => {
-                vec![format!(
-                    "OK state={} step=0 loops=0 total={}",
-                    self.pattern_state, self.pattern_loaded
-                )]
-            }
-            ["pattern", "reset"] => {
-                self.pattern_state = "idle";
-                self.pattern_loaded = 0;
-                vec!["OK".into()]
-            }
-            ["reset"] | ["bootsel"] => {
-                // FW would drain TX then re-enumerate. The mock just ACKs.
-                vec!["OK".into()]
-            }
-            ["ts", "arm", _, _] => {
-                if self.ts_armed {
-                    vec!["ERR BUSY".into()]
-                } else {
-                    self.ts_armed = true;
-                    vec!["OK".into()]
-                }
-            }
-            ["ts", "get", max] => {
-                if !self.ts_armed {
-                    return vec!["ERR NOT_ARMED".into()];
-                }
-                let max: usize = max.parse().unwrap_or(0);
-                if self.old_firmware {
-                    // v1 omitted overflow= and used the `t=` ts format.
-                    return vec!["OK count=1".into(), "  0x00000005 t=1234567890".into()];
-                }
-                let events: Vec<String> = self
-                    .ts_events
-                    .iter()
-                    .take(max)
-                    .map(|s| s.to_string())
-                    .collect();
-                let overflow_flag = if self.ts_overflow { 1 } else { 0 };
-                let mut lines = vec![format!(
-                    "OK count={} overflow={overflow_flag}",
-                    events.len()
-                )];
-                lines.extend(events);
-                lines
-            }
-            ["ts", "disarm"] => {
-                self.ts_armed = false;
-                vec!["OK".into()]
-            }
-            ["sync", "arm"] | ["sync", "master"] => vec!["OK".into()],
-            ["sync", "start"] => {
-                self.sync_clocking = true;
-                vec!["OK".into()]
-            }
-            ["sync", "stop"] => {
-                self.sync_clocking = false;
-                vec!["OK".into()]
-            }
-            ["sync", "count"] => {
-                if self.sync_clocking {
-                    // Single line `OK clocks=N`; no data lines follow.
-                    vec!["OK clocks=1000000".into()]
-                } else {
-                    vec!["ERR SYNC_STATE".into()]
-                }
-            }
-            ["sync", "disarm"] => vec!["OK".into()],
-            _ => vec!["ERR UNKNOWN_CMD".into()],
-        }
-    }
+/// One golden test case.
+#[derive(Clone, Debug)]
+struct Case {
+    title: String,
+    steps: Vec<Step>,
+    /// The case uses something a text replay cannot express: a request
+    /// without a response (silence) or raw bytes (`~ send_hex`).
+    replayable: bool,
 }
 
-fn parse_num(s: &str) -> Option<u32> {
-    if let Some(hex) = s.strip_prefix("0x") {
-        u32::from_str_radix(hex, 16).ok()
+fn golden_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/golden")
+}
+
+fn parse_block(block: &[&str]) -> Option<Case> {
+    let title = block
+        .iter()
+        .find_map(|l| l.strip_prefix("# --- "))
+        .map(|t| t.trim_end_matches(" ---").to_string())
+        .unwrap_or_default();
+    let mut steps: Vec<Step> = Vec::new();
+    let mut replayable = true;
+    for line in block {
+        if let Some(request) = line.strip_prefix("> ") {
+            if steps.last().is_some_and(|s| s.response.is_empty()) {
+                replayable = false;
+            }
+            steps.push(Step {
+                request: request.to_string(),
+                response: Vec::new(),
+                events: Vec::new(),
+            });
+        } else if line.starts_with("~ send_hex") {
+            replayable = false;
+        } else if let Some(event) = line.strip_prefix("< ! ") {
+            if let Some(step) = steps.last_mut() {
+                step.events.push(format!("! {event}"));
+            }
+        } else if line.starts_with("< OK") || line.starts_with("< ERR ") {
+            if let Some(step) = steps.last_mut() {
+                step.response.push(line[2..].to_string());
+            }
+        } else if line.starts_with("<   ") {
+            // Continuation line of a counted response: 2 spaces + payload.
+            if let Some(step) = steps.last_mut() {
+                step.response.push(line[2..].to_string());
+            }
+        }
+    }
+    if steps.last().is_some_and(|s| s.response.is_empty()) {
+        replayable = false;
+    }
+    (!steps.is_empty()).then_some(Case {
+        title,
+        steps,
+        replayable,
+    })
+}
+
+fn load_file(file: &'static str) -> Vec<Case> {
+    let path = golden_dir().join(format!("{file}.txt"));
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    let lines: Vec<&str> = text.lines().collect();
+    lines
+        .split(|l| l.trim().is_empty())
+        .filter_map(parse_block)
+        .collect()
+}
+
+/// The unique case of `file` titled exactly `title`, or else the unique one
+/// whose title starts with it.
+fn case(file: &'static str, title: &str) -> Case {
+    let all = load_file(file);
+    let exact: Vec<Case> = all.iter().filter(|c| c.title == title).cloned().collect();
+    let mut found = if exact.is_empty() {
+        all.into_iter()
+            .filter(|c| c.title.starts_with(title))
+            .collect()
     } else {
-        s.parse().ok()
+        exact
+    };
+    assert_eq!(found.len(), 1, "{file}.txt: case `{title}` must be unique");
+    let case = found.remove(0);
+    assert!(case.replayable, "{file}.txt: case `{title}` not replayable");
+    case
+}
+
+/// The `version` response every connection handshake is answered with.
+fn handshake_reply() -> Vec<String> {
+    case("version-info", "version").steps[0].response.clone()
+}
+
+// ------------------------------------------------------------------- replay
+
+/// Spelling-independent form of a command line: lower case, numbers in
+/// decimal, `map set` fields sorted without the optional `v=2`.
+fn canon(line: &str) -> String {
+    fn number(token: &str) -> Option<u64> {
+        match token
+            .strip_prefix("0x")
+            .or_else(|| token.strip_prefix("0X"))
+        {
+            Some(hex) => u64::from_str_radix(hex, 16).ok(),
+            None => token.parse().ok(),
+        }
+    }
+    let lower = line.to_ascii_lowercase();
+    let mut words: Vec<String> = lower
+        .split_whitespace()
+        .map(|word| {
+            word.split(['=', ':'])
+                .map(|piece| number(piece).map_or_else(|| piece.to_string(), |n| n.to_string()))
+                .collect::<Vec<_>>()
+                .join(if word.contains('=') { "=" } else { ":" })
+        })
+        .collect();
+    if words.starts_with(&["map".into(), "set".into()]) {
+        let mut fields: Vec<String> = words.drain(2..).filter(|w| w != "v=2").collect();
+        fields.sort();
+        words.extend(fields);
+    }
+    words.join(" ")
+}
+
+#[derive(Default)]
+struct ReplayState {
+    steps: Vec<Step>,
+    cursor: usize,
+    /// Commands that did not match the next request of the case.
+    unexpected: Vec<String>,
+    greeted: bool,
+}
+
+type Shared = Arc<Mutex<ReplayState>>;
+
+fn lock(state: &Shared) -> MutexGuard<'_, ReplayState> {
+    state.lock().expect("replay state")
+}
+
+/// Answer one command line from the replay state.
+fn replay(state: &Shared, hello: &[String], cmd: &str) -> Vec<String> {
+    let mut st = lock(state);
+    if !st.greeted {
+        st.greeted = true;
+        if canon(cmd) == "version" {
+            return hello.to_vec();
+        }
+    }
+    let matched = st
+        .steps
+        .get(st.cursor)
+        .filter(|step| canon(&step.request) == canon(cmd))
+        .cloned();
+    match matched {
+        Some(step) => {
+            st.cursor += 1;
+            let mut out = step.response;
+            out.extend(step.events);
+            out
+        }
+        None => {
+            st.unexpected.push(cmd.to_string());
+            vec!["ERR UNKNOWN_CMD".to_string()]
+        }
     }
 }
 
-/// Mock device running on the master side of a PTY pair.
+// -------------------------------------------------------------- PTY plumbing
+
+/// Fake device on the master side of a PTY pair; `handler` maps each command
+/// line to the lines to send back (empty = silence).
 struct MockDevice {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl MockDevice {
-    /// Spawn the mock. `pre_push` lines are injected before each response
-    /// (to exercise push/response multiplexing).
-    fn spawn(mut master: TTYPort, mut fw: MockFw, pre_push: Vec<&'static str>) -> Self {
+    fn spawn(
+        mut master: TTYPort,
+        mut handler: impl FnMut(&str) -> Vec<String> + Send + 'static,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let handle = std::thread::spawn({
             let stop = Arc::clone(&stop);
@@ -286,12 +265,7 @@ impl MockDevice {
                                 if cmd.is_empty() {
                                     continue;
                                 }
-                                for push in &pre_push {
-                                    write_line(&mut master, push);
-                                }
-                                for resp in fw.handle(&cmd) {
-                                    write_line(&mut master, &resp);
-                                }
+                                write_lines(&mut master, &handler(&cmd));
                             }
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
@@ -307,9 +281,23 @@ impl MockDevice {
     }
 }
 
-fn write_line(port: &mut TTYPort, line: &str) {
-    port.write_all(line.as_bytes()).expect("mock write");
-    port.write_all(b"\r\n").expect("mock write");
+/// Create a PTY pair. `TTYPort::pair` goes through `ptsname`, which is not
+/// thread safe, so concurrent tests would randomly fail with "Unknown
+/// errno"; creation is serialized.
+fn pty_pair() -> (TTYPort, TTYPort) {
+    static PAIR_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = PAIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    TTYPort::pair().expect("PTY pair")
+}
+
+/// Send `lines` (CR/LF terminated) to the host in one write, like one USB
+/// transfer.
+fn write_lines(port: &mut TTYPort, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    let wire: String = lines.iter().map(|l| format!("{l}\r\n")).collect();
+    port.write_all(wire.as_bytes()).expect("mock write");
     port.flush().expect("mock flush");
 }
 
@@ -317,230 +305,870 @@ impl Drop for MockDevice {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
-            let _ = h.join();
+            // A panic of the device thread already surfaced through the
+            // connection; the join result carries nothing more.
+            drop(h.join());
         }
     }
 }
 
-fn try_connect_mock(
-    fw: MockFw,
-    pre_push: Vec<&'static str>,
+/// A golden-replaying device plus the means to check how the replay went.
+struct ReplayDevice {
+    state: Shared,
+    _device: MockDevice,
+}
+
+impl ReplayDevice {
+    /// Switch to the next case (cases are independent: the device model is
+    /// reset between them, see the golden README).
+    fn load(&self, case: &Case) {
+        let mut st = lock(&self.state);
+        st.steps = case.steps.clone();
+        st.cursor = 0;
+        st.unexpected.clear();
+    }
+
+    /// Fail unless every command so far matched the case.
+    fn assert_no_unexpected(&self) {
+        let st = lock(&self.state);
+        assert!(
+            st.unexpected.is_empty(),
+            "commands outside the golden case: {:?}",
+            st.unexpected
+        );
+    }
+
+    /// Fail unless the SDK sent every request of the case, in order, and
+    /// nothing else.
+    fn assert_complete(&self) {
+        self.assert_no_unexpected();
+        let st = lock(&self.state);
+        assert_eq!(
+            st.cursor,
+            st.steps.len(),
+            "the SDK stopped before the end of the golden case; next request: {:?}",
+            st.steps.get(st.cursor).map(|s| &s.request)
+        );
+    }
+}
+
+fn open_replay(first: Option<&Case>) -> (Connection, ReplayDevice) {
+    let state: Shared = Arc::new(Mutex::new(ReplayState {
+        steps: first.map(|c| c.steps.clone()).unwrap_or_default(),
+        ..ReplayState::default()
+    }));
+    let hello = handshake_reply();
+    let (master, slave) = pty_pair();
+    let device = MockDevice::spawn(master, {
+        let state = Arc::clone(&state);
+        move |cmd| replay(&state, &hello, cmd)
+    });
+    let conn = Connection::from_port(Box::new(slave)).expect("connect");
+    (
+        conn,
+        ReplayDevice {
+            state,
+            _device: device,
+        },
+    )
+}
+
+/// Run `scenario` against the golden case and require that it consumed the
+/// whole case.
+fn run_case(file: &'static str, title: &str, scenario: impl FnOnce(&mut Connection)) {
+    let case = case(file, title);
+    let (mut conn, dev) = open_replay(Some(&case));
+    scenario(&mut conn);
+    dev.assert_complete();
+}
+
+/// Like [`run_case`] for a scenario that consumes the connection (`reset`,
+/// `bootsel`). The golden case continues after the reset, so only
+/// unexpected commands are checked.
+fn run_case_consuming(file: &'static str, title: &str, scenario: impl FnOnce(Connection)) {
+    let case = case(file, title);
+    let (conn, dev) = open_replay(Some(&case));
+    scenario(conn);
+    dev.assert_no_unexpected();
+}
+
+// ------------------------------------------------------------------- helpers
+
+/// Map B of the golden transcripts: GP0-GP3 outputs (default 0x5), GP4..
+/// inputs.
+fn map_b() -> PinMap {
+    PinMap {
+        direction: 0x0000_000f,
+        pull_down: 0x0c7f_fff0,
+        out_default: 0x5,
+        edge: 0x0c7f_fff0,
+        ..PinMap::default()
+    }
+}
+
+/// The full map the golden transcripts install in `map.txt` (every field
+/// non-default).
+fn map_full() -> PinMap {
+    PinMap {
+        direction: 0x0000_000f,
+        pull_up: 0x0000_00f0,
+        pull_down: 0x0c7f_ff00,
+        out_default: 0x5,
+        out_polarity: 0x8,
+        in_polarity: 0x100,
+        edge: 0x0c7f_fff0,
+        ..PinMap::default()
+    }
+}
+
+/// Map OUT2 of the golden transcripts: GP0-GP1 outputs.
+fn map_out2() -> PinMap {
+    PinMap {
+        direction: 0x3,
+        pull_down: 0x0c7f_fffc,
+        edge: 0x0c7f_fffc,
+        ..PinMap::default()
+    }
+}
+
+fn step(out_bits: u32, hold_ticks: u32) -> PatternStep {
+    PatternStep {
+        out_bits,
+        hold_ticks,
+    }
+}
+
+// ------------------------------------------------------- scenarios: info/ping
+
+#[test]
+fn version_matches_golden() {
+    run_case("version-info", "version", |conn| {
+        let v = conn.version().unwrap();
+        assert_eq!(
+            (v.major, v.minor, v.patch, v.protocol_version),
+            (0, 1, 3, 2)
+        );
+    });
+}
+
+#[test]
+fn caps_matches_golden() {
+    run_case("version-info", "caps (example", |conn| {
+        let caps = conn.caps().unwrap();
+        assert_eq!(
+            (caps.dio, caps.out, caps.r#in, caps.ts_res_ns, caps.tick_ns),
+            (25, 0, 25, 40, 200)
+        );
+        assert_eq!((caps.pattern_max, caps.ring, caps.features), (256, 256, 3));
+        assert!(caps.has_sync() && caps.has_reset());
+    });
+}
+
+#[test]
+fn caps_follows_the_direction_mask() {
+    run_case("version-info", "caps follows the direction mask", |conn| {
+        conn.map_set(&map_out2()).unwrap();
+        let caps = conn.caps().unwrap();
+        assert_eq!((caps.out, caps.r#in), (2, 23));
+    });
+}
+
+#[test]
+fn info_and_device_number_round_trip() {
+    run_case("version-info", "info: factory state", |conn| {
+        let info = conn.info().unwrap();
+        assert_eq!(info.uid, "0000000000000000");
+        assert_eq!(info.device_number, None);
+    });
+    run_case("version-info", "devnum: assign, read back, clear", |conn| {
+        conn.set_device_number(7).unwrap();
+        assert_eq!(conn.info().unwrap().device_number, Some(7));
+        conn.set_device_number(255).unwrap();
+        assert_eq!(conn.info().unwrap().device_number, None);
+    });
+}
+
+#[test]
+fn ping_echoes_the_u32() {
+    run_case("version-info", "ping echoes the u32", |conn| {
+        assert_eq!(conn.ping(0).unwrap(), 0);
+        assert_eq!(conn.ping(12345).unwrap(), 12345);
+    });
+    run_case("version-info", "ping: u32 limits", |conn| {
+        assert_eq!(conn.ping(u32::MAX).unwrap(), u32::MAX);
+        assert_eq!(conn.ping(0xFFFF_FFFF).unwrap(), u32::MAX);
+    });
+}
+
+// ----------------------------------------------------------- scenarios: map
+
+#[test]
+fn map_set_then_get_echoes_the_map() {
+    run_case("map", "map set: full map, then get echoes it", |conn| {
+        conn.map_set(&map_full()).unwrap();
+        assert_eq!(conn.map_get().unwrap(), map_full());
+    });
+}
+
+#[test]
+fn map_default_and_save_on_the_default_map() {
+    run_case(
+        "map",
+        "map default and map save on the default map",
+        |conn| {
+            conn.map_default().unwrap();
+            conn.map_save().unwrap();
+            assert_eq!(conn.map_get().unwrap(), PinMap::default());
+        },
+    );
+}
+
+#[test]
+fn map_set_refused_while_a_pattern_is_running() {
+    run_case(
+        "map",
+        "map set and map default are refused while a pattern is running",
+        |conn| {
+            conn.map_set(&map_out2()).unwrap();
+            conn.pattern_add(&[step(0x1, 100), step(0x0, 100)]).unwrap();
+            conn.pattern_run_loop(1000).unwrap();
+            assert!(matches!(
+                conn.map_set(&map_full()).unwrap_err(),
+                SdkError::Busy
+            ));
+            assert!(matches!(conn.map_default().unwrap_err(), SdkError::Busy));
+            // `map get` is still served while the pattern runs.
+            assert_eq!(conn.map_get().unwrap(), map_out2());
+            // After `pattern stop` the map can be replaced again.
+            conn.pattern_stop().unwrap();
+            conn.map_set(&map_full()).unwrap();
+            assert_eq!(conn.map_get().unwrap(), map_full());
+        },
+    );
+}
+
+// ------------------------------------------------------------ scenarios: io
+
+#[test]
+fn read_follows_the_driven_inputs() {
+    run_case("io", "read: follows the driven input pins", |conn| {
+        assert_eq!(conn.read().unwrap(), 0x0a);
+        assert_eq!(conn.read().unwrap(), 0x00);
+    });
+}
+
+#[test]
+fn state_combines_inputs_and_the_output_latch() {
+    run_case(
+        "io",
+        "state: combines inputs and the output latch",
+        |conn| {
+            conn.map_set(&map_b()).unwrap();
+            let state = conn.state().unwrap();
+            assert_eq!((state.inputs, state.outputs), (0x30, 0x05));
+        },
+    );
+}
+
+#[test]
+fn write_changes_the_masked_outputs() {
+    run_case("io", "write: full-mask write", |conn| {
+        conn.map_set(&map_b()).unwrap();
+        conn.write(0xa, 0xf).unwrap();
+        assert_eq!(conn.state().unwrap().outputs, 0x0a);
+    });
+    run_case("io", "write: only the masked pins change", |conn| {
+        conn.map_set(&map_b()).unwrap();
+        conn.write(0x2, 0x3).unwrap();
+        assert_eq!(conn.state().unwrap().outputs, 0x06);
+    });
+}
+
+// ------------------------------------------------------- scenarios: pattern
+
+#[test]
+fn pattern_loop_reports_progress_and_done() {
+    run_case(
+        "pattern",
+        "pattern run loop 3: loops counts completed passes",
+        |conn| {
+            conn.map_set(&map_out2()).unwrap();
+            assert_eq!(conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap(), 2);
+            conn.pattern_run(PatternMode::Loop, 3).unwrap();
+            let seen: Vec<_> = (0..4)
+                .map(|_| {
+                    let s = conn.pattern_status().unwrap();
+                    (s.state, s.step, s.loops, s.total)
+                })
+                .collect();
+            assert_eq!(
+                seen,
+                [
+                    (PatternState::Running, 0, 1, 2),
+                    (PatternState::Running, 1, 1, 2),
+                    (PatternState::Running, 1, 2, 2),
+                    (PatternState::Done, 0, 3, 2),
+                ]
+            );
+        },
+    );
+}
+
+#[test]
+fn pattern_stop_keeps_the_steps_loaded() {
+    run_case("pattern", "pattern stop: running pattern stops", |conn| {
+        conn.map_set(&map_out2()).unwrap();
+        conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap();
+        conn.pattern_run_loop(5).unwrap();
+        conn.pattern_stop().unwrap();
+        let s = conn.pattern_status().unwrap();
+        assert_eq!((s.state, s.total), (PatternState::Loaded, 2));
+        conn.pattern_run_once().unwrap();
+    });
+}
+
+#[test]
+fn pattern_stop_when_not_running_is_typed() {
+    run_case("pattern", "pattern stop: not running is refused", |conn| {
+        let not_running = |conn: &mut Connection| {
+            assert!(matches!(
+                conn.pattern_stop().unwrap_err(),
+                SdkError::NotRunning
+            ));
+        };
+        conn.map_set(&map_out2()).unwrap();
+        not_running(conn); // idle
+        conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap();
+        not_running(conn); // loaded
+        conn.pattern_run_once().unwrap();
+        not_running(conn); // done (the pattern finished by itself)
+        assert_eq!(conn.pattern_status().unwrap().state, PatternState::Done);
+    });
+}
+
+#[test]
+fn pattern_reset_clears_the_loaded_steps() {
+    run_case("pattern", "pattern reset: clears loaded steps", |conn| {
+        conn.map_set(&map_out2()).unwrap();
+        conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap();
+        conn.pattern_reset().unwrap();
+        let s = conn.pattern_status().unwrap();
+        assert_eq!((s.state, s.total), (PatternState::Idle, 0));
+        // Nothing loaded: running is refused as BAD_PARAM.
+        assert!(matches!(
+            conn.pattern_run_once().unwrap_err(),
+            SdkError::BadParam
+        ));
+    });
+}
+
+#[test]
+fn pattern_add_after_reset_counts_from_zero() {
+    run_case(
+        "pattern",
+        "pattern reset: a fresh add after reset starts counting from zero",
+        |conn| {
+            conn.map_set(&map_out2()).unwrap();
+            assert_eq!(conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap(), 2);
+            conn.pattern_reset().unwrap();
+            assert_eq!(conn.pattern_add(&[step(0x1, 5)]).unwrap(), 1);
+        },
+    );
+}
+
+#[test]
+fn pattern_buffer_holds_exactly_256_steps() {
+    run_case(
+        "boundary",
+        "256 pattern steps are accepted, the 257th is refused",
+        |conn| {
+            // 256 one-tick steps go out as several lines within the line limit.
+            let steps = vec![step(0, 1); 256];
+            assert_eq!(conn.pattern_add(&steps).unwrap(), 256);
+            assert_eq!(conn.pattern_status().unwrap().total, 256);
+            assert!(matches!(
+                conn.pattern_add(&steps[..1]).unwrap_err(),
+                SdkError::TooLong
+            ));
+            // The refused step changed nothing.
+            let status = conn.pattern_status().unwrap();
+            assert_eq!((status.state, status.total), (PatternState::Loaded, 256));
+        },
+    );
+}
+
+// ----------------------------------------------------- scenarios: timestamp
+
+#[test]
+fn ts_arm_status_get_disarm() {
+    run_case(
+        "timestamp",
+        "ts arm then status, get with no events returns count=0",
+        |conn| {
+            conn.ts_arm(0x1, EdgeMode::Rising).unwrap();
+            let status = conn.ts_status().unwrap();
+            assert!(status.armed && !status.overflow);
+            assert_eq!(status.pending, 0);
+            let result = conn.ts_get(5).unwrap();
+            assert!(result.events.is_empty() && !result.overflow);
+            conn.ts_disarm().unwrap();
+            assert!(!conn.ts_status().unwrap().armed);
+        },
+    );
+}
+
+#[test]
+fn ts_get_returns_the_recorded_events() {
+    run_case(
+        "timestamp",
+        "ts rising: only logical rising edges are recorded",
+        |conn| {
+            conn.ts_arm(0x1, EdgeMode::Rising).unwrap();
+            assert_eq!(conn.ts_status().unwrap().pending, 2);
+            let result = conn.ts_get(10).unwrap();
+            let seen: Vec<_> = result
+                .events
+                .iter()
+                .map(|e| (e.inputs, e.raw_count, e.raw_phase, e.sync_active))
+                .collect();
+            assert_eq!(seen, [(1, 1000, 0, false), (1, 1500, 0, false)]);
+            // Free running: ns is the microsecond count alone (R-TS1).
+            assert_eq!(result.events[1].ns(40), 1_500_000);
+            assert_eq!(conn.ts_status().unwrap().pending, 0);
+        },
+    );
+}
+
+#[test]
+fn ts_get_drains_in_batches() {
+    run_case(
+        "timestamp",
+        "ts get consumes events: max limits the batch",
+        |conn| {
+            conn.ts_arm(0x1, EdgeMode::Both).unwrap();
+            let first = conn.ts_get(2).unwrap();
+            assert_eq!(first.events.len(), 2);
+            assert_eq!(conn.ts_status().unwrap().pending, 1);
+            assert_eq!(conn.ts_get(2).unwrap().events.len(), 1);
+            // Empty again; the connection is still in sync (counted read).
+            assert!(conn.ts_get(2).unwrap().events.is_empty());
+        },
+    );
+}
+
+#[test]
+fn ts_get_overflow_flag_propagates() {
+    run_case("timestamp", "ts ring overflow: the oldest events", |conn| {
+        conn.ts_arm(0x1, EdgeMode::Both).unwrap();
+        let status = conn.ts_status().unwrap();
+        assert_eq!((status.pending, status.overflow), (256, true));
+
+        let first = conn.ts_get(5).unwrap();
+        assert!(first.overflow, "overflow is reported on the first get");
+        assert_eq!(first.events.len(), 5);
+        assert_eq!(first.events[0].raw_count, 20);
+
+        let status = conn.ts_status().unwrap();
+        assert_eq!((status.pending, status.overflow), (251, false));
+        let second = conn.ts_get(2).unwrap();
+        assert!(!second.overflow, "overflow is reported once");
+        assert_eq!(second.events[0].raw_count, 70);
+    });
+}
+
+#[test]
+fn ts_get_before_arm_is_not_armed() {
+    run_case("timestamp", "ts get: not armed", |conn| {
+        assert!(matches!(conn.ts_get(1).unwrap_err(), SdkError::NotArmed));
+        // Disarming discards the capture state: get is refused again.
+        conn.ts_arm(0x1, EdgeMode::Both).unwrap();
+        conn.ts_disarm().unwrap();
+        assert!(matches!(conn.ts_get(1).unwrap_err(), SdkError::NotArmed));
+    });
+}
+
+#[test]
+fn ts_get_max_outside_the_accepted_range_is_refused_locally() {
+    // `ts get 0` / `ts get 86` never reach the wire: the SDK's own range
+    // check answers (the device would say BAD_PARAM, see the golden case).
+    let (mut conn, dev) = open_replay(None);
+    assert!(matches!(
+        conn.ts_get(0).unwrap_err(),
+        SdkError::InvalidArgument(_)
+    ));
+    assert!(matches!(
+        conn.ts_get(TS_GET_MAX + 1).unwrap_err(),
+        SdkError::InvalidArgument(_)
+    ));
+    dev.assert_complete();
+}
+
+#[test]
+fn ts_arm_twice_is_busy() {
+    run_case(
+        "timestamp",
+        "ts arm: arming twice is refused and keeps the first arm",
+        |conn| {
+            conn.ts_arm(0x1, EdgeMode::Rising).unwrap();
+            assert!(matches!(
+                conn.ts_arm(0x2, EdgeMode::Falling).unwrap_err(),
+                SdkError::Busy
+            ));
+            let result = conn.ts_get(10).unwrap();
+            assert_eq!(result.events.len(), 1);
+            assert_eq!(result.events[0].inputs, 0x1);
+        },
+    );
+}
+
+#[test]
+fn ts_under_sync_feeds_the_reconcile_pipeline() {
+    run_case("timestamp", "ts under sync: s=1", |conn| {
+        conn.sync_master().unwrap();
+        conn.sync_start().unwrap();
+        conn.ts_arm(0x1, EdgeMode::Both).unwrap();
+        conn.sync_stop().unwrap();
+        let result = conn.ts_get(10).unwrap();
+        let seen: Vec<_> = result
+            .events
+            .iter()
+            .map(|e| (e.inputs, e.raw_count, e.raw_phase, e.sync_active))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (1, 2, 12, true),
+                (0, 3, 24, true),
+                (1, 4, 0, true),
+                (0, 107, 0, false),
+            ]
+        );
+        // R-TS1: with sync active ns = count * 1000 + phase * ts_res_ns.
+        assert_eq!(result.events[0].ns(40), 2_480);
+        assert_eq!(result.events[1].ns(40), 3_960);
+        assert_eq!(result.events[3].ns(40), 107_000);
+
+        // ts_get -> SourceEvent -> group_events, end to end.
+        let source: Vec<pochi_sdk::reconcile::SourceEvent> = result
+            .events
+            .iter()
+            .map(|ev| pochi_sdk::reconcile::SourceEvent {
+                device: "local".to_string(),
+                channel: format!("GP{}", ev.inputs.trailing_zeros().min(31)),
+                inputs: format!("0x{:08X}", ev.inputs),
+                raw_count: ev.raw_count,
+                raw_phase: ev.raw_phase,
+                sync_active: ev.sync_active,
+            })
+            .collect();
+        let groups = pochi_sdk::reconcile::group_events(&source, 40);
+        // Counts 2 and 3 share a group (within +-1); 4 and 107 stand alone.
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].events.len(), 2);
+        assert!(groups[0].reconciled);
+        let as_is_spread = 3_960 - 2_480;
+        let spread = (groups[0].reconciled_ns[0] - groups[0].reconciled_ns[1]).abs();
+        assert!(spread <= as_is_spread, "reconcile must not widen the pair");
+        assert!(!groups[1].reconciled && !groups[2].reconciled);
+    });
+}
+
+// ---------------------------------------------------------- scenarios: sync
+
+#[test]
+fn sync_master_start_count_stop() {
+    run_case("sync", "sync master -> start -> count -> stop", |conn| {
+        conn.sync_master().unwrap();
+        conn.sync_start().unwrap();
+        // `sync count` is a single `OK clocks=N` line: no counted read.
+        let counts: Vec<u64> = (0..4).map(|_| conn.sync_count().unwrap()).collect();
+        assert_eq!(counts, [0, 1000, 1000, 1001]);
+        conn.sync_stop().unwrap();
+        assert!(matches!(
+            conn.sync_count().unwrap_err(),
+            SdkError::SyncState
+        ));
+    });
+}
+
+#[test]
+fn sync_state_errors_are_typed() {
+    run_case(
+        "sync",
+        "sync arm: slave-armed state, every other transition is refused",
+        |conn| {
+            conn.sync_arm().unwrap();
+            assert!(matches!(conn.sync_arm().unwrap_err(), SdkError::SyncState));
+            assert!(matches!(
+                conn.sync_master().unwrap_err(),
+                SdkError::SyncState
+            ));
+            assert!(matches!(
+                conn.sync_start().unwrap_err(),
+                SdkError::SyncState
+            ));
+            assert!(matches!(conn.sync_stop().unwrap_err(), SdkError::SyncState));
+            assert!(matches!(
+                conn.sync_count().unwrap_err(),
+                SdkError::SyncState
+            ));
+        },
+    );
+    run_case("sync", "sync disarm is always OK, also when idle", |conn| {
+        conn.sync_disarm().unwrap();
+        conn.sync_disarm().unwrap();
+    });
+}
+
+// --------------------------------------------------------- scenarios: events
+
+#[test]
+fn input_events_are_pushed_after_subscribe() {
+    run_case("events", "INPUT: every change on an edge pin", |conn| {
+        let events = conn.subscribe_events().unwrap();
+        let timeout = Duration::from_secs(1);
+        assert_eq!(
+            events.recv_timeout(timeout).unwrap(),
+            PushEvent::InputChange { inputs: 1, t_us: 5 }
+        );
+        assert_eq!(
+            events.recv_timeout(timeout).unwrap(),
+            PushEvent::InputChange { inputs: 0, t_us: 8 }
+        );
+    });
+}
+
+#[test]
+fn pattern_done_and_input_events_arrive_in_order() {
+    run_case(
+        "events",
+        "PATTERN_DONE and INPUT interleave in time order",
+        |conn| {
+            conn.map_set(&map_out2()).unwrap();
+            let events = conn.subscribe_events().unwrap();
+            conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap();
+            conn.pattern_run_once().unwrap();
+
+            let timeout = Duration::from_secs(1);
+            let seen: Vec<PushEvent> = (0..3)
+                .map(|_| events.recv_timeout(timeout).unwrap())
+                .collect();
+            assert_eq!(
+                seen,
+                [
+                    PushEvent::InputChange {
+                        inputs: 0x10,
+                        t_us: 2
+                    },
+                    PushEvent::PatternDone { loops: 1 },
+                    PushEvent::InputChange { inputs: 0, t_us: 4 },
+                ]
+            );
+        },
+    );
+}
+
+#[test]
+fn pattern_done_is_pushed_without_input_changes() {
+    run_case(
+        "events",
+        "PATTERN_DONE: with subscribe on it is still a single event",
+        |conn| {
+            conn.map_set(&map_out2()).unwrap();
+            let events = conn.subscribe_events().unwrap();
+            conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap();
+            conn.pattern_run_once().unwrap();
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(1)).unwrap(),
+                PushEvent::PatternDone { loops: 1 }
+            );
+        },
+    );
+}
+
+// ---------------------------------------------------------- scenarios: reset
+
+#[test]
+fn system_reset_consumes_the_connection() {
+    run_case_consuming("reset", "reset: acknowledges", |conn| {
+        conn.system_reset().unwrap();
+    });
+}
+
+#[test]
+fn bootsel_reset_consumes_the_connection() {
+    run_case_consuming("reset", "bootsel: acknowledges", |conn| {
+        conn.bootsel_reset().unwrap();
+    });
+}
+
+#[test]
+fn help_is_a_counted_response() {
+    run_case("reset", "help: counted response", |conn| {
+        let lines = conn.help().unwrap();
+        assert_eq!(lines.len(), 16);
+        assert!(lines[0].trim_start().starts_with("version"));
+        assert!(lines[15].trim_start().starts_with("help"));
+    });
+}
+
+// ---------------------------------------------------------- scenarios: errors
+
+#[test]
+fn busy_errors_are_typed() {
+    run_case(
+        "errors",
+        "ERR BUSY: pattern add and map set while running",
+        |conn| {
+            conn.map_set(&map_b()).unwrap();
+            conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap();
+            conn.pattern_run_loop(5).unwrap();
+            assert!(matches!(
+                conn.pattern_add(&[step(0x1, 5)]).unwrap_err(),
+                SdkError::Busy
+            ));
+            assert!(matches!(conn.map_default().unwrap_err(), SdkError::Busy));
+            assert!(matches!(
+                conn.pattern_run_once().unwrap_err(),
+                SdkError::Busy
+            ));
+            conn.ts_arm(0x10, EdgeMode::Both).unwrap();
+            assert!(matches!(
+                conn.ts_arm(0x10, EdgeMode::Both).unwrap_err(),
+                SdkError::Busy
+            ));
+        },
+    );
+}
+
+#[test]
+fn flash_errors_are_typed_and_leave_state_unchanged() {
+    run_case("errors", "ERR FLASH: map save and devnum", |conn| {
+        assert!(matches!(conn.map_save().unwrap_err(), SdkError::Flash));
+        conn.map_save().unwrap();
+        conn.set_device_number(4).unwrap();
+        assert!(matches!(
+            conn.set_device_number(5).unwrap_err(),
+            SdkError::Flash
+        ));
+        assert_eq!(conn.info().unwrap().device_number, Some(4));
+    });
+}
+
+#[test]
+fn no_resource_errors_are_typed() {
+    run_case("errors", "ERR NO_RESOURCE", |conn| {
+        assert!(matches!(
+            conn.write(0x1, 0x1).unwrap_err(),
+            SdkError::NoResource
+        ));
+        let all_out = PinMap {
+            direction: VALID_DIO_MASK,
+            pull_down: 0,
+            edge: 0,
+            ..PinMap::default()
+        };
+        conn.map_set(&all_out).unwrap();
+        assert!(matches!(conn.read().unwrap_err(), SdkError::NoResource));
+        assert!(matches!(
+            conn.ts_arm(0x1, EdgeMode::Both).unwrap_err(),
+            SdkError::NoResource
+        ));
+        assert!(matches!(
+            conn.subscribe_events().unwrap_err(),
+            SdkError::NoResource
+        ));
+    });
+}
+
+#[test]
+fn an_error_leaves_the_connection_usable() {
+    run_case("errors", "an error leaves the device usable", |conn| {
+        assert_eq!(
+            conn.raw("nonsense").unwrap(),
+            ["ERR UNKNOWN_CMD".to_string()]
+        );
+        assert_eq!(conn.ping(1).unwrap(), 1);
+        assert!(matches!(conn.ts_get(1).unwrap_err(), SdkError::NotArmed));
+        assert_eq!(conn.version().unwrap().protocol_version, 2);
+    });
+}
+
+// ---------------------------------------------------- raw golden transcript
+
+/// Send every request of every replayable golden case through the `raw`
+/// escape hatch and require the device's recorded response, line for line.
+/// This puts the whole golden corpus (not only the typed scenarios above)
+/// through the PTY transport: counted responses, `ERR` lines, unknown
+/// commands and boundary lengths.
+#[test]
+fn raw_replays_the_whole_golden_corpus() {
+    let (mut conn, dev) = open_replay(None);
+    let mut replayed = 0usize;
+    let mut requests = BTreeSet::new();
+    for file in GOLDEN_FILES {
+        for case in load_file(file) {
+            // The SDK owns `subscribe` and refuses over-long lines locally.
+            let skipped = !case.replayable
+                || case.steps.iter().any(|s| {
+                    s.request.len() > MAX_LINE
+                        || s.request.is_empty()
+                        || canon(&s.request).starts_with("subscribe")
+                });
+            if skipped {
+                continue;
+            }
+            dev.load(&case);
+            for step in &case.steps {
+                let lines = conn.raw(&step.request).unwrap_or_else(|e| {
+                    panic!("{file}.txt `{}`: `{}`: {e}", case.title, step.request)
+                });
+                assert_eq!(
+                    lines, step.response,
+                    "{file}.txt `{}`: `{}`",
+                    case.title, step.request
+                );
+                requests.insert(canon(&step.request));
+            }
+            dev.assert_complete();
+            replayed += 1;
+        }
+    }
+    assert!(replayed > 200, "only {replayed} golden cases replayed");
+    assert!(
+        requests.len() > 150,
+        "only {} distinct requests",
+        requests.len()
+    );
+}
+
+// --------------------------------------------- negative tests (hand-written)
+
+/// Hand-written fake firmware for the negative scenarios the golden set
+/// cannot contain: pre-v2 replies, a wrong `proto`, silence.
+fn spawn_negative(
+    handler: impl FnMut(&str) -> Vec<String> + Send + 'static,
 ) -> (Result<Connection, SdkError>, MockDevice) {
-    let (master, slave) = TTYPort::pair().expect("PTY pair");
-    let device = MockDevice::spawn(master, fw, pre_push);
+    let (master, slave) = pty_pair();
+    let device = MockDevice::spawn(master, handler);
     (Connection::from_port(Box::new(slave)), device)
-}
-
-fn connect_mock(fw: MockFw, pre_push: Vec<&'static str>) -> (Connection, MockDevice) {
-    let (conn, device) = try_connect_mock(fw, pre_push);
-    (conn.expect("connect"), device)
-}
-
-// --- scenarios ---
-
-#[test]
-fn full_command_sweep() {
-    let (mut conn, _dev) = connect_mock(MockFw::new(), vec![]);
-
-    // Device information
-    let version = conn.version().unwrap();
-    assert_eq!(
-        (
-            version.major,
-            version.minor,
-            version.patch,
-            version.protocol_version
-        ),
-        (0, 1, 3, 2)
-    );
-    let caps = conn.caps().unwrap();
-    assert_eq!(caps.dio, 25);
-    assert_eq!(caps.ts_res_ns, 40);
-    assert_eq!(caps.tick_ns, 200);
-    assert!(caps.has_sync());
-    let info = conn.info().unwrap();
-    assert_eq!(info.uid, "AABBCCDD11223344");
-    assert_eq!(info.device_number, Some(42));
-    conn.set_device_number(7).unwrap();
-
-    // Digital I/O
-    assert_eq!(conn.read().unwrap(), 0x05);
-    conn.write(0x0A, 0x0F).unwrap();
-    let state = conn.state().unwrap();
-    assert_eq!(state.inputs, 0x05);
-    assert_eq!(state.outputs, 0x0A);
-
-    // Pin map
-    let map = conn.map_get().unwrap();
-    assert_eq!(map, PinMap::default());
-    let new_map = PinMap {
-        direction: 0xff,
-        pull_down: VALID_DIO_MASK & !0xff,
-        edge: VALID_DIO_MASK & !0xff,
-        out_default: 0x0f,
-        ..PinMap::default()
-    };
-    conn.map_set(&new_map).unwrap();
-    assert_eq!(conn.map_get().unwrap(), new_map);
-    conn.map_save().unwrap();
-    conn.map_default().unwrap();
-    assert_eq!(conn.map_get().unwrap(), PinMap::default());
-
-    // Pattern
-    let steps = vec![
-        PatternStep {
-            out_bits: 0x0F,
-            hold_ticks: 100,
-        },
-        PatternStep {
-            out_bits: 0x00,
-            hold_ticks: 100,
-        },
-    ];
-    assert_eq!(conn.pattern_load(&steps).unwrap(), 2);
-    conn.pattern_run(PatternMode::Loop, 10).unwrap();
-    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Running);
-    conn.pattern_stop().unwrap();
-    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Loaded);
-
-    // Timestamp (counted read)
-    conn.ts_arm(0x07FF, EdgeMode::Both).unwrap();
-    let result = conn.ts_get(TS_GET_MAX).unwrap();
-    assert_eq!(result.events.len(), 2);
-    assert_eq!(result.events[0].raw_count, 1000);
-    assert_eq!(result.events[0].ns(40), 1_000_280);
-    assert!(!result.reconciled);
-    conn.ts_disarm().unwrap();
-
-    // Sync (sync count is single-line: must not hang on a counted read)
-    conn.sync_master().unwrap();
-    conn.sync_start().unwrap();
-    let start = Instant::now();
-    assert_eq!(conn.sync_count().unwrap(), 1_000_000);
-    assert!(start.elapsed() < Duration::from_secs(1));
-    conn.sync_stop().unwrap();
-    conn.sync_disarm().unwrap();
-
-    // Raw escape hatch (returns every line)
-    assert_eq!(conn.raw("version").unwrap(), ["OK fw=0.1.3 proto=2"]);
-    assert_eq!(conn.ping(4_000_000_000).unwrap(), 4_000_000_000);
-
-    conn.close().unwrap();
-}
-
-#[test]
-fn device_errors_are_typed() {
-    let (mut conn, _dev) = connect_mock(MockFw::new(), vec![]);
-
-    // ts get before arm
-    assert!(matches!(conn.ts_get(10).unwrap_err(), SdkError::NotArmed));
-    // sync count before start
-    assert!(matches!(
-        conn.sync_count().unwrap_err(),
-        SdkError::SyncState
-    ));
-    // pattern run with nothing loaded
-    assert!(matches!(
-        conn.pattern_run(PatternMode::Once, 1).unwrap_err(),
-        SdkError::BadParam
-    ));
-    // unknown command via raw goes through (raw never errors on ERR)
-    assert_eq!(conn.raw("frobnicate").unwrap(), ["ERR UNKNOWN_CMD"]);
-    // an invalid map is refused host-side before anything is sent
-    let bad_map = PinMap {
-        pull_up: 0b1,
-        pull_down: 0b1,
-        ..PinMap::default()
-    };
-    assert!(matches!(
-        conn.map_set(&bad_map).unwrap_err(),
-        SdkError::InvalidArgument(_)
-    ));
-    // a map the device rejects surfaces as BAD_MAP (raw never errors on ERR)
-    assert_eq!(conn.raw("map set flags=0x01").unwrap(), ["ERR BAD_MAP"]);
-    // the SDK owns `subscribe`; raw refuses it without touching the device
-    assert!(matches!(
-        conn.raw("subscribe on").unwrap_err(),
-        SdkError::InvalidArgument(_)
-    ));
-    // pattern stop while idle now surfaces ErrNotRunning (FW v0.1.3+)
-    assert!(matches!(
-        conn.pattern_stop().unwrap_err(),
-        SdkError::NotRunning
-    ));
-}
-
-#[test]
-fn pattern_reset_returns_engine_to_idle() {
-    let (mut conn, _dev) = connect_mock(MockFw::new(), vec![]);
-    let steps = [PatternStep {
-        out_bits: 0x0F,
-        hold_ticks: 100,
-    }];
-    conn.pattern_load(&steps).unwrap();
-    conn.pattern_run(PatternMode::Loop, 1).unwrap();
-    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Running);
-
-    conn.pattern_reset().unwrap();
-    assert_eq!(conn.pattern_status().unwrap().state, PatternState::Idle);
-    // After pattern reset the loaded buffer is gone — re-running is BAD_PARAM.
-    assert!(matches!(
-        conn.pattern_run(PatternMode::Once, 1).unwrap_err(),
-        SdkError::BadParam
-    ));
-}
-
-#[test]
-fn system_reset_consumes_connection() {
-    let (conn, _dev) = connect_mock(MockFw::new(), vec![]);
-    conn.system_reset().unwrap();
-    // The connection has been consumed — the type system enforces this.
-}
-
-#[test]
-fn bootsel_reset_consumes_connection() {
-    let (conn, _dev) = connect_mock(MockFw::new(), vec![]);
-    conn.bootsel_reset().unwrap();
-}
-
-#[test]
-fn push_events_interleaved_with_commands() {
-    // Each command response is preceded by an INPUT push: responses must
-    // still parse and pushes must reach the event channel.
-    let (mut conn, _dev) = connect_mock(
-        MockFw::new(),
-        vec!["! INPUT in=0x00000001 t=100", "! PATTERN_DONE loops=2"],
-    );
-    let events = conn.subscribe_events().unwrap();
-    assert_eq!(conn.read().unwrap(), 0x05);
-
-    let timeout = Duration::from_secs(1);
-    let mut seen_input = 0;
-    let mut seen_pattern = 0;
-    for _ in 0..4 {
-        match events.recv_timeout(timeout).unwrap() {
-            PushEvent::InputChange {
-                inputs: 1,
-                t_us: 100,
-            } => seen_input += 1,
-            PushEvent::PatternDone { loops: 2 } => seen_pattern += 1,
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-    assert_eq!(seen_input, 2);
-    assert_eq!(seen_pattern, 2);
 }
 
 #[test]
 fn v1_shaped_replies_fail_loudly() {
-    let mut fw = MockFw::new();
-    fw.old_firmware = true;
-    let (mut conn, _dev) = connect_mock(fw, vec![]);
-
-    // v1 `caps` (ts_res=1000ns, no tick_ns) is not v2 and must not parse.
+    let (conn, _dev) = spawn_negative(|cmd| match cmd.split_whitespace().next() {
+        Some("version") => vec!["OK fw=0.1.3 proto=2".into()],
+        // v1 `caps`: ts_res=1000ns, no tick_ns.
+        Some("caps") => {
+            vec!["OK dio=23 out=12 in=11 ts_res=1000ns pattern=256 ring=256 feat=0x00000001".into()]
+        }
+        Some("ts") if cmd.starts_with("ts arm") => vec!["OK".into()],
+        // v1 `ts get`: no overflow=, lines use `t=`.
+        Some("ts") => vec!["OK count=1".into(), "  0x00000005 t=1234567890".into()],
+        _ => vec!["ERR UNKNOWN_CMD".into()],
+    });
+    let mut conn = conn.expect("connect");
     assert!(matches!(conn.caps().unwrap_err(), SdkError::Parse(_)));
-
-    // v1 `ts get` header has no overflow= and its lines use `t=`.
     conn.ts_arm(0x01, EdgeMode::Rising).unwrap();
     assert!(matches!(conn.ts_get(10).unwrap_err(), SdkError::Parse(_)));
 }
@@ -548,9 +1176,13 @@ fn v1_shaped_replies_fail_loudly() {
 #[test]
 fn proto_other_than_2_fails_the_connection() {
     for proto in [1, 3] {
-        let mut fw = MockFw::new();
-        fw.proto = proto;
-        let (conn, _dev) = try_connect_mock(fw, vec![]);
+        let (conn, _dev) = spawn_negative(move |cmd| {
+            if cmd == "version" {
+                vec![format!("OK fw=0.1.3 proto={proto}")]
+            } else {
+                vec!["ERR UNKNOWN_CMD".into()]
+            }
+        });
         assert!(
             matches!(conn.err(), Some(SdkError::UnsupportedFirmware(_))),
             "proto={proto} must be refused"
@@ -560,9 +1192,21 @@ fn proto_other_than_2_fails_the_connection() {
 
 #[test]
 fn timeout_then_ping_resync_recovers() {
-    let mut fw = MockFw::new();
-    fw.silent_once = vec!["read"];
-    let (mut conn, _dev) = connect_mock(fw, vec![]);
+    let mut silent_once = true;
+    let handshake = handshake_reply();
+    let (conn, _dev) = spawn_negative(move |cmd| match cmd {
+        "version" => handshake.clone(),
+        "read" if silent_once => {
+            silent_once = false;
+            vec![]
+        }
+        "read" => vec!["OK in=0x00000005".into()],
+        other => other
+            .strip_prefix("ping ")
+            .map(|n| vec![format!("OK pong={n}")])
+            .unwrap_or_else(|| vec!["ERR UNKNOWN_CMD".into()]),
+    });
+    let mut conn = conn.expect("connect");
     conn.set_timeout(Duration::from_millis(200));
     assert!(matches!(conn.read().unwrap_err(), SdkError::Timeout));
 
@@ -573,80 +1217,29 @@ fn timeout_then_ping_resync_recovers() {
 }
 
 #[test]
-fn ts_get_empty_ring() {
-    let mut fw = MockFw::new();
-    fw.ts_events = vec![];
-    let (mut conn, _dev) = connect_mock(fw, vec![]);
-    conn.ts_arm(0x01, EdgeMode::Rising).unwrap();
-    let result = conn.ts_get(TS_GET_MAX).unwrap();
-    assert!(result.events.is_empty());
-    assert!(!result.overflow);
-    // The connection is still usable right away (no stray lines pending).
-    assert_eq!(conn.read().unwrap(), 0x05);
-}
-
-#[test]
-fn ts_get_overflow_flag_propagates() {
-    // FW reported ring overflow since the last get; SDK must surface it.
-    let mut fw = MockFw::new();
-    fw.ts_overflow = true;
-    let (mut conn, _dev) = connect_mock(fw, vec![]);
-    conn.ts_arm(0x0F, EdgeMode::Rising).unwrap();
-    let result = conn.ts_get(TS_GET_MAX).unwrap();
-    assert!(result.overflow);
-    assert_eq!(result.events.len(), 2);
-}
-
-#[test]
-fn reconcile_pipeline_from_ts_get() {
-    // ts_get → SourceEvent conversion → group_events, end to end.
-    let mut fw = MockFw::new();
-    // Straddle case: one channel latched count after the µs edge (c=1001)
-    // while the other latched before (c=1000) at the same phase. Naive ns
-    // values differ by 1000ns; reconcile recovers the shared instant.
-    fw.ts_events = vec![
-        "  in=0x00000001 c=1001 p=2 s=1",
-        "  in=0x00000003 c=1000 p=2 s=1",
-    ];
-    let (mut conn, _dev) = connect_mock(fw, vec![]);
-    conn.ts_arm(0x03, EdgeMode::Rising).unwrap();
-    let result = conn.ts_get(TS_GET_MAX).unwrap();
-
-    let source_events: Vec<pochi_sdk::reconcile::SourceEvent> = result
-        .events
-        .iter()
-        .map(|ev| pochi_sdk::reconcile::SourceEvent {
-            device: "local".to_string(),
-            channel: format!("GP{}", ev.inputs.trailing_zeros()),
-            inputs: format!("0x{:08X}", ev.inputs),
-            raw_count: ev.raw_count,
-            raw_phase: ev.raw_phase,
-            sync_active: ev.sync_active,
-        })
-        .collect();
-    let groups = pochi_sdk::reconcile::group_events(&source_events, 40);
-    assert_eq!(groups.len(), 1);
-    assert!(groups[0].reconciled);
-    // Straddle corrected: naive values were 1000ns apart, reconcile picks
-    // a zero-diff combination. (Which µs the pair lands on is a tie and
-    // depends on enumeration order, so assert the diff, not the absolute.)
-    assert_eq!(groups[0].reconciled_ns[0], groups[0].reconciled_ns[1]);
-}
-
-#[test]
-fn pattern_load_sends_a_full_256_step_buffer_in_several_lines() {
-    let (mut conn, _dev) = connect_mock(MockFw::new(), vec![]);
-    let steps: Vec<PatternStep> = (0..256u32)
-        .map(|i| PatternStep {
-            out_bits: i % 4,
-            hold_ticks: 1 + i,
-        })
-        .collect();
-    assert_eq!(conn.pattern_load(&steps).unwrap(), 256);
-    assert_eq!(conn.pattern_status().unwrap().total, 256);
-    // The buffer is full: one more step is refused by the device.
+fn host_side_validation_never_reaches_the_device() {
+    // No case is loaded: any command that did reach the device would be
+    // recorded as unexpected.
+    let (mut conn, dev) = open_replay(None);
+    let bad_map = PinMap {
+        pull_up: 0b1,
+        pull_down: 0b1,
+        ..PinMap::default()
+    };
     assert!(matches!(
-        conn.pattern_add(&steps[..1]).unwrap_err(),
-        SdkError::TooLong
+        conn.map_set(&bad_map).unwrap_err(),
+        SdkError::InvalidArgument(_)
     ));
+    // The SDK owns `subscribe`; raw refuses it.
+    assert!(matches!(
+        conn.raw("subscribe on").unwrap_err(),
+        SdkError::InvalidArgument(_)
+    ));
+    // A line over the 256-byte limit is refused before sending.
+    let long = format!("ping {}", "9".repeat(MAX_LINE));
+    assert!(matches!(
+        conn.raw(&long).unwrap_err(),
+        SdkError::InvalidArgument(_)
+    ));
+    dev.assert_complete();
 }

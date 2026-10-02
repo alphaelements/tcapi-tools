@@ -18,7 +18,7 @@ fully self-contained 1.6 MB variant lives outside git in
 | `app/app.jsx` | App shell: MenuBar, layout + resizers, RightDock tabs, StatusBar, appearance defaults (`TWEAK_DEFAULTS`) |
 | `app/store.jsx` | Global store (version-key + `useSyncExternalStore`) **and the device simulation** |
 | `app/panels-device.jsx` | DevicePanel (left): device cards, scan/connect/disconnect |
-| `app/panels-gpio.jsx` | GpioMonitor (center top): 23-pin grid, IN/OUT readouts, Live toggle |
+| `app/panels-gpio.jsx` | GpioMonitor (center top): pin grid (23 pins in the prototype; 25 channels in v2, see below), IN/OUT readouts, Live toggle |
 | `app/waveform.jsx` | WaveformViewer: Canvas 2D scope renderer, cursors, channel list |
 | `app/panels-output-map.jsx` | OutputControl + PinMapEditor (right dock tabs) |
 | `app/panels-pattern-ts.jsx` | PatternEditor + TimestampViewer (right dock tabs) |
@@ -55,6 +55,30 @@ values, or class usage):
 - `app/tweaks-panel.jsx` — preview-time design scaffold. Only the
   option set and defaults in `app.jsx` carry over (as the Settings
   feature)
+
+## Protocol v2 adaptation (production GUI)
+
+The prototype sources stay untouched (they simulate a v1 device). The
+production GUI keeps their look and structure and differs only where the v2
+protocol (`proto=2`) changed the device model; none of this alters styles
+or layout:
+
+- **25 channels instead of 23 pins.** The grid, the pin map strip and the
+  waveform channel list cover ch0-ch24 = GP0-GP22, GP26, GP27 (GP23-GP25
+  are not DIO). The label of a channel is its GP pin (`GP26`); the tooltip
+  also names the channel (`GP26 (ch23)`).
+- **Per-channel pin map.** The v1 "one split + one pull mode + two flag
+  bits" model is replaced by the v2 map (direction mask, pulls, polarities,
+  edge mask). The strip keeps the draggable boundary (it rewrites the
+  direction mask as "ch0..n-1 outputs"), the pull buttons set every input,
+  and the two flag checkboxes became one "Change-notify on inputs"
+  checkbox (the `edge` mask). "Timestamp capture enabled" has no v2
+  counterpart and is gone; "Open-drain" stays a local checkbox.
+- **Pattern hold in ticks.** The step table keeps its "hold µs" column; the
+  value is sent as 200 ns ticks and must be a whole number of ticks.
+- **No sync push event.** v2 has no `SyncDone`.
+- **TOML files** (map, pattern) are evaluated by the SDK config parser; the
+  GUI contains no TOML parser.
 
 The full written spec lives in the project wiki (`ja-GUI-Spec`); when
 the wiki and these sources disagree, these sources win.

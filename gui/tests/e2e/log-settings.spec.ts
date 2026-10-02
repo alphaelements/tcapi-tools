@@ -7,7 +7,7 @@ test("REPL sends raw commands and logs the response", async ({ page }) => {
   await repl.fill("caps");
   await repl.press("Enter");
   await expect(
-    page.getByText("OK proto=1 dio=23 out=12 in=11 ts_res=40 pattern=256 ring=256 features=1").last(),
+    page.getByText("OK dio=25 out=12 in=13 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003").last(),
   ).toBeVisible();
   // History recall with ArrowUp.
   await repl.press("ArrowUp");
@@ -54,5 +54,5 @@ test("status bar shows clock, sdk version and firmware", async ({ page }) => {
   await connect(page);
   await expect(page.getByText("125 MHz")).toBeVisible();
   await expect(page.getByText(/Pochi-DIO SDK/)).toBeVisible();
-  await expect(page.getByText("● fw 0.1.2")).toBeVisible();
+  await expect(page.getByText("● fw 0.1.3")).toBeVisible();
 });

@@ -1,7 +1,7 @@
 // Formatting helpers, ported from design-reference store.jsx (`fmt`).
 
 export const fmt = {
-  hex: (v: number, w = 6): string =>
+  hex: (v: number, w = 8): string =>
     "0x" + (v >>> 0).toString(16).toUpperCase().padStart(w, "0"),
   us: (t: number): string => {
     if (Math.abs(t) >= 1000) return (t / 1000).toFixed(3) + " ms";

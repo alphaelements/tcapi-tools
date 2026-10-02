@@ -1,10 +1,12 @@
 //! Tauri command surface (`docs/gui-feature-spec.md` §9): thin typed
 //! wrappers over `pochi-sdk` calls against the shared connection.
 
+use std::path::Path;
+
 use pochi_sdk::reconcile::{self, SourceEvent};
 use pochi_sdk::{
-    Capabilities, Connection, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus,
-    PatternStep, PinMap, TimestampResult, VersionInfo,
+    config, Capabilities, Connection, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus,
+    PatternStep, PinMap, TimestampResult, VersionInfo, TS_GET_MAX,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -188,7 +190,48 @@ pub async fn map_default(state: State<'_, SharedState>) -> Result<(), String> {
     with_state(shared, |inner| inner.conn()?.map_default().map_err(err)).await
 }
 
+/// Evaluate a `map.toml` (schema v2, `docs/config-files.md`) into a
+/// [`PinMap`] without touching the device; the frontend reviews it and
+/// applies it via `map_set`. Errors read `<path>:<line>: <message>`.
+fn load_map_file(path: &str) -> Result<PinMap, String> {
+    config::load_map(Path::new(path)).map_err(err)
+}
+
+#[tauri::command]
+pub async fn map_load_toml(path: String) -> Result<PinMap, String> {
+    tauri::async_runtime::spawn_blocking(move || load_map_file(&path))
+        .await
+        .map_err(|e| format!("blocking task failed: {e}"))?
+}
+
 // --- pattern ---
+
+/// Parse a `pattern.toml` into steps with holds already in pattern ticks.
+fn load_pattern_file(path: &str) -> Result<Vec<PatternStep>, String> {
+    config::load_pattern(Path::new(path)).map_err(err)
+}
+
+/// Steps parsed from a pattern TOML file plus the device's accepted count,
+/// so the editor can show what was uploaded.
+#[derive(Debug, Clone, Serialize)]
+pub struct PatternTomlPayload {
+    pub steps: Vec<PatternStep>,
+    pub accepted: u16,
+}
+
+#[tauri::command]
+pub async fn pattern_load_toml(
+    state: State<'_, SharedState>,
+    path: String,
+) -> Result<PatternTomlPayload, String> {
+    let shared = state.inner().clone();
+    with_state(shared, move |inner| {
+        let steps = load_pattern_file(&path)?;
+        let accepted = inner.conn()?.pattern_load(&steps).map_err(err)?;
+        Ok(PatternTomlPayload { steps, accepted })
+    })
+    .await
+}
 
 #[tauri::command]
 pub async fn pattern_load(
@@ -321,6 +364,46 @@ fn as_is_rows(result: &TimestampResult, ts_res_ns: u32) -> Vec<TsRow> {
         .collect()
 }
 
+/// Collect up to `max_events` events through `fetch` (one `ts get` per
+/// call). The protocol caps a single response at [`TS_GET_MAX`] events, so a
+/// larger request is split; a short answer means the device ring is empty.
+/// The overflow flag of any call is kept.
+fn drain_ts<F>(max_events: u16, mut fetch: F) -> Result<TimestampResult, String>
+where
+    F: FnMut(u16) -> Result<TimestampResult, String>,
+{
+    if max_events == 0 {
+        return Err("max_events must be at least 1".to_string());
+    }
+    let mut events = Vec::new();
+    let mut overflow = false;
+    let mut remaining = max_events;
+    while remaining > 0 {
+        let chunk = remaining.min(TS_GET_MAX);
+        let batch = fetch(chunk)?;
+        overflow |= batch.overflow;
+        let got = batch.events.len();
+        events.extend(batch.events);
+        if got < usize::from(chunk) {
+            break;
+        }
+        remaining -= chunk;
+    }
+    Ok(TimestampResult {
+        events,
+        reconciled: false,
+        overflow,
+    })
+}
+
+/// `ts get` for up to `max_events` events, drained across protocol-sized
+/// calls, plus the device's `ts_res_ns`.
+fn capture_ts(conn: &mut Connection, max_events: u16) -> Result<(TimestampResult, u32), String> {
+    let ts_res_ns = conn.caps().map_err(err)?.ts_res_ns;
+    let result = drain_ts(max_events, |n| conn.ts_get(n).map_err(err))?;
+    Ok((result, ts_res_ns))
+}
+
 #[tauri::command]
 pub async fn ts_get(
     state: State<'_, SharedState>,
@@ -328,9 +411,7 @@ pub async fn ts_get(
 ) -> Result<TsResultPayload, String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        let conn = inner.conn()?;
-        let ts_res_ns = conn.caps().map_err(err)?.ts_res_ns;
-        let result = conn.ts_get(max_events).map_err(err)?;
+        let (result, ts_res_ns) = capture_ts(inner.conn()?, max_events)?;
         Ok(TsResultPayload {
             events: as_is_rows(&result, ts_res_ns),
             reconciled: false,
@@ -347,9 +428,7 @@ pub async fn ts_get_reconciled(
 ) -> Result<TsResultPayload, String> {
     let shared = state.inner().clone();
     with_state(shared, move |inner| {
-        let conn = inner.conn()?;
-        let ts_res_ns = conn.caps().map_err(err)?.ts_res_ns;
-        let result = conn.ts_get(max_events).map_err(err)?;
+        let (result, ts_res_ns) = capture_ts(inner.conn()?, max_events)?;
         Ok(reconcile_rows(&result, ts_res_ns))
     })
     .await
@@ -469,6 +548,130 @@ mod tests {
 
     /// Capabilities.ts_res_ns of the v2 firmware.
     const TS_RES_NS: u32 = 40;
+
+    // --- TOML loading through the SDK config parsers ---
+
+    fn fixture(name: &str) -> String {
+        format!("{}/../../docs/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn load_map_file_evaluates_the_sdk_schema() {
+        let map = load_map_file(&fixture("map-mixed-io.toml")).unwrap();
+        assert_eq!(map.direction, 0x0000_0003);
+        assert_eq!(map.pull_up, 0x0400_0004);
+        assert_eq!(map.edge, 0x0c7f_fff4);
+        assert_eq!(map.flags, 0);
+    }
+
+    #[test]
+    fn load_map_file_reports_file_and_line_of_a_syntax_error() {
+        let path = fixture("map-toml-syntax.toml");
+        let e = load_map_file(&path).unwrap_err();
+        // The fixture's syntax error is on line 6 (`# expected_line: 6`).
+        assert!(e.contains(&format!("{path}:6: toml syntax")), "{e}");
+    }
+
+    #[test]
+    fn load_map_file_rejects_a_missing_file() {
+        let e = load_map_file(&fixture("does-not-exist.toml")).unwrap_err();
+        assert!(!e.is_empty());
+    }
+
+    #[test]
+    fn load_pattern_file_converts_holds_to_ticks() {
+        let steps = load_pattern_file(&fixture("pattern-basic.toml")).unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                PatternStep {
+                    out_bits: 0x5,
+                    hold_ticks: 5
+                },
+                PatternStep {
+                    out_bits: 0x0,
+                    hold_ticks: 10
+                },
+                PatternStep {
+                    out_bits: 0x0400_0000,
+                    hold_ticks: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_pattern_file_rejects_a_v1_style_file_naming_the_version() {
+        let e = load_pattern_file(&fixture("map-invalid-version.toml")).unwrap_err();
+        assert!(e.contains("version"), "{e}");
+    }
+
+    // --- drain_ts ---
+
+    fn batch(count: usize, overflow: bool) -> TimestampResult {
+        TimestampResult {
+            events: (0..count).map(|i| ev(i as u32, 0)).collect(),
+            reconciled: false,
+            overflow,
+        }
+    }
+
+    #[test]
+    fn drain_ts_splits_a_large_request_into_protocol_sized_calls() {
+        let mut asked = Vec::new();
+        let mut pending = 200usize;
+        let result = drain_ts(512, |n| {
+            asked.push(n);
+            let take = pending.min(usize::from(n));
+            pending -= take;
+            Ok(batch(take, false))
+        })
+        .unwrap();
+        assert_eq!(result.events.len(), 200);
+        // 85 + 85 + 30: the last call comes back short, which ends the drain.
+        assert_eq!(asked, vec![85, 85, 85]);
+    }
+
+    #[test]
+    fn drain_ts_stops_at_the_requested_maximum() {
+        let mut asked = Vec::new();
+        let result = drain_ts(100, |n| {
+            asked.push(n);
+            Ok(batch(usize::from(n), false))
+        })
+        .unwrap();
+        assert_eq!(result.events.len(), 100);
+        assert_eq!(asked, vec![85, 15]);
+    }
+
+    #[test]
+    fn drain_ts_keeps_the_overflow_flag_of_any_call() {
+        let mut call = 0;
+        let result = drain_ts(170, |n| {
+            call += 1;
+            Ok(batch(usize::from(n), call == 1))
+        })
+        .unwrap();
+        assert!(result.overflow);
+    }
+
+    #[test]
+    fn drain_ts_with_nothing_pending_is_empty() {
+        let result = drain_ts(10, |_| Ok(batch(0, false))).unwrap();
+        assert!(result.events.is_empty());
+        assert!(!result.overflow);
+    }
+
+    #[test]
+    fn drain_ts_propagates_a_device_error() {
+        let e = drain_ts(10, |_| Err("ts get: device error: NOT_ARMED".to_string())).unwrap_err();
+        assert!(e.contains("NOT_ARMED"));
+    }
+
+    #[test]
+    fn drain_ts_rejects_zero() {
+        assert!(drain_ts(0, |_| Ok(batch(0, false))).is_err());
+    }
 
     // --- reconcile_rows ---
 

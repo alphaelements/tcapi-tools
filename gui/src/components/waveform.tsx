@@ -6,7 +6,8 @@
 // simulation's pure signal functions.
 // ============================================================
 import { useEffect, useRef } from "react";
-import { NUM_PINS, PochiStore, useStore } from "../store/store";
+import { gpLabel, pinName } from "../lib/pins";
+import { PochiStore, useStore } from "../store/store";
 import type { Tweaks } from "./settings";
 
 const CHAN_COLORS = [
@@ -25,7 +26,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
   const tweakRef = useRef(tweaks);
   tweakRef.current = tweaks;
   const dragRef = useRef<{ idx: number; tStart: number; winUs: number; plotW: number; PAD_L: number } | null>(null);
-  useStore(["map", "conn"]); // re-render lane list when monitored/connection changes
+  useStore(["map", "conn", "ui"]); // re-render on monitored/connection/rec/window changes (the per-frame "sim" tick is read by the canvas loop)
 
   // cursor read-out (updates via rAF through ref to avoid React churn)
   const readoutRef = useRef<HTMLSpanElement>(null);
@@ -106,7 +107,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
         ctx.fillStyle = color;
         ctx.font = '600 11px "IBM Plex Mono", monospace';
         ctx.textAlign = "left";
-        ctx.fillText("GP" + String(gp).padStart(2, "0"), 10, cy - 3);
+        ctx.fillText(gpLabel(gp), 10, cy - 3);
         ctx.fillStyle = "#64748b";
         ctx.font = '9px "IBM Plex Mono", monospace';
         ctx.fillText(channelLabel(gp), 10, cy + 9);
@@ -242,10 +243,8 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
   }
 
   const S = PochiStore.get();
-  const allInputs: number[] = [];
-  for (let gp = S.splitIndex; gp < NUM_PINS; gp++) allInputs.push(gp);
-  const outs: number[] = [];
-  for (let gp = 0; gp < S.splitIndex; gp++) outs.push(gp);
+  const allInputs = PochiStore.inputChannels();
+  const outs = PochiStore.outputChannels();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, flex: 1, minWidth: 0 }}>
@@ -295,7 +294,7 @@ function ChanRow({ gp, on, color }: { gp: number; on: boolean; color: string }) 
         cursor: "pointer", color: on ? "var(--text)" : "var(--text-dim)", textAlign: "left", width: "100%",
       }}>
       <span style={{ width: 9, height: 9, borderRadius: 2, background: on ? color : "#2c2c3c", flex: "none", boxShadow: on ? "0 0 6px " + color + "88" : "none" }}></span>
-      <span className="mono" style={{ fontSize: 10.5, fontWeight: 600 }}>GP{String(gp).padStart(2, "0")}</span>
+      <span className="mono" title={pinName(gp)} style={{ fontSize: 10.5, fontWeight: 600 }}>{gpLabel(gp)}</span>
       <span className="mono" style={{ fontSize: 8.5, color: "var(--text-dim)", marginLeft: "auto" }}>{channelLabel(gp)}</span>
     </button>
   );

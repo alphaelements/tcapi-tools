@@ -28,7 +28,10 @@ test("TOML load + run once completes with PATTERN_DONE", async ({ page }) => {
   await page.getByRole("button", { name: "▶ Run" }).click();
   await expect(page.getByText("DONE", { exact: true })).toBeVisible();
   await expect(page.getByText("PATTERN_DONE loops=1")).toBeVisible();
-  await expect(page.getByText("pattern run once 1", { exact: true })).toBeVisible();
+  // `once` plays one pass and takes no repeat on the wire.
+  await expect(page.getByText("pattern run once", { exact: true })).toBeVisible();
+  // The upload is `pattern reset` + `pattern add` lines of `<GP bits>:<ticks>`.
+  await expect(page.getByText("pattern add 0x1:500 0x3:1000 0x7:500 0xf:1500", { exact: true })).toBeVisible();
   // A run puts all output channels on the scope (8 inputs + 12 outputs).
   await expect(page.getByText("scope 20ch")).toBeVisible();
 });

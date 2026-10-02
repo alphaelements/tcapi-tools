@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { fmt, parseHexInput } from "./fmt";
 
 describe("fmt.hex", () => {
-  it("formats with 0x prefix, uppercase, 6-digit padding", () => {
-    expect(fmt.hex(5)).toBe("0x000005");
-    expect(fmt.hex(0x1fab)).toBe("0x001FAB");
+  it("formats with 0x prefix, uppercase, 8-digit padding (a v2 wire word)", () => {
+    expect(fmt.hex(5)).toBe("0x00000005");
+    expect(fmt.hex(0x1fab)).toBe("0x00001FAB");
+    expect(fmt.hex(0x0c7fffff)).toBe("0x0C7FFFFF");
   });
   it("treats negative input as unsigned 32-bit", () => {
     expect(fmt.hex(-1, 8)).toBe("0xFFFFFFFF");
