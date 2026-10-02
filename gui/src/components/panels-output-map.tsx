@@ -1,16 +1,17 @@
 // ============================================================
 // panels-output-map.tsx — OutputControl + PinMapEditor
 // Ported from design-reference panels-output-map.jsx (mechanical
-// ESM/TSX conversion). The v2 map is per channel: the strip colours each
-// channel by its direction bit, the boundary handle rewrites the direction
-// mask as "ch0..n-1 outputs", the pull buttons set every input, and the
-// notify checkbox sets the `edge` mask. "Load TOML…" opens a real file
-// dialog and evaluates the file through the SDK config parser.
+// ESM/TSX conversion). The v2 map is per channel: the editor is a 25-row
+// table (ch0-ch24, labelled `GPn (chm)`) with the direction, pull, def,
+// opol, ipol and edge key of every channel; `flags` is shown read-only.
+// "Load TOML…" opens a real file dialog and evaluates the file through the
+// SDK config parser.
 // ============================================================
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { parseHexInput } from "../lib/fmt";
-import { chBit, gpLabel, pinName } from "../lib/pins";
+import type { ChannelFlag, PullMode } from "../lib/pinmap";
+import { chBit, pinLabel } from "../lib/pins";
 import { tauriAvailable } from "../lib/tauri";
 import { NUM_PINS, PochiStore, useStore } from "../store/store";
 
@@ -38,18 +39,18 @@ export function OutputControl() {
         </div>
       )}
       {outs.length === 0 && (
-        <div style={{ fontSize: 11.5, color: "var(--text-dim)", padding: "10px 4px", lineHeight: 1.5 }}>No output pins configured. Set a split point in the Pin Map.</div>
+        <div style={{ fontSize: 11.5, color: "var(--text-dim)", padding: "10px 4px", lineHeight: 1.5 }}>No output pins configured. Make a channel an output in the Pin Map.</div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {outs.map((gp) => {
-          const on = chBit(S.outputs, gp);
+        {outs.map((ch) => {
+          const on = chBit(S.outputs, ch);
           return (
-            <div key={gp} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 9px", borderRadius: "var(--r-sm)", background: on ? "color-mix(in oklab, var(--high) 8%, var(--surface-2))" : "var(--surface-2)", border: "1px solid " + (on ? "color-mix(in oklab,var(--high) 26%, var(--border-soft))" : "var(--border-soft)") }}>
-              <span className="mono" title={pinName(gp)} style={{ fontSize: 12, fontWeight: 600, width: 40 }}>{gpLabel(gp)}</span>
+            <div key={ch} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 9px", borderRadius: "var(--r-sm)", background: on ? "color-mix(in oklab, var(--high) 8%, var(--surface-2))" : "var(--surface-2)", border: "1px solid " + (on ? "color-mix(in oklab,var(--high) 26%, var(--border-soft))" : "var(--border-soft)") }}>
+              <span className="mono" style={{ fontSize: 11.5, fontWeight: 600, width: 78 }}>{pinLabel(ch)}</span>
               <span className={"dot-led " + (on ? "on" : "low")}></span>
               <span className="mono" style={{ fontSize: 10.5, color: on ? "var(--high)" : "var(--text-dim)", width: 34 }}>{on ? "HIGH" : "LOW"}</span>
               <div style={{ flex: 1 }} />
-              <span className={"switch " + (on ? "on" : "")} onClick={() => !disabled && void PochiStore.toggleOutput(gp)} style={{ opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? "none" : "auto" }}></span>
+              <span className={"switch " + (on ? "on" : "")} onClick={() => !disabled && void PochiStore.toggleOutput(ch)} style={{ opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? "none" : "auto" }}></span>
             </div>
           );
         })}
@@ -72,29 +73,56 @@ export function OutputControl() {
 }
 
 // ---------------- PinMapEditor ----------------
+const PULL_MODES: readonly PullMode[] = ["up", "down", "none"];
+const GRID = "78px 34px 54px repeat(4, 1fr)";
+/// Narrowest table that still shows all seven columns; a narrower dock scrolls it sideways.
+const TABLE_MIN_W = 300;
+
+/// One checkbox cell of the table; `—` when the key does not apply to the
+/// channel's role (R-M1).
+function FlagCell({ ch, flag, label, applies, on }: { ch: number; flag: ChannelFlag; label: string; applies: boolean; on: boolean }) {
+  if (!applies) return <span className="mono dim" style={{ textAlign: "center", fontSize: 10 }}>—</span>;
+  return (
+    <input type="checkbox" checked={on} aria-label={`${pinLabel(ch)} ${label}`} data-testid={`map-${flag}-${ch}`}
+      onChange={(e) => PochiStore.setChannelFlag(ch, flag, e.target.checked)}
+      style={{ margin: "0 auto", accentColor: "var(--accent)" }} />
+  );
+}
+
+function MapRow({ ch }: { ch: number }) {
+  const c = PochiStore.channelConfig(ch);
+  const isOut = c.role === "output";
+  return (
+    <div data-testid={`map-row-${ch}`} style={{ display: "grid", gridTemplateColumns: GRID, gap: 4, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border-soft)" }}>
+      <span className="mono" style={{ fontSize: 10.5, fontWeight: 600 }}>{pinLabel(ch)}</span>
+      <button className={"chip " + (isOut ? "out" : "in")} data-testid={`map-role-${ch}`} title={`${pinLabel(ch)}: click to make it an ${isOut ? "input" : "output"}`}
+        onClick={() => PochiStore.setChannelRole(ch, isOut ? "input" : "output")}
+        style={{ fontSize: 8.5, padding: "1px 4px", cursor: "pointer", justifyContent: "center" }}>
+        {isOut ? "OUT" : "IN"}
+      </button>
+      {isOut ? (
+        <span className="mono dim" style={{ textAlign: "center", fontSize: 10 }}>—</span>
+      ) : (
+        <select className="field" aria-label={`${pinLabel(ch)} pull`} data-testid={`map-pull-${ch}`} value={c.pull}
+          onChange={(e) => PochiStore.setChannelPull(ch, e.target.value as PullMode)}
+          style={{ padding: "1px 2px", fontSize: 10 }}>
+          {PULL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      )}
+      <FlagCell ch={ch} flag="out_default" label="def" applies={isOut} on={c.outDefault} />
+      <FlagCell ch={ch} flag="out_polarity" label="opol" applies={isOut} on={c.outPolarity} />
+      <FlagCell ch={ch} flag="in_polarity" label="ipol" applies={!isOut} on={c.inPolarity} />
+      <FlagCell ch={ch} flag="edge" label="edge" applies={!isOut} on={c.edge} />
+    </div>
+  );
+}
+
 export function PinMapEditor() {
   useStore(["map", "conn"]);
   const S = PochiStore.get();
   const connected = S.connStatus === "connected";
-  const stripRef = useRef<HTMLDivElement>(null);
-  const N = NUM_PINS;
   const outCount = PochiStore.outputChannels().length;
-  const pull = PochiStore.pullMode();
-  // Open-drain has no protocol field in v2; the checkbox is local UI state.
-  const [openDrain, setOpenDrain] = useState(false);
-
-  function onBoundaryDrag(e: React.PointerEvent) {
-    e.preventDefault();
-    const move = (ev: PointerEvent) => {
-      if (!stripRef.current) return;
-      const rect = stripRef.current.getBoundingClientRect();
-      const x = ev.clientX - rect.left;
-      const idx = Math.round((x / rect.width) * N);
-      PochiStore.setSplit(idx);
-    };
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
-  }
+  const channels = Array.from({ length: NUM_PINS }, (_, ch) => ch);
 
   async function loadToml() {
     if (!tauriAvailable) {
@@ -105,48 +133,25 @@ export function PinMapEditor() {
     if (typeof path === "string") await PochiStore.loadMapToml(path);
   }
 
-  const cellW = `calc((100% - ${(N - 1) * 3}px) / ${N})`;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, opacity: connected ? 1 : 0.5, pointerEvents: connected ? "auto" : "none" }}>
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-          <span className="eyebrow">ch0 — ch{N - 1} · GP0–GP22, GP26, GP27</span>
-          <span className="mono" style={{ fontSize: 10, color: "var(--text-secondary)" }}>{outCount} out / {N - outCount} in</span>
-        </div>
-        {/* strip */}
-        <div ref={stripRef} style={{ position: "relative", display: "flex", gap: 3, padding: "2px 0" }}>
-          {Array.from({ length: N }).map((_, gp) => {
-            const isOut = PochiStore.gpDir(gp) === "output";
-            return (
-              <div key={gp} title={pinName(gp)} style={{ width: cellW, height: 34, borderRadius: 3, background: isOut ? "color-mix(in oklab, var(--accent) 30%, var(--surface-2))" : "color-mix(in oklab, #38bdf8 18%, var(--surface-2))", border: "1px solid " + (isOut ? "color-mix(in oklab, var(--accent) 50%, var(--border))" : "color-mix(in oklab,#38bdf8 35%, var(--border))"), display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <span className="mono" style={{ fontSize: 8, color: "var(--text-secondary)" }}>{gp}</span>
-              </div>
-            );
-          })}
-          {/* boundary handle */}
-          <div onPointerDown={onBoundaryDrag} style={{ position: "absolute", top: -3, bottom: -3, left: `calc(${(outCount / N) * 100}% - 6px)`, width: 12, cursor: "ew-resize", display: "flex", justifyContent: "center", zIndex: 2 }}>
-            <div style={{ width: 3, background: "var(--warn)", borderRadius: 2, boxShadow: "0 0 8px color-mix(in oklab,var(--warn) 60%, transparent)" }}></div>
-          </div>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-          <span className="chip out">◀ OUTPUT {outCount}</span>
-          <span className="chip in">INPUT {N - outCount} ▶</span>
-        </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0, opacity: connected ? 1 : 0.5, pointerEvents: connected ? "auto" : "none" }}>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span className="eyebrow">ch0 — ch{NUM_PINS - 1} · GP0–GP22, GP26, GP27</span>
+        <span className="mono" style={{ fontSize: 10, color: "var(--text-secondary)" }}>{outCount} out / {NUM_PINS - outCount} in</span>
       </div>
 
-      <Field label="Pull mode">
-        <div className="seg" style={{ width: "100%" }}>
-          {(["up", "down", "none"] as const).map((m) => (
-            <button key={m} style={{ flex: 1 }} className={pull === m ? "active" : ""} onClick={() => PochiStore.setPull(m)}>{m}</button>
-          ))}
+      <div style={{ border: "1px solid var(--border-soft)", borderRadius: "var(--r-sm)", overflowX: "auto", overflowY: "hidden" }}>
+       <div style={{ minWidth: TABLE_MIN_W }}>
+        <div style={{ display: "grid", gridTemplateColumns: GRID, gap: 4, padding: "5px 8px", background: "var(--surface-2)", borderBottom: "1px solid var(--border-soft)" }}>
+          {["pin", "dir", "pull", "def", "opol", "ipol", "edge"].map((h) => <span key={h} className="eyebrow" style={{ fontSize: 8.5 }}>{h}</span>)}
         </div>
-      </Field>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <Check label="Change-notify on inputs" checked={PochiStore.edgeNotify()} onToggle={(on) => PochiStore.setEdgeNotify(on)} />
-        <Check label="Open-drain outputs" checked={openDrain} onToggle={setOpenDrain} />
+        <div className="scroll-y" data-testid="map-rows" style={{ maxHeight: 330 }}>
+          {channels.map((ch) => <MapRow key={ch} ch={ch} />)}
+        </div>
+       </div>
       </div>
+
+      <span className="mono dim" data-testid="map-flags" style={{ fontSize: 10 }}>flags 0x{S.map.flags.toString(16).padStart(2, "0")} (reserved)</span>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
         <button className="btn primary sm" style={{ justifyContent: "center" }} onClick={() => void PochiStore.applyMap()}>Apply</button>
@@ -155,25 +160,5 @@ export function PinMapEditor() {
         <button className="btn sm" style={{ justifyContent: "center" }} onClick={() => void loadToml()}>Load TOML…</button>
       </div>
     </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-      <span className="eyebrow">{label}</span>
-      {children}
-    </div>
-  );
-}
-function Check({ label, checked, onToggle }: { label: string; checked: boolean; onToggle: (on: boolean) => void }) {
-  const on = checked;
-  return (
-    <label onClick={() => onToggle(!on)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: "var(--text-secondary)", cursor: "pointer" }}>
-      <span style={{ width: 15, height: 15, borderRadius: 3, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
-        {on && <svg width="9" height="9" viewBox="0 0 12 12"><path d="M2 6l3 3 5-6" stroke="#fff" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-      </span>
-      {label}
-    </label>
   );
 }

@@ -4,7 +4,7 @@
 // ESM/TSX conversion; data source is the live store instead of
 // the simulation snapshot helpers).
 // ============================================================
-import { chToGp, gpLabel } from "../lib/pins";
+import { chToGp, pinLabel } from "../lib/pins";
 import { fmt, NUM_PINS, PochiStore, useStore } from "../store/store";
 import type { Tweaks } from "./settings";
 
@@ -29,14 +29,14 @@ function PinIndicator({ shape, state, color }: { shape: string; state: "high" | 
   );
 }
 
-function PinCell({ gp, layout, shape }: { gp: number; layout: string; shape: string }) {
+function PinCell({ ch, layout, shape }: { ch: number; layout: string; shape: string }) {
   const S = PochiStore.get();
-  const dir = PochiStore.gpDir(gp);
-  const val = S.pinMeta[gp].value;
+  const dir = PochiStore.gpDir(ch);
+  const val = S.pinMeta[ch].value;
   const isInput = dir === "input";
   const stateColor = val ? "#22c55e" : "#64748b";
-  const last = S.pinMeta[gp].lastChangeMs;
-  const tip = `GP${chToGp(gp)} · ${dir.toUpperCase()} · ${val ? "HIGH" : "LOW"}\nch${gp} · pull: ${S.pinMeta[gp].pull}\nlast Δ: ${last != null ? (last / 1000).toFixed(2) + " ms" : "—"} · edges: ${S.pinMeta[gp].edges}`;
+  const last = S.pinMeta[ch].lastChangeMs;
+  const tip = `${pinLabel(ch)} · ${dir.toUpperCase()} · ${val ? "HIGH" : "LOW"}\npull: ${S.pinMeta[ch].pull}\nlast Δ: ${last != null ? (last / 1000).toFixed(2) + " ms" : "—"} · edges: ${S.pinMeta[ch].edges}`;
 
   const row = layout === "row";
   return (
@@ -51,8 +51,9 @@ function PinCell({ gp, layout, shape }: { gp: number; layout: string; shape: str
       minWidth: row ? 0 : 50, cursor: "default",
       transition: "background .12s, border-color .12s",
     }}>
-      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", order: row ? 0 : -1 }}>
-        {gpLabel(gp)}
+      <span className="mono" style={{ display: "flex", flexDirection: row ? "row" : "column", alignItems: "center", gap: row ? 4 : 0, lineHeight: 1.15, fontWeight: 600, color: "var(--text)", order: row ? 0 : -1 }}>
+        <span style={{ fontSize: 11 }}>GP{chToGp(ch)}</span>
+        <span style={{ fontSize: 8.5, color: "var(--text-dim)", fontWeight: 400 }}>(ch{ch})</span>
       </span>
       <PinIndicator shape={shape} state={val ? "high" : "low"} color={stateColor} />
       <span className={"chip " + (isInput ? "in" : "out")} style={{ fontSize: 8.5, padding: "1px 5px" }}>{isInput ? "IN" : "OUT"}</span>
@@ -65,7 +66,7 @@ export function GpioMonitor({ tweaks }: { tweaks: Tweaks }) {
   const S = PochiStore.get();
   const connected = S.connStatus === "connected";
   const pins: number[] = [];
-  for (let gp = 0; gp < NUM_PINS; gp++) pins.push(gp);
+  for (let ch = 0; ch < NUM_PINS; ch++) pins.push(ch);
 
   const layout = tweaks.pinLayout || "grid"; // row | rows2 | grid
   const shape = tweaks.pinShape || "circle";
@@ -94,7 +95,7 @@ export function GpioMonitor({ tweaks }: { tweaks: Tweaks }) {
       </div>
       <div className="scroll-y" style={{ flex: 1, padding: 12, opacity: connected ? 1 : 0.45, pointerEvents: connected ? "auto" : "none" }}>
         <div style={gridStyle}>
-          {pins.map((gp) => <PinCell key={gp} gp={gp} layout={layout} shape={shape} />)}
+          {pins.map((ch) => <PinCell key={ch} ch={ch} layout={layout} shape={shape} />)}
         </div>
       </div>
     </div>

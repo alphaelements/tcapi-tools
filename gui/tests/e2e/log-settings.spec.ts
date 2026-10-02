@@ -52,7 +52,7 @@ test("settings: accent change applies immediately and persists", async ({ page }
 
 test("status bar shows clock, sdk version and firmware", async ({ page }) => {
   await connect(page);
-  await expect(page.getByText("125 MHz")).toBeVisible();
+  await expect(page.getByText("tick 200 ns")).toBeVisible();
   await expect(page.getByText(/Pochi-DIO SDK/)).toBeVisible();
   await expect(page.getByText("● fw 0.1.3")).toBeVisible();
 });

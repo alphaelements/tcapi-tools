@@ -14,28 +14,35 @@ import { EdgeHistory } from "../lib/ring";
 import { invoke, listen, tauriAvailable } from "../lib/tauri";
 import {
   PIN_MAP_DEFAULT,
-  edgeNotify,
+  channelConfig,
   inputChannels,
+  inputMask,
   outputChannels,
-  pullMode,
-  withEdgeNotify,
-  withPull,
-  withSplit,
+  withChannelFlag,
+  withChannelPull,
+  withChannelRole,
+  type ChannelConfig,
+  type ChannelFlag,
+  type ChannelRole,
   type PullMode,
   type WirePinMap,
 } from "../lib/pinmap";
 import {
+  PATTERN_TICK_NS,
   stepsFromWire,
   stepsToWire,
   type PatternStepUi,
   type WirePatternStep,
 } from "../lib/pattern";
-import { DIO_CHANNELS, VALID_DIO_MASK, chBit, chMask } from "../lib/pins";
+import { DIO_CHANNELS, checkDioMask, chBit, chMask } from "../lib/pins";
 
 export type { PatternStepUi } from "../lib/pattern";
 
 /// Number of DIO channels shown by the UI (ch0-ch24).
 export const NUM_PINS = DIO_CHANNELS;
+
+/// Hold of a freshly added pattern step: 200 µs at the 200 ns tick.
+const DEFAULT_HOLD_TICKS = 1000;
 
 // ---- wire types (serde snake_case from the Rust backend) ----
 
@@ -145,7 +152,10 @@ interface StoreState {
     pins: number;
     maxPattern: number;
     tsDepth: number;
-    clockMhz: number;
+    /// Pattern tick (`caps tick_ns`): the unit of every step hold.
+    tickNs: number;
+    /// Timestamp phase step (`caps ts_res_ns`).
+    tsResNs: number;
     sync: boolean;
     reset: boolean;
   } | null;
@@ -426,6 +436,7 @@ function createStore() {
     // The device rejects value bits outside the DIO pins, so send only the
     // masked bits.
     const masked = (values & mask) >>> 0;
+    checkDioMask("write mask", mask >>> 0);
     await invoke("write_outputs", { values: masked, mask: mask >>> 0 });
     S.outputs = (masked | (S.outputs & ~mask)) >>> 0;
     applyPinValues(S.outputs, "output", S._pausedAt ?? nowStreamT());
@@ -560,9 +571,8 @@ function createStore() {
           pins: caps.dio,
           maxPattern: caps.pattern_max,
           tsDepth: caps.ring,
-          // System clock is not reported by `caps` (ts_res_ns is the 40 ns
-          // phase step); 125 MHz is the device constant from the spec.
-          clockMhz: 125,
+          tickNs: caps.tick_ns,
+          tsResNs: caps.ts_res_ns,
           sync: (caps.features & 0x1) !== 0,
           reset: (caps.features & 0x2) !== 0,
         };
@@ -675,22 +685,24 @@ function createStore() {
     outputChannels: () => outputChannels(S.map),
     inputChannels: () => inputChannels(S.map),
     /// Wire mask of the input pins (what `ts arm` takes for "all inputs").
-    inputMask: () => (VALID_DIO_MASK & ~S.map.direction) >>> 0,
-    pullMode: (): PullMode | "mixed" => pullMode(S.map),
-    edgeNotify: () => edgeNotify(S.map),
-    setSplit(idx: number) {
-      const next = withSplit(S.map, Math.max(0, Math.min(NUM_PINS, Math.round(idx))));
-      if (next.direction === S.map.direction) return;
+    inputMask: () => inputMask(S.map),
+    /// Pattern tick of the connected device (the 200 ns default before connect).
+    tickNs: () => S.capabilities?.tickNs ?? PATTERN_TICK_NS,
+    /// One editor row: everything the working map says about channel `ch`.
+    channelConfig: (ch: number): ChannelConfig => channelConfig(S.map, ch),
+    setChannelRole(ch: number, role: ChannelRole) {
+      const next = withChannelRole(S.map, ch, role);
+      if (next === S.map) return;
       editMap(next);
       S.outputs = (S.outputs & outputMask()) >>> 0;
       bump("map", "pins");
     },
-    setPull(mode: PullMode) {
-      editMap(withPull(S.map, mode));
+    setChannelPull(ch: number, mode: PullMode) {
+      editMap(withChannelPull(S.map, ch, mode));
       bump("map");
     },
-    setEdgeNotify(on: boolean) {
-      editMap(withEdgeNotify(S.map, on));
+    setChannelFlag(ch: number, flag: ChannelFlag, on: boolean) {
+      editMap(withChannelFlag(S.map, ch, flag, on));
       bump("map");
     },
     async applyMap() {
@@ -779,7 +791,7 @@ function createStore() {
       }
     },
     addStep() {
-      S.pattern.steps.push({ out: 0, hold: 200 });
+      S.pattern.steps.push({ out: 0, holdTicks: DEFAULT_HOLD_TICKS });
       S.pattern.accepted = null;
       bump("pattern");
     },
@@ -893,6 +905,7 @@ function createStore() {
     // timestamp
     async armTs(mask: number, edge: "rising" | "falling" | "both") {
       try {
+        checkDioMask("ts arm mask", mask >>> 0);
         await invoke("ts_arm", { mask: mask >>> 0, mode: edge });
         S.ts.armed = true;
         S.ts.mask = mask >>> 0;

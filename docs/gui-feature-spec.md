@@ -336,20 +336,18 @@ interface OutputPin {
 **Purpose**: View and edit the GPIO pin map configuration.
 
 **Visual Design**:
-- Visual representation of ch0-ch24 (GP0-GP22, GP26, GP27) as a horizontal
-  strip; each cell is coloured by the channel's `dir` bit and its tooltip
-  names the pin (`pin_label`, e.g. `GP26 (ch23)`).
-- A draggable boundary rewrites `dir` as "ch0..n-1 outputs, the rest
-  inputs"; channels that change role get the map's current pull / notify
-  setting and lose the masks that no longer apply (R-M1).
-- Pull buttons (none/up/down) set `pu`/`pd` for every input; the active
-  button is the shared setting, none is active when inputs differ (a loaded
-  `map.toml` may set them per pin).
-- "Change-notify on inputs" sets the `edge` mask (all inputs / none); it
-  controls which inputs raise `! INPUT` events.
-- `flags` is reserved and always 0; `def`, `opol` and `ipol` are preserved
-  from the device or a loaded `map.toml` (they are not editable on the
-  strip yet).
+- A 25-row channel table, one row per channel ch0-ch24 (GP0-GP22, GP26,
+  GP27), each labelled with the SDK `pin_label` form `GPn (chm)` (ch23 is
+  `GP26 (ch23)`, ch24 is `GP27 (ch24)`; GP23-GP25 have no row). There is no
+  split point and no global pull: every key is edited per channel.
+- Row columns: `dir` (click IN/OUT), `pull` (up / down / none, inputs
+  only), `def` and `opol` (outputs only), `ipol` and `edge` (inputs only).
+  A key that does not apply to the row's role shows `—` and is always 0 in
+  the map (R-M1). Turning an output into an input clears its `def` / `opol`
+  and gives it the device-default input setting (pull-down, edge events);
+  turning an input into an output clears its pull / `ipol` / `edge`.
+- `flags` is reserved and always 0; it is shown read-only under the table
+  and round-trips unchanged.
 - "Apply" button sends `map set`, "Save to Flash" sends `map save`.
 - "Reset to Default" sends `map default` (every pin an input, pull-down,
   edge events on).
@@ -381,8 +379,9 @@ The v2 map is per channel: it holds the eight map values `flags`
 (reserved, always 0), `dir`, `pu`, `pd`, `def`, `opol`, `ipol` and `edge`
 (see `protocol-reference.md`, `map set`). The store keeps the whole map as
 sent by the device (`WirePinMap`, serde field names of the SDK `PinMap`);
-the strip edits it through `src/lib/pinmap.ts` (`withSplit`, `withPull`,
-`withEdgeNotify`), which keeps every R-M1 rule true. All masks on the wire
+the table edits it one channel at a time through `src/lib/pinmap.ts`
+(`channelConfig`, `withChannelRole`, `withChannelPull`, `withChannelFlag`),
+which keeps every R-M1 rule true. All masks on the wire
 use physical GP bit positions; the UI indexes pins by channel and converts
 only through `src/lib/pins.ts` (`chToGp`, `gpToCh`, `chBit`, word packers —
 the TypeScript twin of the SDK helpers `ch_to_gp` / `gp_to_ch` /
@@ -396,10 +395,13 @@ output and input, pull-up and pull-down are exclusive and inputs only, and
 
 **Visual Design**:
 - Step table: rows of (output bits, hold time). Editable cells. One bit
-  button per output channel (channel order); the hold is edited in
-  microseconds and sent as pattern ticks (1 tick = 200 ns, `hold_ticks`).
-  A hold that is not a whole number of ticks is rejected with an error in
-  the log, never rounded (`src/lib/pattern.ts`).
+  button per output channel (channel order, titled `GPn (chm)`); the hold
+  is edited in pattern ticks and shown as `N ticks (M ns)` (the tick is
+  the `caps tick_ns`, 200 ns). The hold field also takes `ns` / `us` / `ms`
+  suffixes (`2us` = 10 ticks). A time that is not a whole number of ticks,
+  or a zero hold, is flagged and rejected at upload with an error in the
+  log, never rounded (`src/lib/pattern.ts`, the TypeScript twin of the SDK
+  `hold_ticks_from_ns`).
 - "Add Step" / "Remove Step" buttons.
 - Waveform preview showing the pattern as a timing diagram.
 - "Load from File" for TOML pattern files.

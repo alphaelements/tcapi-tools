@@ -3,13 +3,14 @@ import {
   DIO_CHANNELS,
   VALID_DIO_MASK,
   chBit,
+  checkDioMask,
   chMask,
   chToGp,
   chWordToGp,
   gpLabel,
   gpToCh,
   gpWordToCh,
-  pinName,
+  pinLabel,
 } from "./pins";
 
 describe("channel / GP mapping (REF-V2 section 4.2)", () => {
@@ -82,17 +83,37 @@ describe("single channel access on wire words", () => {
   });
 });
 
-describe("pinName", () => {
-  it("is the plain GP label for ch0-ch22 and shows the channel for relocated pins", () => {
-    expect(pinName(5)).toBe("GP05");
-    expect(pinName(22)).toBe("GP22");
-    expect(pinName(23)).toBe("GP26 (ch23)");
-    expect(pinName(24)).toBe("GP27 (ch24)");
+describe("pinLabel", () => {
+  it("is the SDK pin_label form `GPn (chm)` for every channel", () => {
+    expect(pinLabel(0)).toBe("GP0 (ch0)");
+    expect(pinLabel(5)).toBe("GP5 (ch5)");
+    expect(pinLabel(22)).toBe("GP22 (ch22)");
+    expect(pinLabel(23)).toBe("GP26 (ch23)");
+    expect(pinLabel(24)).toBe("GP27 (ch24)");
+  });
+
+  it("rejects a channel outside ch0-ch24", () => {
+    expect(() => pinLabel(25)).toThrow(RangeError);
   });
 
   it("gpLabel is always the short GP label", () => {
     expect(gpLabel(5)).toBe("GP05");
     expect(gpLabel(23)).toBe("GP26");
     expect(gpLabel(24)).toBe("GP27");
+  });
+});
+
+describe("checkDioMask (R-PIN2)", () => {
+  it("accepts masks inside the DIO pins", () => {
+    expect(() => checkDioMask("m", 0)).not.toThrow();
+    expect(() => checkDioMask("m", VALID_DIO_MASK)).not.toThrow();
+    expect(() => checkDioMask("m", 0x04000000)).not.toThrow();
+  });
+
+  it("rejects GP23-GP25 and GP28+ bits, naming the mask", () => {
+    expect(() => checkDioMask("ts arm mask", 1 << 23)).toThrow(/ts arm mask 0x800000/);
+    expect(() => checkDioMask("m", 1 << 25)).toThrow(RangeError);
+    expect(() => checkDioMask("m", 0x10000000)).toThrow(RangeError);
+    expect(() => checkDioMask("m", 0x80000000)).toThrow(RangeError);
   });
 });

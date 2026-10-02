@@ -19,7 +19,8 @@ test("double-click connects: version, caps card, status pill, map", async ({ pag
   await connect(page);
   // DeviceCard shows version + capabilities after connect.
   await expect(page.getByText("0.1.3", { exact: false }).first()).toBeVisible();
-  await expect(page.getByText("125MHz")).toBeVisible();
+  // caps card reports the pattern tick (caps tick_ns=200).
+  await expect(page.getByText("200 ns", { exact: true }).first()).toBeVisible();
   // Status bar reflects the device pin map (12 out / 13 in of 25 channels).
   await expect(page.getByText("map 12o/13i")).toBeVisible();
   // Port chip in the menu bar replaces "no link".

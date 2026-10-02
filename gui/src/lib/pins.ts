@@ -73,9 +73,18 @@ export function gpLabel(ch: number): string {
   return "GP" + String(chToGp(ch)).padStart(2, "0");
 }
 
-/// Full display name of channel `ch`: `GP05`; relocated pins also name the
-/// channel (`GP26 (ch23)`) because the GP number alone no longer matches
-/// the channel index there.
-export function pinName(ch: number): string {
-  return chToGp(ch) === ch ? gpLabel(ch) : `${gpLabel(ch)} (ch${ch})`;
+/// Display label of channel `ch`, the TypeScript twin of the SDK
+/// `pin_label`: its GP pin and channel, `GP5 (ch5)` / `GP26 (ch23)`.
+export function pinLabel(ch: number): string {
+  return `GP${chToGp(ch)} (ch${ch})`;
+}
+
+/// Reject a mask with bits outside the DIO pins before it is sent (R-PIN2),
+/// like the SDK's `check_dio_mask`.
+export function checkDioMask(name: string, mask: number): void {
+  if (((mask >>> 0) & ~VALID_DIO_MASK) !== 0) {
+    throw new RangeError(
+      `${name} 0x${(mask >>> 0).toString(16)} has bits outside the DIO pins (0x${VALID_DIO_MASK.toString(16)})`,
+    );
+  }
 }

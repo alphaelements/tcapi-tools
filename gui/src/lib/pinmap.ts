@@ -2,20 +2,15 @@
 // pinmap.ts — v2 pin map helpers for the pin map editor
 //
 // The device map is per channel (eight values, all masks in physical GP
-// bits). The editor strip exposes a split point (ch0..split-1 outputs), a
-// pull mode for all inputs and one "change notify" switch; these helpers
-// derive those views from a full map and apply edits while keeping every
-// R-M1 rule true (outputs carry no pull / edge / ipol, inputs carry no
-// def / opol). Masks the editor does not touch (def, opol, ipol of pins that
-// stay in their role) are preserved.
+// bits). The editor is a 25-row table, one row per channel ch0-ch24; these
+// helpers read one row from a full map and apply one edit at a time while
+// keeping every R-M1 rule true (outputs carry no pull / edge / ipol, inputs
+// carry no def / opol, pull-up and pull-down are exclusive). A change of
+// role clears the masks that stop applying; every other channel and the
+// reserved `flags` byte are left untouched.
 // ============================================================
 
-import {
-  DIO_CHANNELS,
-  VALID_DIO_MASK,
-  chToGp,
-  chWordToGp,
-} from "./pins";
+import { DIO_CHANNELS, VALID_DIO_MASK, chMask, chToGp } from "./pins";
 
 /// `PinMap` as serialized by the Rust backend (serde field names).
 export interface WirePinMap {
@@ -30,6 +25,26 @@ export interface WirePinMap {
 }
 
 export type PullMode = "up" | "down" | "none";
+export type ChannelRole = "output" | "input";
+
+/// The per-channel switches of the map: `out_default` / `out_polarity` for
+/// outputs, `in_polarity` / `edge` for inputs.
+export type ChannelFlag = "out_default" | "out_polarity" | "in_polarity" | "edge";
+
+const OUTPUT_FLAGS: readonly ChannelFlag[] = ["out_default", "out_polarity"];
+
+/// One table row: everything the map says about channel `ch`.
+export interface ChannelConfig {
+  ch: number;
+  gp: number;
+  role: ChannelRole;
+  /// `none` for outputs (they carry no pull).
+  pull: PullMode;
+  outDefault: boolean;
+  outPolarity: boolean;
+  inPolarity: boolean;
+  edge: boolean;
+}
 
 /// The device default (R-M4): every pin an input with pull-down and edge
 /// events.
@@ -44,14 +59,15 @@ export const PIN_MAP_DEFAULT: Readonly<WirePinMap> = Object.freeze({
   edge: VALID_DIO_MASK,
 });
 
-function inputMask(map: WirePinMap): number {
+/// Wire mask of the input pins (the DIO pins the direction mask leaves out).
+export function inputMask(map: WirePinMap): number {
   return (VALID_DIO_MASK & ~map.direction) >>> 0;
 }
 
 function channelsWhere(map: WirePinMap, output: boolean): number[] {
   const list: number[] = [];
   for (let ch = 0; ch < DIO_CHANNELS; ch++) {
-    const isOut = ((map.direction >>> chToGp(ch)) & 1) === 1;
+    const isOut = (map.direction & chMask(ch)) !== 0;
     if (isOut === output) list.push(ch);
   }
   return list;
@@ -65,67 +81,87 @@ export function inputChannels(map: WirePinMap): number[] {
   return channelsWhere(map, false);
 }
 
-/// Pull setting shared by every input, `mixed` when the inputs differ, and
-/// `none` when there is no input pull at all (or no input).
-export function pullMode(map: WirePinMap): PullMode | "mixed" {
-  const inputs = inputMask(map);
-  if (inputs === 0) return "none";
-  const up = (map.pull_up & inputs) >>> 0;
-  const down = (map.pull_down & inputs) >>> 0;
-  if (up === inputs) return "up";
-  if (down === inputs) return "down";
-  if (up === 0 && down === 0) return "none";
-  return "mixed";
+function has(mask: number, bit: number): boolean {
+  return (mask & bit) !== 0;
 }
 
-/// Set the pull of every input pin.
-export function withPull(map: WirePinMap, mode: PullMode): WirePinMap {
-  const inputs = inputMask(map);
-  return {
-    ...map,
-    pull_up: mode === "up" ? inputs : 0,
-    pull_down: mode === "down" ? inputs : 0,
-  };
-}
-
-/// True when any input pin raises `! INPUT` events.
-export function edgeNotify(map: WirePinMap): boolean {
-  return (map.edge & inputMask(map)) !== 0;
-}
-
-/// Enable or disable `! INPUT` events for every input pin.
-export function withEdgeNotify(map: WirePinMap, on: boolean): WirePinMap {
-  return { ...map, edge: on ? inputMask(map) : 0 };
-}
-
-/// Make ch0..split-1 outputs and the rest inputs. Pins that become inputs
-/// take the map's current pull mode and notify setting (pull-down and notify
-/// when it had no inputs to copy from); masks of pins that change role are
-/// cleaned so the result satisfies R-M1.
-export function withSplit(map: WirePinMap, split: number): WirePinMap {
-  if (!Number.isInteger(split) || split < 0 || split > DIO_CHANNELS) {
-    throw new RangeError(`split ${split} is out of range (0-${DIO_CHANNELS})`);
+export function channelConfig(map: WirePinMap, ch: number): ChannelConfig {
+  const bit = chMask(ch); // throws RangeError outside ch0-ch24
+  const role: ChannelRole = has(map.direction, bit) ? "output" : "input";
+  let pull: PullMode = "none";
+  if (role === "input") {
+    if (has(map.pull_up, bit)) pull = "up";
+    else if (has(map.pull_down, bit)) pull = "down";
   }
-  const outputs = chWordToGp(split === 0 ? 0 : 2 ** split - 1);
-  const inputs = (VALID_DIO_MASK & ~outputs) >>> 0;
-  const hadInputs = inputMask(map) !== 0;
-  const newInputs = (inputs & map.direction) >>> 0;
-  const mode = hadInputs ? pullMode(map) : "down";
-  const notify = hadInputs ? edgeNotify(map) : true;
+  return {
+    ch,
+    gp: chToGp(ch),
+    role,
+    pull,
+    outDefault: has(map.out_default, bit),
+    outPolarity: has(map.out_polarity, bit),
+    inPolarity: has(map.in_polarity, bit),
+    edge: has(map.edge, bit),
+  };
+}
 
-  let pullUp = map.pull_up & inputs;
-  let pullDown = map.pull_down & inputs;
-  if (mode === "up") pullUp |= newInputs;
-  else if (mode === "down" || mode === "mixed") pullDown |= newInputs;
+function setBit(mask: number, bit: number, on: boolean): number {
+  return (on ? mask | bit : mask & ~bit) >>> 0;
+}
 
+/// Make channel `ch` an output or an input. An output loses its pull, edge
+/// and input-polarity bits; an input loses `def` / `opol` and starts like a
+/// device-default input (pull-down, edge events on, R-M4).
+export function withChannelRole(map: WirePinMap, ch: number, role: ChannelRole): WirePinMap {
+  const bit = chMask(ch);
+  if (channelConfig(map, ch).role === role) return map;
+  if (role === "output") {
+    return {
+      ...map,
+      direction: setBit(map.direction, bit, true),
+      pull_up: setBit(map.pull_up, bit, false),
+      pull_down: setBit(map.pull_down, bit, false),
+      in_polarity: setBit(map.in_polarity, bit, false),
+      edge: setBit(map.edge, bit, false),
+    };
+  }
   return {
     ...map,
-    direction: outputs,
-    pull_up: pullUp >>> 0,
-    pull_down: pullDown >>> 0,
-    out_default: (map.out_default & outputs) >>> 0,
-    out_polarity: (map.out_polarity & outputs) >>> 0,
-    in_polarity: (map.in_polarity & inputs) >>> 0,
-    edge: ((map.edge & inputs) | (notify ? newInputs : 0)) >>> 0,
+    direction: setBit(map.direction, bit, false),
+    out_default: setBit(map.out_default, bit, false),
+    out_polarity: setBit(map.out_polarity, bit, false),
+    pull_down: setBit(map.pull_down, bit, true),
+    edge: setBit(map.edge, bit, true),
   };
+}
+
+/// Set the pull of input channel `ch` (up / down are exclusive).
+export function withChannelPull(map: WirePinMap, ch: number, mode: PullMode): WirePinMap {
+  const bit = chMask(ch);
+  if (has(map.direction, bit)) {
+    throw new RangeError(`ch${ch} is an output: an output carries no pull`);
+  }
+  return {
+    ...map,
+    pull_up: setBit(map.pull_up, bit, mode === "up"),
+    pull_down: setBit(map.pull_down, bit, mode === "down"),
+  };
+}
+
+/// Set one per-channel switch. `out_default` / `out_polarity` only exist on
+/// outputs, `in_polarity` / `edge` only on inputs (R-M1).
+export function withChannelFlag(
+  map: WirePinMap,
+  ch: number,
+  flag: ChannelFlag,
+  on: boolean,
+): WirePinMap {
+  const bit = chMask(ch);
+  const isOutput = has(map.direction, bit);
+  if (OUTPUT_FLAGS.includes(flag)) {
+    if (!isOutput) throw new RangeError(`ch${ch} is an input: ${flag} applies to outputs only`);
+  } else if (isOutput) {
+    throw new RangeError(`ch${ch} is an output: ${flag} applies to inputs only`);
+  }
+  return { ...map, [flag]: setBit(map[flag], bit, on) };
 }

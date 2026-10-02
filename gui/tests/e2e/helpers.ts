@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { gpToCh } from "../../src/lib/pins";
 
 // The mock device exposes its state for assertions (see mock-device.ts).
 export interface MockState {
@@ -24,7 +25,12 @@ export async function connect(page: Page): Promise<void> {
 
 /** GPIO Monitor cell for one pin; its title carries the full pin state. */
 export function pinCell(page: Page, gp: number) {
-  return page.locator(`[title^="GP${gp} ·"]`).first();
+  return page.locator(`[title^="GP${gp} (ch${gpToCh(gp)}) ·"]`).first();
+}
+
+/** Tooltip of a GPIO Monitor cell: `GPn (chm) · <state>` (the SDK pin_label). */
+export function pinTip(gp: number, state: string): RegExp {
+  return new RegExp(`^GP${gp} \\(ch${gpToCh(gp)}\\) · ${state}`);
 }
 
 /**
