@@ -4,7 +4,7 @@
 // replayed on a fresh MockDeviceCore (the harness resets the device before
 // every case, as the golden README requires) and the lines it emits are
 // compared byte for byte with the transcript. Cases that need something the
-// model deliberately lacks (sync, flash faults, binary framing, the pattern
+// model deliberately lacks (flash faults, binary framing, the pattern
 // timeout) are listed with their reason; the test also pins how many cases
 // are replayed so the filter cannot silently swallow the corpus.
 
@@ -19,19 +19,16 @@ const files = import.meta.glob<string>("../../../protocol/golden/*.txt", {
 });
 
 /// Directives the replay can drive.
-const SUPPORTED_DIRECTIVES = new Set(["in", "advance", "expect_pins"]);
+const SUPPORTED_DIRECTIVES = new Set(["in", "advance", "expect_pins", "sync_edge"]);
 const UNSUPPORTED_REASON: Record<string, string> = {
   send_hex: "binary framing",
   fault: "fault injection",
-  sync_edge: "multi-device sync",
 };
 
 /// Why a case cannot be replayed on the model, or null if it can.
 function exclusionReason(c: GoldenCase): string | null {
   for (const item of c.items) {
-    if (item.kind === "request") {
-      if (/^sync(\s|$)/i.test(item.line.trim())) return "multi-device sync";
-    } else if (!SUPPORTED_DIRECTIVES.has(item.name)) {
+    if (item.kind === "directive" && !SUPPORTED_DIRECTIVES.has(item.name)) {
       return UNSUPPORTED_REASON[item.name] ?? `directive ${item.name}`;
     }
   }
@@ -56,6 +53,9 @@ function replay(c: GoldenCase): string | null {
       actual = dev.takeEvents();
     } else if (item.name === "advance") {
       dev.advance(parseAdvance(item.args));
+      actual = dev.takeEvents();
+    } else if (item.name === "sync_edge") {
+      dev.syncEdge();
       actual = dev.takeEvents();
     } else {
       // expect_pins out=0x...
@@ -97,7 +97,9 @@ describe("golden corpus is available", () => {
 
 for (const file of corpus) {
   const eligible = file.cases.filter((c) => exclusionReason(c) === null);
-  // sync.txt is entirely multi-device sync: nothing of it can be replayed.
+  // A corpus file might in principle be entirely made of unsupported
+  // directives (binary framing, fault injection); skip describing it rather
+  // than emit an empty suite.
   if (eligible.length === 0) continue;
 
   describe(`mock device replays ${file.name}`, () => {
@@ -131,6 +133,7 @@ describe("replay coverage", () => {
     "events.txt": 10,
     "errors.txt": 10,
     "reset.txt": 10,
+    "sync.txt": 15,
   };
   for (const [name, floor] of Object.entries(FLOORS)) {
     it(`replays at least ${floor} cases of ${name}`, () => {
@@ -138,9 +141,9 @@ describe("replay coverage", () => {
     });
   }
 
-  it("replays at least 220 cases overall", () => {
+  it("replays at least 250 cases overall", () => {
     const replayed = [...counts.values()].reduce((sum, c) => sum + c.replayed, 0);
-    expect(replayed).toBeGreaterThanOrEqual(220);
+    expect(replayed).toBeGreaterThanOrEqual(250);
   });
 
   it("every excluded case has a stated reason", () => {

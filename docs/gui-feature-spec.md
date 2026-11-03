@@ -62,10 +62,14 @@ The application is configured in `gui/src-tauri/tauri.conf.json`:
   get")` returns the wire lines a firmware answers). `mock-device-golden
   .test.ts` replays every golden case of `protocol/golden/*.txt` whose
   requests and directives the model implements (map, io, pattern incl.
-  timing, timestamp, events, errors, reset — a few hundred cases) and
-  compares the emitted lines byte for byte. Cases that need multi-device
-  `sync`, fault injection, binary framing or the pattern timeout are
-  excluded with a stated reason; floors on the replayed count keep the
+  timing, timestamp, events, errors, reset, sync — a few hundred cases) and
+  compares the emitted lines byte for byte. `sync.txt` is fully replayed:
+  the model runs the `sync arm/master/start/stop/disarm/count` state
+  machine and reports sync-relative `ts get` timestamps (`c`/`p`/`s`
+  fields) while a clock is running; `syncEdge()` stands in for a bus edge
+  from whichever unit is master, since the model is one device, not a bus.
+  Cases that need fault injection, binary framing or the pattern timeout
+  are excluded with a stated reason; floors on the replayed count keep the
   filter from silently dropping the corpus. The mock must therefore be
   updated whenever the golden transcripts are revised.
 - **E2E**: Playwright, `npm run test:e2e` — runs the full UI against the
@@ -77,7 +81,15 @@ The application is configured in `gui/src-tauri/tauri.conf.json`:
   the rig's loopback wiring (the k-th output pin drives the k-th input pin:
   GP0 → GP12 … GP11 → GP26) and boots with a saved map of GP0-GP11 as
   outputs. `window.__POCHI_MOCK__` offers test hooks (forced ts overflow,
-  saved-file capture, direct edge injection). `sync *` is not modelled.
+  saved-file capture, direct edge injection, an external `syncEdge()` bus
+  edge). The mock device list has two healthy units (`#42`, `#43`) plus one
+  rejected for old firmware, so a multi-device scenario can connect to each
+  in turn; the app itself holds one serial connection at a time (see
+  `src-tauri/src/state.rs`), so `sync.spec.ts` covers "multi-device" as
+  two devices connected one after another rather than two simultaneous
+  connections — there is no on-screen tab for `sync *` yet, so it is
+  exercised through the command-log console, the same path a user has
+  today.
 - **Hardware**: manual pass driven over Xvfb + xdotool (see
   `tmp/` handoffs); requires a connected Pochi-DIO.
 

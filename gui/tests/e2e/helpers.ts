@@ -13,7 +13,7 @@ export interface MockState {
 
 export async function gotoMock(page: Page): Promise<void> {
   await page.goto("/?mock=1");
-  // Auto-scan on launch lists both mock devices.
+  // Auto-scan on launch lists all three mock devices.
   await expect(page.getByText("Pochi-DIO #42")).toBeVisible();
 }
 
@@ -21,6 +21,27 @@ export async function connect(page: Page): Promise<void> {
   await gotoMock(page);
   await page.getByText("Pochi-DIO #42").dblclick();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+}
+
+/** Double-click the device card whose label is `text` (e.g. "Pochi-DIO #43"). */
+export async function connectTo(page: Page, text: string): Promise<void> {
+  await page.getByText(text, { exact: true }).dblclick();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+}
+
+/** Type a line into the command-log console and press Enter. */
+export async function sendRaw(page: Page, command: string): Promise<void> {
+  const input = page.getByPlaceholder(/type a command/);
+  await input.fill(command);
+  await input.press("Enter");
+}
+
+/** External sync bus edge on the connected mock device (see mock-device.ts). */
+export async function syncEdge(page: Page): Promise<void> {
+  await page.evaluate(() =>
+    (window as unknown as { __POCHI_MOCK__: { syncEdge: () => void } })
+      .__POCHI_MOCK__.syncEdge(),
+  );
 }
 
 /** GPIO Monitor cell for one pin; its title carries the full pin state. */

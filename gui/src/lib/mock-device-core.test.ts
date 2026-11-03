@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MockDeviceCore, UnsupportedCommand } from "./mock-device-core";
+import { MockDeviceCore } from "./mock-device-core";
 import { PIN_MAP_DEFAULT, type WirePinMap } from "./pinmap";
 import { VALID_DIO_MASK } from "./pins";
 
@@ -96,8 +96,23 @@ describe("hooks and unsupported verbs", () => {
     expect(dev.execute("ts get 1")[0]).toBe("OK count=0 overflow=0");
   });
 
-  it("does not model sync and says so instead of answering", () => {
-    expect(() => rig().execute("sync arm")).toThrow(UnsupportedCommand);
+  it("resets drop sync state back to idle", () => {
+    const dev = rig();
+    expect(dev.execute("sync master")).toEqual(["OK"]);
+    expect(dev.execute("reset")).toEqual(["OK"]);
+    expect(dev.execute("sync start")).toEqual(["ERR SYNC_STATE"]);
+  });
+
+  it("syncEdge() starts a slave clock only once armed", () => {
+    const dev = rig();
+    dev.syncEdge();
+    expect(dev.execute("sync count")).toEqual(["ERR SYNC_STATE"]);
+    expect(dev.execute("sync arm")).toEqual(["OK"]);
+    dev.advance(5_000);
+    dev.syncEdge();
+    expect(dev.execute("sync count")).toEqual(["OK clocks=0"]);
+    dev.advance(3_000);
+    expect(dev.execute("sync count")).toEqual(["OK clocks=3"]);
   });
 
   it("keeps flash state (saved map, device number) over reset and drops RAM state", () => {

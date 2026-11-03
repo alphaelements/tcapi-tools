@@ -37,6 +37,8 @@ const TS_GET_MAX = 85;
 const MAX_LINE_BYTES = 256;
 /// How often virtual time follows the wall clock.
 const CLOCK_TICK_MS = 5;
+/// `devnum` sentinel for "unassigned" (wire `devnum=255`).
+const DEVNUM_UNASSIGNED = 255;
 
 /// Map the rig boots with (saved in the virtual flash): GP0-GP11 are
 /// outputs, every other pin an input with pull-down and edge events.
@@ -66,6 +68,10 @@ const SAMPLE_PATTERN = [
 
 /// Device number of the healthy mock unit.
 const GOOD_DEVICE_NUMBER = 42;
+/// Device number of the second healthy mock unit (multi-device scenarios:
+/// the app connects to one unit at a time, so "two devices" is modelled as
+/// two devices to choose from, not two simultaneous connections).
+const SECOND_DEVICE_NUMBER = 43;
 
 const DEVICES = [
   {
@@ -79,6 +85,12 @@ const DEVICES = [
     device_number: null,
     port: "/dev/mock1",
     version: "0.1.0",
+  },
+  {
+    uid: "MOCKB2C3D4E5F6A1",
+    device_number: SECOND_DEVICE_NUMBER,
+    port: "/dev/mock2",
+    version: "0.1.3",
   },
 ];
 
@@ -106,6 +118,10 @@ export interface MockHandle {
   /// an external source toggled the wires — for tests that need edges
   /// while the Output tab is not on screen. Wire word: bit = GP.
   pulse: (values: number) => void;
+  /// External sync bus edge (GP28): starts this unit's clock if it is
+  /// `sync arm`-ed as a slave — a test's stand-in for a master elsewhere
+  /// on the bus producing the edge (the mock does not model the bus itself).
+  syncEdge: () => void;
   /// Raw device state, for assertions (wire words: bit = GP).
   state: {
     connected: boolean;
@@ -195,6 +211,9 @@ function patternAddLines(steps: WireStep[]): string[] {
 
 export function installMockDevice(): void {
   let connected = false;
+  /// Port of the currently (or most recently) connected unit, to tell a
+  /// reconnect of the same unit from switching to a different one.
+  let connectedPort: string | null = null;
   /// Whether the UI forwarder is attached (the backend only forwards push
   /// events to the webview while it is).
   let forwarding = false;
@@ -211,6 +230,10 @@ export function installMockDevice(): void {
     files: {},
     pulse: (values: number) => {
       run(`write ${hex(values)} ${hex(core.currentMap.direction)}`);
+    },
+    syncEdge: () => {
+      requireConnected();
+      core.syncEdge();
     },
     state: {
       connected,
@@ -357,19 +380,26 @@ export function installMockDevice(): void {
         if (args.port === "/dev/mock1") {
           throw `connect ${args.port}: unsupported firmware (old ts format, ts_res=1000)`;
         }
-        // Power-cycle semantics: RAM state resets, flash (saved map,
-        // device number) survives.
+        const dev = DEVICES.find((d) => d.port === args.port) ?? DEVICES[0];
+        // Power-cycle semantics: a fresh device boots from its own flash
+        // (saved map, device number); reconnecting the same unit keeps the
+        // RAM-level identity (uid/devnum) it already has, flash included.
+        const sameUnit = connectedPort === args.port;
         core = new MockDeviceCore({
-          uid: GOLDEN_UID,
-          flashMap: core.savedMap ?? RIG_MAP,
-          devnum: core.deviceNumber,
+          uid: sameUnit ? core.uid : dev.uid,
+          flashMap: sameUnit ? core.savedMap ?? RIG_MAP : RIG_MAP,
+          devnum: sameUnit ? core.deviceNumber : (dev.device_number ?? DEVNUM_UNASSIGNED),
           loopback: true,
         });
+        connectedPort = args.port;
         clockOriginMs = performance.now();
         connected = true;
         forwarding = false;
         syncHandle();
-        return DEVICES[0];
+        return {
+          ...dev,
+          device_number: core.deviceNumber === DEVNUM_UNASSIGNED ? null : core.deviceNumber,
+        };
       }
       case "disconnect":
         connected = false;
@@ -397,7 +427,8 @@ export function installMockDevice(): void {
       case "get_info": {
         const f = runFields("info");
         const n = num(f, "devnum");
-        return { ...DEVICES[0], device_number: n === 255 ? null : n };
+        const dev = DEVICES.find((d) => d.port === connectedPort) ?? DEVICES[0];
+        return { ...dev, uid: f.uid, device_number: n === DEVNUM_UNASSIGNED ? null : n };
       }
       case "set_device_number":
         run(`devnum ${args.n}`);
@@ -486,14 +517,24 @@ export function installMockDevice(): void {
       case "ts_get_reconciled":
         return tsGet(args.maxEvents, cmd === "ts_get_reconciled");
 
-      // --- sync (no GUI yet; backend parity only) ---
+      // --- sync (no GUI tab yet; reachable from the raw command console) ---
       case "sync_arm":
+        run("sync arm");
+        return null;
       case "sync_master":
+        run("sync master");
+        return null;
       case "sync_start":
+        run("sync start");
+        return null;
       case "sync_stop":
-      case "sync_count":
+        run("sync stop");
+        return null;
       case "sync_disarm":
-        throw "mock device: sync is not modelled";
+        run("sync disarm");
+        return null;
+      case "sync_count":
+        return num(runFields("sync count"), "clocks");
 
       // --- misc ---
       case "raw_command": {
