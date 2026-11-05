@@ -87,7 +87,7 @@
 
 # --- help: counted response, one line per command family ---
 > help
-< OK count=16
+< OK count=24
 <   version                                  Get firmware version
 <   caps                                     Get device capabilities
 <   info                                     Get device UID and number
@@ -101,13 +101,21 @@
 <   ts arm|disarm|get|status                 Timestamp operations
 <   subscribe on|off                         Input change events
 <   sync arm|master|start|stop|disarm|count  Multi-device clock sync
+<   wdog <ms>                                Set the watchdog timeout (0=off, 100-10000)
+<   safety                                   Get the safety state
+<   failsafe clear                           Release the failsafe latch
+<   outputs reset                            Return all outputs to their defaults
+<   excl set|clear|get                       Exclusive output groups
+<   usbsafe on|off                           Failsafe when the USB link is lost
+<   rstinfo                                  Get the reset cause and uptime
+<   pads                                     Read the output pad levels
 <   reset                                    Reboot the device
 <   bootsel                                  Reboot into the USB bootloader
 <   help                                     Show this help
 
 # --- help: command name is case-insensitive and repeatable ---
 > HELP
-< OK count=16
+< OK count=24
 <   version                                  Get firmware version
 <   caps                                     Get device capabilities
 <   info                                     Get device UID and number
@@ -121,11 +129,19 @@
 <   ts arm|disarm|get|status                 Timestamp operations
 <   subscribe on|off                         Input change events
 <   sync arm|master|start|stop|disarm|count  Multi-device clock sync
+<   wdog <ms>                                Set the watchdog timeout (0=off, 100-10000)
+<   safety                                   Get the safety state
+<   failsafe clear                           Release the failsafe latch
+<   outputs reset                            Return all outputs to their defaults
+<   excl set|clear|get                       Exclusive output groups
+<   usbsafe on|off                           Failsafe when the USB link is lost
+<   rstinfo                                  Get the reset cause and uptime
+<   pads                                     Read the output pad levels
 <   reset                                    Reboot the device
 <   bootsel                                  Reboot into the USB bootloader
 <   help                                     Show this help
 > Help
-< OK count=16
+< OK count=24
 <   version                                  Get firmware version
 <   caps                                     Get device capabilities
 <   info                                     Get device UID and number
@@ -139,6 +155,14 @@
 <   ts arm|disarm|get|status                 Timestamp operations
 <   subscribe on|off                         Input change events
 <   sync arm|master|start|stop|disarm|count  Multi-device clock sync
+<   wdog <ms>                                Set the watchdog timeout (0=off, 100-10000)
+<   safety                                   Get the safety state
+<   failsafe clear                           Release the failsafe latch
+<   outputs reset                            Return all outputs to their defaults
+<   excl set|clear|get                       Exclusive output groups
+<   usbsafe on|off                           Failsafe when the USB link is lost
+<   rstinfo                                  Get the reset cause and uptime
+<   pads                                     Read the output pad levels
 <   reset                                    Reboot the device
 <   bootsel                                  Reboot into the USB bootloader
 <   help                                     Show this help

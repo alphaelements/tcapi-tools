@@ -32,7 +32,8 @@ version changes `version-info.txt`, `reset.txt`, `errors.txt` and
 | `reset.txt` | `reset` `bootsel` `help` |
 | `errors.txt` | every error name, unknown commands, removed forms |
 | `boundary.txt` | line length 256/257/300, 256-step pattern limit, R-T5 |
-| `events.txt` | asynchronous `! INPUT`, `! PATTERN_DONE`, `! PATTERN_TIMEOUT` |
+| `events.txt` | asynchronous `! INPUT`, `! PATTERN_DONE`, `! PATTERN_TIMEOUT`, `! FAILSAFE` |
+| `safety.txt` | `wdog` `safety` `failsafe clear` `outputs reset` `excl` `usbsafe` `rstinfo` `pads`: watchdog and failsafe latch, exclusive groups, USB loss, restart. Written ahead of the firmware (see "Revision log", revision 3) |
 
 One file covers one functional area. Cross-area behaviour (for example
 timestamps taken while sync is clocking) lives in the file of the command
@@ -70,7 +71,7 @@ Every other line is one of the following, identified by its prefix.
 |---|---|
 | `> ` | Request line. The text after `> ` is sent to the device, terminated with CR/LF. |
 | `< OK` | Success response: `< OK` or `< OK key=value key=value ...` |
-| `< ERR ` | Error response: `< ERR NAME` |
+| `< ERR ` | Error response: `< ERR NAME`, or `< ERR NAME key=value ...` for the errors that carry data (`ERR EXCLUSIVE group=<i> mask=0x%08x`) |
 | `<   ` | Continuation line of a counted response. On the wire the line is 2 spaces + payload; the golden line is `< ` (prefix and one space) + that wire line, so `<` is followed by three spaces |
 | `< ! ` | Asynchronous event: `< ! NAME key=value ...` |
 | `# ` | Comment. Ignored by replay. |
@@ -110,6 +111,10 @@ The harness resets the device model **before every test case**:
 * pattern engine idle with no steps loaded;
 * timestamp disarmed with an empty ring; `subscribe off`;
 * sync state idle;
+* safety state at its power-up value: watchdog off, no failsafe latch, `usbsafe` off,
+  no exclusive group (these are volatile, they are never part of the flash state);
+* restart information of a first boot: `cause=por`, `uptime_ms=0`, `boot=0x00000001`;
+* USB model Configured (and `ever_configured`), DTR asserted;
 * text mode, simulated time `t = 0`, all input pins driven to physical level 0.
 
 A case therefore contains its own set-up. State that survives `reset` within a
@@ -130,6 +135,10 @@ simulated time as well, so simulated time only moves through `~ advance`.
 | `~ sync_edge` | An external sync master drives a valid sync edge on the sync line (for a device in the slave-armed state). |
 | `~ fault pio_stall` | Make the pattern engine stall (no further progress, no completion) from the next `pattern run`. Used to reach the pattern timeout. |
 | `~ fault flash_write` | Make the next flash write (`map save`, `devnum`) fail once. Used to reach `ERR FLASH`. |
+| `~ dtr 0` / `~ dtr 1` | Set the DTR line of the CDC port (the host closes / opens the port). Starts asserted. Falling DTR switches `subscribe` off (30-usb-protocol.md 11.6); neither edge changes the outputs. |
+| `~ usb suspend` / `~ usb reset` / `~ usb configured` | Set the USB device state seen by the firmware: bus suspended, bus reset (also what a disconnect looks like to the device), configured again. The model starts Configured. Suspend and reset leave Configured; `usbsafe` reacts to that (30-usb-protocol.md 12.5). Requests are still processed while the model is not Configured; only the delivery of events stops. |
+| `~ usb unenumerated` | Return the USB model to the state before the first enumeration (`ever_configured` false). A later `~ usb suspend` / `~ usb reset` does not trip `usbsafe`; the first `~ usb configured` ends this. |
+| `~ reboot cause=<por\|wdt\|soft\|bor\|other>` | Restart the device with that reset cause, without a command: all RAM state is lost, the flash state (saved map, device number) is kept, the clock keeps running, the USB model is Configured again and DTR asserted (the harness reconnects at once). `boot=` of `rstinfo` increases by 1; `uptime_ms` counts from this instant. The `reset` command restarts the device the same way with `cause=soft`. |
 
 `send_hex` may legitimately elicit responses without a `>` request line; those
 responses are written directly after the directive.
@@ -161,7 +170,28 @@ transcript, so a frame that really completes is outside this corpus.
   After a pattern completes, stops, resets or times out, the latch holds the
   last output step's logical value.
 * Pattern events (`! PATTERN_DONE`, `! PATTERN_TIMEOUT`) are always pushed.
-  `! INPUT` is pushed only after `subscribe on`.
+  `! INPUT` is pushed only after `subscribe on`. `! FAILSAFE cause=<wdog|usb>` is pushed when the
+  failsafe latch is set, only while DTR is asserted **and** the USB model is Configured; a trip caused
+  by leaving Configured (`cause=usb`) therefore never produces a line in a transcript. The device
+  state is then read with `safety`.
+* The watchdog (docs/30-usb-protocol.md 12.3) trips at the first poll where `now - last_ok >= timeout`.
+  The simulator polls the device at the end of every `~ advance` and after `~ usb`, `~ dtr`, `~ in=`
+  and `~ reboot`, before the next request. Only a request that is answered `OK` restarts the timer, and
+  at the instant of the response. A transcript that needs "still ON just before the deadline" checks it with
+  `~ expect_pins` (a directive never restarts the timer).
+* `rstinfo`: `boot` is 1 at the start of a case and increases by 1 at every restart; `uptime_ms` is the
+  whole milliseconds since the last restart. The real value of `boot` differs on every boot; transcripts
+  replayed against hardware or a non-simulated device must not pin it.
+* `pads`: in the simulator the pads follow the outputs (no external drive), so `pad` equals `out`
+  restricted to the output pins.
+
+### Test case names
+
+A case of `safety.txt` (and the cases added to the other files for the safety work) starts with the
+heading `# --- <name> ---`. The text between the dashes is the **test name**: it is `[a-z0-9_]+`, unique in its
+file and used to report a failure of exactly that case (`golden::<name>`; the system tests of the
+firmware repository refer to these names). The comment lines after the heading describe the case. A
+heading in sentence form (all older files) names the case by its text.
 
 ## Rule tags
 
@@ -207,6 +237,8 @@ each cell is either covered or marked `n/a` with the reason:
 | `TRANSPORT_NOT_SUPPORTED` | n/a: CDC carries every command, so a text request is never refused | n/a: CDC carries every command, so a binary request is never refused | probe |
 | `UNKNOWN_CMD` | golden:errors | n/a: a binary frame carries a command id, an unknown id is BAD_CMD | n/a: a HID report carries a command id, an unknown id is BAD_CMD |
 | `LINE_TOO_LONG` | golden:errors | n/a: a limit of the text line parser only | n/a: a limit of the text line parser only |
+| `FAILSAFE` | golden:errors | probe | probe |
+| `EXCLUSIVE` | golden:errors | probe | probe |
 
 `sim/tests/error_transports.rs` fails when this table and the firmware disagree:
 a firmware error (every `Status` and `TextError` variant) missing from the table,
@@ -271,3 +303,17 @@ draft and the firmware:
 Revision 2 (header and error list; no change to any transcript line). The
 header gained the `fw_commit` stamp, and the error x transport list was added
 ("Error coverage by transport"). No wire-visible behaviour changed.
+
+Revision 3 (safety specification, written before the firmware). `safety.txt` and the cases
+`caps_feat_bits_match_implemented_features`, `version_proto_is_2` (version-info), `ERR FAILSAFE`,
+`ERR EXCLUSIVE` and the safety argument cases (errors), `events_output_only_session_is_silent`,
+`events_failsafe_is_pushed_once_per_trip` (events), `boundary_truncated_line_does_not_change_outputs`,
+`boundary_invalid_chars_rejected` (boundary) were written from `docs/30-usb-protocol.md` section 12
+and are **not yet replayed against the firmware**: the firmware does not implement them, so the replay
+fails on them until the safety tasks are done. In addition `caps` shows the final `feat=0x000000ff` (all
+eight feature bits) and `help` lists 24 commands (`reset.txt`); both stay red until the last feature is
+in. Every other line is unchanged. `check_golden.py` validates the new vocabulary (error names
+`FAILSAFE` / `EXCLUSIVE group=<i> mask=0x%08x`, event `FAILSAFE`, directives `dtr` `usb` `reboot`, the file
+`safety.txt` and its case names, the two new rows of the error table above); its own tests are
+`tests/test_check_golden.py` (pochi-dio only). The replayers (simulator, SDKs, extension) do not know the new
+vocabulary yet: that is the golden-infrastructure task, and until it lands their replay of the new lines fails.

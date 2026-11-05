@@ -280,3 +280,51 @@
 ~ advance us=7
 ~ in=0x00000002
 < ! INPUT in=0x00000002 t=7
+
+# --- boundary_truncated_line_does_not_change_outputs ---
+# DD-9: a line cut short (host or transport fault) is answered with an error and changes nothing; the next line
+# is parsed normally. A truncation that is itself a valid command cannot be detected here (integrity relies on the USB CRC).
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+> write
+< ERR BAD_PARAM
+> write 0x1
+< ERR BAD_PARAM
+> pattern add 0x1:
+< ERR BAD_PARAM
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008
+< ERR BAD_PARAM
+> excl set
+< ERR BAD_PARAM
+> wdog
+< ERR BAD_PARAM
+> state
+< OK in=0x00000000 out=0x00000005
+~ expect_pins out=0x00000005
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+
+# --- boundary_invalid_chars_rejected ---
+# DD-9: a byte outside printable ASCII inside a line is never skipped: it makes the token invalid. In a number it is
+# ERR BAD_PARAM, in the command name or as invalid UTF-8 it is ERR UNKNOWN_CMD; outputs do not change.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+# "write 0x1 0x1" followed by 0x01
+~ send_hex 77 72 69 74 65 20 30 78 31 20 30 78 31 01 0d
+< ERR BAD_PARAM
+# "wr" 0x01 "ite 0x1 0x1"
+~ send_hex 77 72 01 69 74 65 20 30 78 31 20 30 78 31 0d
+< ERR UNKNOWN_CMD
+# "write 0x1 0x1" followed by 0xff (not valid UTF-8)
+~ send_hex 77 72 69 74 65 20 30 78 31 20 30 78 31 ff 0d
+< ERR UNKNOWN_CMD
+# "write 0x1 0x1" followed by U+00E9 (c3 a9)
+~ send_hex 77 72 69 74 65 20 30 78 31 20 30 78 31 c3 a9 0d
+< ERR BAD_PARAM
+> state
+< OK in=0x00000000 out=0x00000005
+~ expect_pins out=0x00000005

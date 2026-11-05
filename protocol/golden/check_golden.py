@@ -9,20 +9,27 @@ import sys
 from pathlib import Path
 
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent
-FILES = ["version-info", "map", "io", "pattern", "timestamp", "sync", "reset", "errors", "boundary", "events"]
+FILES = ["version-info", "map", "io", "pattern", "timestamp", "sync", "reset", "errors", "boundary", "events", "safety"]
 ERRORS = ["BAD_PARAM", "BAD_MAP", "BUSY", "FLASH", "TOO_LONG", "NOT_ARMED", "SYNC_STATE",
-          "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG"]
+          "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG", "FAILSAFE", "EXCLUSIVE"]
 FORMS = ["version", "caps", "info", "devnum", "ping", "map get", "map set", "map save", "map default",
          "read", "write", "state", "pattern add", "pattern run once", "pattern run loop", "pattern stop",
          "pattern reset", "pattern status", "ts arm", "ts disarm", "ts get", "ts status", "subscribe on",
          "subscribe off", "sync arm", "sync master", "sync start", "sync stop", "sync disarm", "sync count",
-         "reset", "bootsel", "help"]
-DIRECTIVES = ["in=", "advance", "send_hex", "sync_edge", "fault", "expect_pins"]
+         "reset", "bootsel", "help", "wdog", "safety", "failsafe clear", "outputs reset", "excl set",
+         "excl get", "excl clear", "usbsafe", "rstinfo", "pads"]
+DIRECTIVES = ["in=", "advance", "send_hex", "sync_edge", "fault", "expect_pins", "dtr", "usb", "reboot"]
+USB_STATES = ["suspend", "reset", "configured", "unenumerated"]
+REBOOT_CAUSES = ["por", "wdt", "soft", "bor", "other"]
+# Errors that carry key=value tokens after the name, and the exact shape of those tokens.
+ERROR_DATA = {"EXCLUSIVE": r"group=\d+ mask=0x[0-9a-f]{8}"}
 TAGS = ["R-T1", "R-T3", "R-T4", "R-T5", "R-E3", "R-M2", "R-M5", "R-PT1", "R-PT3", "R-PT4", "R-PT5"] + \
        [f"R-M1({f})" for f in ["flags", "dir", "pu", "pd", "def", "opol", "ipol", "edge", "pu&pd"]]
-EVENTS = ["INPUT", "PATTERN_DONE", "PATTERN_TIMEOUT"]
+EVENTS = ["INPUT", "PATTERN_DONE", "PATTERN_TIMEOUT", "FAILSAFE"]
 # Errors the firmware answers that no text request can provoke (binary / HID only).
 NON_TEXT_ERRORS = ["BAD_CMD", "TRANSPORT_NOT_SUPPORTED"]
+# Files whose `# --- <name> ---` headings are test names (README "Test case names").
+NAMED_CASE_FILES = ["safety"]
 TRANSPORTS = ["CDC text", "CDC binary", "HID"]
 FW_COMMIT = re.compile(r"# fw_commit=([0-9a-f]{7,40})(\+wt)?$")
 
@@ -53,6 +60,7 @@ for name in FILES:
         stamps[name] = m.group(0)[len("# fw_commit="):]
     else:
         err(name, 3, "header lacks '# fw_commit=<sha>' (7-40 lowercase hex digits, optional +wt)")
+    case_names = set()
     pending = None      # (lineno, form) request awaiting header
     unsolicited = False
     cont_left = 0
@@ -69,6 +77,14 @@ for name in FILES:
         if ln != ln.rstrip() or "\t" in ln or not ln.isascii():
             err(name, i, "whitespace/non-ascii")
         if ln.startswith("# "):
+            m = re.match(r"# --- (.*) ---$", ln)
+            if m and name in NAMED_CASE_FILES:
+                case = m.group(1)
+                if not re.fullmatch(r"[a-z0-9_]+", case):
+                    err(name, i, f"case name '{case}' is not [a-z0-9_]+")
+                elif case in case_names:
+                    err(name, i, f"duplicate case name {case}")
+                case_names.add(case)
             m = re.match(r"# len=(\d+)$", ln)
             if m:
                 expect_len = int(m.group(1))
@@ -102,10 +118,18 @@ for name in FILES:
                     err(name, i, "send_hex needs lowercase hex bytes")
                 if dtoks[1] == "00":
                     sync_hex_line = i
+            if dtoks[0] == "dtr" and dtoks[1:] not in (["0"], ["1"]):
+                err(name, i, "dtr needs 0 or 1")
+            if dtoks[0] == "usb" and (len(dtoks) != 2 or dtoks[1] not in USB_STATES):
+                err(name, i, f"usb needs one of {USB_STATES}")
+            if dtoks[0] == "reboot" and not (
+                    len(dtoks) == 2 and re.fullmatch(r"cause=(%s)" % "|".join(REBOOT_CAUSES), dtoks[1])):
+                err(name, i, f"reboot needs cause=<{'|'.join(REBOOT_CAUSES)}>")
             if dtoks[0] == "expect_pins" and not re.fullmatch(r"expect_pins out=0x[0-9a-f]{8}", ln[2:]):
                 err(name, i, "bad expect_pins")
         elif ln.startswith("< ! "):
-            m = re.match(r"< ! (INPUT in=0x[0-9a-f]{8} t=\d+|PATTERN_DONE loops=\d+|PATTERN_TIMEOUT loops=\d+)$", ln)
+            m = re.match(r"< ! (INPUT in=0x[0-9a-f]{8} t=\d+|PATTERN_DONE loops=\d+|PATTERN_TIMEOUT loops=\d+"
+                         r"|FAILSAFE cause=(wdog|usb))$", ln)
             if not m:
                 err(name, i, "bad event")
             else:
@@ -123,9 +147,14 @@ for name in FILES:
             if not pending and not unsolicited:
                 err(name, i, "response without request")
             if ln.startswith("< ERR "):
-                e = ln[6:]
+                e, _, data = ln[6:].partition(" ")
                 if e not in ERRORS:
                     err(name, i, f"unknown error name {e}")
+                elif e in ERROR_DATA:
+                    if not re.fullmatch(ERROR_DATA[e], data):
+                        err(name, i, f"ERR {e} needs '{ERROR_DATA[e]}' after the name")
+                elif data:
+                    err(name, i, f"ERR {e} carries no data")
                 seen_err.add(e)
             elif pending:
                 toks = pending[1]
@@ -216,7 +245,8 @@ def check_error_table(readme):
                     continue
                 f = cell[len("golden:"):].strip().strip("`")
                 p = ROOT / f"{f}.txt"
-                if f not in FILES or not p.exists() or f"< ERR {e}" not in p.read_text().split("\n"):
+                if f not in FILES or not p.exists() or not any(x == f"< ERR {e}" or x.startswith(f"< ERR {e} ")
+                                                      for x in p.read_text().split("\n")):
                     errs.append(f"README error table: {e}/{transport}: {f}.txt has no '< ERR {e}' line")
             elif cell == "probe":
                 if transport == "CDC text":

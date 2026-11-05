@@ -223,3 +223,73 @@
 < ERR BAD_PARAM
 > map get
 < OK v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000005 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+
+# --- ERR FAILSAFE: an output instruction that leaves def while the failsafe latch is set ---
+# the latch is set here by the watchdog; see safety.txt for the whole rule
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> write 0x1 0x1
+< ERR FAILSAFE
+> write 0x0 0x1
+< OK
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- ERR EXCLUSIVE: two pins of an exclusive group ON, with the group number and its mask ---
+# ERR EXCLUSIVE is the only error that carries key=value tokens after the name
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> write 0xc 0xc
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- ERR BAD_PARAM: missing or extra arguments of the safety commands ---
+> wdog
+< ERR BAD_PARAM
+> wdog 100 200
+< ERR BAD_PARAM
+> safety 1
+< ERR BAD_PARAM
+> failsafe clear 1
+< ERR BAD_PARAM
+> outputs reset 1
+< ERR BAD_PARAM
+> excl clear 1
+< ERR BAD_PARAM
+> excl get 1
+< ERR BAD_PARAM
+> excl set
+< ERR BAD_PARAM
+> usbsafe
+< ERR BAD_PARAM
+> usbsafe maybe
+< ERR BAD_PARAM
+> usbsafe on off
+< ERR BAD_PARAM
+> rstinfo 1
+< ERR BAD_PARAM
+> pads 1
+< ERR BAD_PARAM
+
+# --- ERR UNKNOWN_CMD: unknown safety subcommands, and the removed alloff ---
+> failsafe foo
+< ERR UNKNOWN_CMD
+> failsafe
+< ERR UNKNOWN_CMD
+> outputs foo
+< ERR UNKNOWN_CMD
+> outputs
+< ERR UNKNOWN_CMD
+> excl foo
+< ERR UNKNOWN_CMD
+> excl
+< ERR UNKNOWN_CMD
+> alloff
+< ERR UNKNOWN_CMD
