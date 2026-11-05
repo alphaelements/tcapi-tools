@@ -12,9 +12,16 @@
 // steps, `! PATTERN_DONE` and input timestamps follow that clock, so tests
 // are deterministic and the app drives it from the wall clock.
 //
+// `sync *` models a single device's own state machine and sync-relative
+// timestamps (protocol/golden/sync.txt); it does not model a real multi-unit
+// bus, so there is no `syncEdge()` propagation between two MockDeviceCore
+// instances -- a test that wants a slave clocking from a master's edge calls
+// `syncEdge()` on the slave directly once the scenario decides a master
+// elsewhere on the bus produced one.
+//
 // Not modelled (the golden cases that need them are excluded from the replay
-// and the app reports them as unsupported): multi-device `sync *`, flash
-// write faults, the pattern wall-clock timeout and binary framing.
+// and the app reports them as unsupported): flash write faults, the pattern
+// wall-clock timeout and binary framing.
 // ============================================================
 
 import { PIN_MAP_DEFAULT, type WirePinMap } from "./pinmap";
@@ -68,6 +75,11 @@ class DeviceError extends Error {
 
 type EdgeMode = "rising" | "falling" | "both";
 type PatternState = "idle" | "loaded" | "running" | "done";
+/// `sync *` state machine (protocol/golden/sync.txt):
+///   idle --arm--> slave-armed --sync_edge--> slave-clocking
+///   idle --master--> master-armed --start--> master-clocking --stop--> idle
+///   disarm: any state -> idle, always OK
+type SyncState = "idle" | "slave-armed" | "slave-clocking" | "master-armed" | "master-clocking";
 
 interface Step {
   out: number;
@@ -76,6 +88,10 @@ interface Step {
 interface TsEntry {
   inputs: number;
   count: number;
+  /// 40 ns phase within the microsecond, 0..24; only meaningful while `sync`.
+  phase: number;
+  /// Whether `count`/`phase` are sync-clock-relative (`s=1`) or wall-clock (`s=0`).
+  sync: boolean;
 }
 
 export interface MockDeviceOptions {
@@ -195,7 +211,7 @@ export class MockDeviceCore {
   /// Virtual time in nanoseconds.
   nowNs = 0;
 
-  private readonly uid: string;
+  private readonly uidValue: string;
   private readonly loopback: boolean;
   private flashMap: WirePinMap | null;
   private devnum: number;
@@ -222,8 +238,13 @@ export class MockDeviceCore {
   private tsRing: TsEntry[] = [];
   private tsOverflow = false;
 
+  private syncState: SyncState = "idle";
+  /// Virtual time (ns) of the sync edge / `sync start` that began the
+  /// current clock; only meaningful while `syncState` is a clocking state.
+  private syncOriginNs = 0;
+
   constructor(opts: MockDeviceOptions = {}) {
-    this.uid = opts.uid ?? GOLDEN_UID;
+    this.uidValue = opts.uid ?? GOLDEN_UID;
     this.loopback = opts.loopback ?? false;
     this.flashMap = opts.flashMap ? { ...opts.flashMap } : null;
     this.devnum = opts.devnum ?? DEVNUM_UNASSIGNED;
@@ -251,6 +272,10 @@ export class MockDeviceCore {
   /// Map stored in flash, if any.
   get savedMap(): WirePinMap | null {
     return this.flashMap ? { ...this.flashMap } : null;
+  }
+  /// Device UID (`info uid=`), fixed for the life of this instance.
+  get uid(): string {
+    return this.uidValue;
   }
   get isSubscribed(): boolean {
     return this.subscribed;
@@ -281,7 +306,17 @@ export class MockDeviceCore {
   /// Power-up / `reset`: RAM state back to the saved map, flash state kept.
   private boot(): void {
     this.subscribed = false;
+    this.syncState = "idle";
     this.applyMap(this.flashMap ?? PIN_MAP_DEFAULT);
+  }
+
+  /// External sync bus edge (GP28), driven by whatever device on the bus is
+  /// currently the master. A slave armed with `sync arm` starts its clock
+  /// from this edge; in every other state the edge is ignored.
+  syncEdge(): void {
+    if (this.syncState !== "slave-armed") return;
+    this.syncState = "slave-clocking";
+    this.syncOriginNs = this.nowNs;
   }
 
   // ----------------------------------------------------------- time, pins
@@ -314,18 +349,31 @@ export class MockDeviceCore {
     this.onInputsChanged(before);
   }
 
+  /// `c`/`p`/`s` for a timestamp captured at `this.nowNs`: sync-clock-relative
+  /// (microseconds and 40 ns phase since the sync edge/start) while a sync
+  /// clock is running, wall-clock otherwise.
+  private tsClock(): { count: number; phase: number; sync: boolean } {
+    if (this.syncState === "slave-clocking" || this.syncState === "master-clocking") {
+      const elapsedNs = this.nowNs - this.syncOriginNs;
+      const ticks = Math.floor(elapsedNs / TS_RES_NS);
+      return { count: Math.floor(elapsedNs / 1000), phase: ticks % 25, sync: true };
+    }
+    return { count: Math.floor(this.nowNs / 1000), phase: 0, sync: false };
+  }
+
   private onInputsChanged(before: number): void {
     const after = this.logicalInputs();
     const changed = (before ^ after) >>> 0;
     if (changed === 0) return;
-    const count = Math.floor(this.nowNs / 1000);
+    const wallCount = Math.floor(this.nowNs / 1000);
     if (this.tsArmed) {
+      const { count, phase, sync } = this.tsClock();
       for (const bit of bitsOf(changed & this.tsMask)) {
         const rising = ((after >>> bit) & 1) === 1;
         const wanted =
           this.tsMode === "both" || (this.tsMode === "rising" ? rising : !rising);
         if (!wanted) continue;
-        this.tsRing.push({ inputs: (after & this.tsMask) >>> 0, count });
+        this.tsRing.push({ inputs: (after & this.tsMask) >>> 0, count, phase, sync });
         if (this.tsRing.length > TS_RING) {
           this.tsRing.shift();
           this.tsOverflow = true;
@@ -333,7 +381,7 @@ export class MockDeviceCore {
       }
     }
     if (this.subscribed && (changed & this.map.edge) !== 0) {
-      this.pending.push(`! INPUT in=${hex8(after)} t=${count}`);
+      this.pending.push(`! INPUT in=${hex8(after)} t=${wallCount}`);
     }
   }
 
@@ -428,7 +476,7 @@ export class MockDeviceCore {
         return [this.caps()];
       case "info":
         noArgs(args);
-        return [`OK uid=${this.uid} devnum=${this.devnum}`];
+        return [`OK uid=${this.uidValue} devnum=${this.devnum}`];
       case "devnum":
         return this.setDevnum(args);
       case "ping":
@@ -462,7 +510,7 @@ export class MockDeviceCore {
         noArgs(args);
         return [`OK count=${HELP_LINES.length}`, ...HELP_LINES];
       case "sync":
-        throw new UnsupportedCommand("sync is not modelled by the mock device");
+        return this.syncCommand(args);
       default:
         throw new DeviceError("UNKNOWN_CMD");
     }
@@ -669,7 +717,43 @@ export class MockDeviceCore {
     this.tsOverflow = false;
     return [
       `OK count=${taken.length} overflow=${overflow}`,
-      ...taken.map((e) => `  in=${hex8(e.inputs)} c=${e.count} p=0 s=0`),
+      ...taken.map((e) => `  in=${hex8(e.inputs)} c=${e.count} p=${e.phase} s=${e.sync ? 1 : 0}`),
     ];
+  }
+
+  // ----------------------------------------------------------------- sync
+
+  private syncCommand(args: string[]): string[] {
+    const sub = (args[0] ?? "").toLowerCase();
+    noArgs(args.slice(1));
+    switch (sub) {
+      case "arm":
+        if (this.syncState !== "idle") throw new DeviceError("SYNC_STATE");
+        this.syncState = "slave-armed";
+        return ["OK"];
+      case "master":
+        if (this.syncState !== "idle") throw new DeviceError("SYNC_STATE");
+        this.syncState = "master-armed";
+        return ["OK"];
+      case "start":
+        if (this.syncState !== "master-armed") throw new DeviceError("SYNC_STATE");
+        this.syncState = "master-clocking";
+        this.syncOriginNs = this.nowNs;
+        return ["OK"];
+      case "stop":
+        if (this.syncState !== "master-clocking") throw new DeviceError("SYNC_STATE");
+        this.syncState = "idle";
+        return ["OK"];
+      case "disarm":
+        this.syncState = "idle";
+        return ["OK"];
+      case "count":
+        if (this.syncState !== "slave-clocking" && this.syncState !== "master-clocking") {
+          throw new DeviceError("SYNC_STATE");
+        }
+        return [`OK clocks=${Math.floor((this.nowNs - this.syncOriginNs) / 1000)}`];
+      default:
+        throw new DeviceError("UNKNOWN_CMD");
+    }
   }
 }

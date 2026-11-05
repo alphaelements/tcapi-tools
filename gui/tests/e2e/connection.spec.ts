@@ -6,13 +6,15 @@ test("auto-scan lists devices with UID, port and firmware", async ({ page }) => 
   await expect(page.getByText("Pochi-DIO #42")).toBeVisible();
   await expect(page.getByText("UID MOCKA1B2…")).toBeVisible();
   await expect(page.getByText("mock0")).toBeVisible();
-  await expect(page.getByText("fw 0.1.3")).toBeVisible();
+  await expect(page.getByText("fw 0.1.3").first()).toBeVisible();
   // Old-firmware unit is listed without a device number.
   await expect(page.getByText("Pochi-DIO #?")).toBeVisible();
   await expect(page.getByText("fw 0.1.0")).toBeVisible();
+  // Second healthy unit (multi-device scenarios connect to one at a time).
+  await expect(page.getByText("Pochi-DIO #43")).toBeVisible();
   await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
   // Scan summary appears in the command log.
-  await expect(page.getByText("OK 2 devices")).toBeVisible();
+  await expect(page.getByText("OK 3 devices")).toBeVisible();
 });
 
 test("double-click connects: version, caps card, status pill, map", async ({ page }) => {
