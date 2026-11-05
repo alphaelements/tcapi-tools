@@ -193,11 +193,13 @@ def to_pin_map(request: str) -> PinMap | None:
 def test_validate_agrees_with_every_golden_map_set():
     accepted = rejected = 0
     for case, req in map_set_requests():
-        if any(r.text.lower().startswith("excl set") for r in case.requests):
-            # With exclusive groups configured the device also checks the map
-            # against them (BAD_MAP / EXCLUSIVE); that is device state, not the
-            # validity rules of the map itself.
-            continue
+        # With exclusive groups configured the device also checks the map
+        # against them (BAD_MAP / EXCLUSIVE); a BAD_MAP there may come from the
+        # groups, not from the validity rules of the map itself. Only that
+        # step is skipped, the other expectations of the case still count.
+        configures_groups = any(
+            r.text.lower().startswith("excl set") for r in case.requests
+        )
         status = parse_response(req.response[0])
         pin_map = to_pin_map(req.text)
         where = f"{case.file}.txt:{req.line_no} {req.text}"
@@ -206,7 +208,7 @@ def test_validate_agrees_with_every_golden_map_set():
             pin_map.validate()  # must not raise
             assert canon(protocol.map_set_command(pin_map)) == canon(req.text), where
             accepted += 1
-        elif status.data == "BAD_MAP":
+        elif status.data == "BAD_MAP" and not configures_groups:
             assert pin_map is not None, where
             with pytest.raises(InvalidArgumentError):
                 pin_map.validate()

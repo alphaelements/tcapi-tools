@@ -1008,11 +1008,14 @@ fn bootsel_reset_consumes_the_connection() {
 
 #[test]
 fn help_is_a_counted_response() {
+    let golden = case("reset", "help: counted response");
+    // The command list grows with the firmware: the transcript decides how
+    // many lines there are (its first response line is the `OK count=N`
+    // header); `version` stays first and `help` last.
+    let expected = golden.steps[0].response.len() - 1;
     run_case("reset", "help: counted response", |conn| {
         let lines = conn.help().unwrap();
-        // The command list grows with the firmware: the transcript decides how
-        // many lines there are; `version` stays first and `help` last.
-        assert!(lines.len() >= 16, "{} help lines", lines.len());
+        assert_eq!(lines.len(), expected, "help lines vs the golden transcript");
         assert!(lines[0].trim_start().starts_with("version"));
         assert!(lines[lines.len() - 1].trim_start().starts_with("help"));
     });
