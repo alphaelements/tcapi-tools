@@ -30,6 +30,7 @@ GOLDEN_FILES = (
     "errors",
     "boundary",
     "events",
+    "safety",
 )
 
 

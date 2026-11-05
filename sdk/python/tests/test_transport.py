@@ -28,7 +28,7 @@ from .golden import find_request, first_response
 VERSION = first_response("version-info", "version")
 TS_GET_2 = find_request("timestamp", "ts get", "count=2").response  # header + 2 lines
 TS_GET_4 = find_request("timestamp", "ts get", "count=4").response
-HELP = find_request("reset", "help", "count=16").response
+HELP = find_request("reset", "help", "count=").response
 TS_EMPTY = find_request("timestamp", "ts get", "count=0").response
 INPUT_EVENT = "! INPUT in=0x00000001 t=5"
 PATTERN_DONE = "! PATTERN_DONE loops=1"
@@ -154,7 +154,7 @@ class TestCountedRead:
         transport, port = setup
         port.on_command = lambda _: port.feed(*HELP)
         data, lines = transport.command_counted("help")
-        assert data == "count=16"
+        assert data == HELP[0].removeprefix("OK ")
         assert lines == HELP[1:]
 
     def test_next_command_after_counted_response_is_not_offset(self, setup):

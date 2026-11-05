@@ -23,6 +23,9 @@ const SUPPORTED_DIRECTIVES = new Set(["in", "advance", "expect_pins", "sync_edge
 const UNSUPPORTED_REASON: Record<string, string> = {
   send_hex: "binary framing",
   fault: "fault injection",
+  dtr: "DTR line (not modelled)",
+  usb: "USB device state (not modelled)",
+  reboot: "device restart with a reset cause (not modelled)",
 };
 
 /// Why a case cannot be replayed on the model, or null if it can.
@@ -88,6 +91,7 @@ describe("golden corpus is available", () => {
       "map.txt",
       "pattern.txt",
       "reset.txt",
+      "safety.txt",
       "sync.txt",
       "timestamp.txt",
       "version-info.txt",
@@ -134,6 +138,9 @@ describe("replay coverage", () => {
     "errors.txt": 10,
     "reset.txt": 10,
     "sync.txt": 15,
+    // The cases of the safety work that need no ~ usb / ~ dtr / ~ reboot / send_hex / fault
+    // (46 of 59): the model must replay them once it implements the safety commands.
+    "safety.txt": 40,
   };
   for (const [name, floor] of Object.entries(FLOORS)) {
     it(`replays at least ${floor} cases of ${name}`, () => {

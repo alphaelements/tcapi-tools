@@ -27,7 +27,7 @@ use crate::testutil::{pong_for, FakeDevice};
 use crate::transport::Transport;
 use crate::types::{EdgeMode, PatternStep, PinMap};
 
-const GOLDEN_FILES: [&str; 10] = [
+const GOLDEN_FILES: [&str; 11] = [
     "version-info",
     "map",
     "io",
@@ -38,6 +38,7 @@ const GOLDEN_FILES: [&str; 10] = [
     "errors",
     "boundary",
     "events",
+    "safety",
 ];
 
 /// One request and the response the device recorded for it.

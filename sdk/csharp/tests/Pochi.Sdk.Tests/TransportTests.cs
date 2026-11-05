@@ -225,7 +225,9 @@ public class TransportTests : IDisposable
     public void RawReturnsTheWholeCountedResponse()
     {
         var help = GoldenCorpus.FirstResponse("help");
-        Assert.Equal(17, help.Count);
+        // One header plus the number of lines the transcript's header announces.
+        Assert.StartsWith("OK count=", help[0], StringComparison.Ordinal);
+        Assert.Equal(1 + int.Parse(help[0]["OK count=".Length..], System.Globalization.CultureInfo.InvariantCulture), help.Count);
         _port.OnCommand = _ => _port.Feed(help.ToArray());
         Assert.Equal(help, _transport.Raw("help"));
     }

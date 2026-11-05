@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use pochi_sdk::protocol::{self, Response};
 use pochi_sdk::{PatternState, PinMap, PushEvent, SdkError};
 
-const GOLDEN_FILES: [&str; 10] = [
+const GOLDEN_FILES: [&str; 11] = [
     "version-info",
     "map",
     "io",
@@ -23,7 +23,11 @@ const GOLDEN_FILES: [&str; 10] = [
     "errors",
     "boundary",
     "events",
+    "safety",
 ];
+
+/// The feature bits defined by the protocol (`caps feat=`): bits 0..=7.
+const KNOWN_FEATURE_BITS: u32 = 0xff;
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/golden")
@@ -59,7 +63,7 @@ fn form_of(request: &str) -> String {
 
 /// Parse one `OK` response of the given form; `lines` are the continuation
 /// lines (wire lines, with their two leading spaces).
-fn check_ok(form: &str, data: &str, lines: &[String], seen: &mut BTreeSet<String>) {
+fn check_ok(ctx: &str, form: &str, data: &str, lines: &[String], seen: &mut BTreeSet<String>) {
     match form {
         "version" => {
             let v = protocol::parse_version(data).unwrap();
@@ -72,7 +76,11 @@ fn check_ok(form: &str, data: &str, lines: &[String], seen: &mut BTreeSet<String
             assert_eq!(c.tick_ns, 200);
             assert_eq!(c.pattern_max, 256);
             assert_eq!(c.ring, 256);
-            assert_eq!(c.features, 0x03);
+            // The transcripts carry the feature mask of the firmware they
+            // describe; pin neither its value nor its history, only that it is
+            // a mask over the defined bits (the eight `feat` bits) that
+            // announces what this SDK relies on.
+            assert_eq!(c.features & !KNOWN_FEATURE_BITS, 0, "undefined feat bits");
             assert!(c.has_sync() && c.has_reset());
             assert!(u32::from(c.out) + u32::from(c.r#in) == u32::from(c.dio));
         }
@@ -128,7 +136,7 @@ fn check_ok(form: &str, data: &str, lines: &[String], seen: &mut BTreeSet<String
         | "sync disarm" | "reset" | "bootsel" => {
             assert_eq!(data, "", "bare OK expected for `{form}`");
         }
-        other => panic!("golden response for unhandled request form `{other}`: OK {data}"),
+        other => panic!("{ctx}: golden response for unhandled request form `{other}`: OK {data}"),
     }
     seen.insert(form.to_string());
 }
@@ -146,11 +154,20 @@ fn every_golden_response_parses() {
         let all: Vec<&str> = text.lines().collect();
 
         let mut request: Option<String> = None;
+        // Name of the case being replayed (`# --- <name> ---`), so a failure
+        // names the case and not only the line.
+        let mut case = String::new();
         let mut i = 0usize;
         while i < all.len() {
             let line = all[i];
             i += 1;
-            let ctx = format!("{name}.txt:{i}: {line}");
+            if let Some(heading) = line
+                .strip_prefix("# --- ")
+                .and_then(|h| h.strip_suffix(" ---"))
+            {
+                case = heading.to_string();
+            }
+            let ctx = format!("{name}.txt:{i} [{case}]: {line}");
             if let Some(req) = line.strip_prefix("> ") {
                 request = Some(req.to_string());
             } else if let Some(args) = line.strip_prefix("~ send_hex ") {
@@ -182,7 +199,7 @@ fn every_golden_response_parses() {
                         .as_deref()
                         .unwrap_or_else(|| panic!("{ctx}: no request")),
                 );
-                check_ok(&form, data, &cont, &mut seen_forms);
+                check_ok(&ctx, &form, data, &cont, &mut seen_forms);
                 match protocol::parse_response(line.strip_prefix("< ").unwrap()).unwrap() {
                     Response::Ok(d) => assert_eq!(d, data),
                     other => panic!("{ctx}: {other:?}"),

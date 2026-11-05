@@ -530,8 +530,10 @@ class TestRaw:
     def test_raw_returns_all_lines_of_a_counted_response(self):
         conn, port = replay("reset", "help: counted response")
         lines = conn.raw("help")
-        assert lines[0] == "OK count=16"
-        assert len(lines) == 17
+        golden = find_case("reset", "help: counted response").requests[0].response
+        assert lines == golden
+        assert lines[0].startswith("OK count=")
+        assert len(lines) == 1 + int(lines[0].removeprefix("OK count="))
         finish(conn, port)
 
     def test_raw_returns_error_lines(self):

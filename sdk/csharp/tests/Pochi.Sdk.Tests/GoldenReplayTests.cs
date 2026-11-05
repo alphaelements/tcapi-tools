@@ -108,7 +108,15 @@ public class GoldenReplayTests
             var stats = new ReplayStats();
             foreach (var goldenCase in GoldenCorpus.Cases.Where(c => c.File == key.File))
             {
-                GoldenReplay.Run(goldenCase, key.Mode, stats);
+                try
+                {
+                    GoldenReplay.Run(goldenCase, key.Mode, stats);
+                }
+                catch (Exception e)
+                {
+                    // Name the case: a failure says which case of the transcript the SDK disagrees with.
+                    throw new InvalidOperationException($"{goldenCase} ({key.Mode}): {e.Message}", e);
+                }
             }
 
             return stats;

@@ -317,8 +317,11 @@ internal static class GoldenReplay
                             + $"the transcript answers {string.Join(" | ", step.Response)}");
                     Assert.Equal(
                         SdkException.FromDeviceError(step.Response[0][4..]).Code, outcome.Code);
+                    // With exclusive groups configured the device also checks the map
+                    // against them: that BAD_MAP is device state, not a validity rule.
                     Assert.False(
-                        words is ["map", "set", ..] && step.Response[0] == "ERR BAD_MAP",
+                        words is ["map", "set", ..] && step.Response[0] == "ERR BAD_MAP"
+                            && !goldenCase.ConfiguresExclusiveGroups,
                         $"{goldenCase} line {step.Line}: the SDK sent a map the firmware "
                             + "rejects with BAD_MAP; PinMap.Validate has a gap");
                     break;

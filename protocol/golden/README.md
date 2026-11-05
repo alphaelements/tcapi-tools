@@ -270,7 +270,12 @@ levels and polls the device at that instant (so a `! INPUT` event is emitted
 right after the directive); `~ advance` moves the virtual clock; `~ sync_edge`
 is a sync edge from an external master; `~ fault pio_stall` / `~ fault
 flash_write` arm a one-shot fault; `~ expect_pins` compares the physical output
-levels. The replay is part of `cargo test` of the simulator (a separate crate:
+levels; `~ dtr` / `~ usb` set the DTR line and the USB state the firmware is told
+(`Device::set_dtr`, `Device::set_usb_state`) and `~ reboot cause=` restarts the device with the given
+`ResetInfo` (`Device::set_reset_info`, `boot` + 1); each of them polls the device at once, so a trip
+or an event it causes comes out right after the directive. A failing case is reported by its name
+(`golden::<name>` for the `# --- <name> ---` headings of the safety work, the quoted heading text
+for the older sentence headings). The replay is part of `cargo test` of the simulator (a separate crate:
 the root `cargo test` of `pochi-dio` does **not** run it):
 
 ```
@@ -279,6 +284,11 @@ cd sim && cargo test --target <host triple>
 
 The simulator tests run in the `lefthook` pre-commit and pre-push hooks of
 `pochi-dio` and in the umbrella `scripts/test-all.sh`.
+
+The replay always runs on virtual time: it moves only through `~ advance`. The live transports of the
+simulator (pty; TCP) can instead tie the virtual clock to real time with `--wall-clock` (virtual time =
+time since start-up), so that a host measuring timeouts, such as the watchdog heartbeat, sees real
+durations independent of load. That mode is for system tests, never for the golden replay.
 
 `scripts/sync-protocol-golden.sh` (in the parent repository) distributes this
 directory to the consumer repositories; run it after every revision and check
@@ -315,5 +325,10 @@ eight feature bits) and `help` lists 24 commands (`reset.txt`); both stay red un
 in. Every other line is unchanged. `check_golden.py` validates the new vocabulary (error names
 `FAILSAFE` / `EXCLUSIVE group=<i> mask=0x%08x`, event `FAILSAFE`, directives `dtr` `usb` `reboot`, the file
 `safety.txt` and its case names, the two new rows of the error table above); its own tests are
-`tests/test_check_golden.py` (pochi-dio only). The replayers (simulator, SDKs, extension) do not know the new
-vocabulary yet: that is the golden-infrastructure task, and until it lands their replay of the new lines fails.
+`tests/test_check_golden.py` (pochi-dio only). The replayers (simulator, SDKs, extension, GUI mock) all list `safety.txt`
+and the simulator knows the new directives (revision 4); the new lines stay red until the firmware implements them.
+
+Revision 4 (golden infrastructure, no transcript line changed). `safety.txt` is in the file list of every replayer
+(simulator, Rust / Python / TypeScript / C# SDKs, the VS Code extension, the GUI mock); the simulator implements the
+directives `~ dtr`, `~ usb ...` and `~ reboot cause=...` on top of `runtime::Device::set_usb_state` and
+`set_reset_info` (DD-17), reports failures by case name, and has a wall-clock mode for its live transports.

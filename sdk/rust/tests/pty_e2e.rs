@@ -36,7 +36,7 @@ use serialport::{SerialPort, TTYPort};
 
 // ------------------------------------------------------------ golden loading
 
-const GOLDEN_FILES: [&str; 10] = [
+const GOLDEN_FILES: [&str; 11] = [
     "version-info",
     "map",
     "io",
@@ -47,6 +47,7 @@ const GOLDEN_FILES: [&str; 10] = [
     "errors",
     "boundary",
     "events",
+    "safety",
 ];
 
 /// Longest request line the device accepts (the SDK refuses longer ones
@@ -459,7 +460,10 @@ fn caps_matches_golden() {
             (caps.dio, caps.out, caps.r#in, caps.ts_res_ns, caps.tick_ns),
             (25, 0, 25, 40, 200)
         );
-        assert_eq!((caps.pattern_max, caps.ring, caps.features), (256, 256, 3));
+        assert_eq!((caps.pattern_max, caps.ring), (256, 256));
+        // The transcript carries the feature mask of its firmware revision: pin
+        // neither the value nor its history, only the defined bits (0..=7).
+        assert_eq!(caps.features & !0xff, 0, "undefined feat bits");
         assert!(caps.has_sync() && caps.has_reset());
     });
 }
@@ -1006,9 +1010,11 @@ fn bootsel_reset_consumes_the_connection() {
 fn help_is_a_counted_response() {
     run_case("reset", "help: counted response", |conn| {
         let lines = conn.help().unwrap();
-        assert_eq!(lines.len(), 16);
+        // The command list grows with the firmware: the transcript decides how
+        // many lines there are; `version` stays first and `help` last.
+        assert!(lines.len() >= 16, "{} help lines", lines.len());
         assert!(lines[0].trim_start().starts_with("version"));
-        assert!(lines[15].trim_start().starts_with("help"));
+        assert!(lines[lines.len() - 1].trim_start().starts_with("help"));
     });
 }
 
