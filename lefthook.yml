@@ -35,6 +35,11 @@ pre-commit:
         fi
       fail_text: "#[allow(dead_code)] found. Remove dead code or complete it."
 
+    license-check:
+      glob: "{LICENSE,README.md,deny.toml,**/Cargo.toml,**/package.json,**/pyproject.toml,**/*.csproj,scripts/check_license.py,tests/test_check_license.py}"
+      run: python3 scripts/check_license.py --policy apache-2.0 && python3 -m unittest tests/test_check_license.py
+      fail_text: "License declarations are inconsistent with the Apache-2.0-only policy (ST-DCIT-018a)."
+
     no-main-commit:
       run: |
         BRANCH=$(git branch --show-current)
@@ -92,6 +97,10 @@ pre-commit:
 pre-push:
   parallel: false
   commands:
+    license-check:
+      run: python3 scripts/check_license.py --policy apache-2.0 && python3 -m unittest tests/test_check_license.py
+      fail_text: "License declarations are inconsistent with the Apache-2.0-only policy (ST-DCIT-018a)."
+
     full-test:
       run: cargo test --workspace
       fail_text: "Tests failed. All tests must pass before pushing."

@@ -29,6 +29,8 @@ ignore = [
 
 [licenses]
 version = 2
+# Third-party dependency licenses only. The workspace crates themselves are
+# Apache-2.0 only (LICENSE); that is enforced by scripts/check_license.py.
 allow = [
     "MIT",
     "Apache-2.0",
