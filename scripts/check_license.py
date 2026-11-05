@@ -164,14 +164,23 @@ def check_license_file(root: Path, policy: str):
     return []
 
 
+def check_stray_license_references(root: Path):
+    """README.md and docs/**/*.md must not point at the removed dual-license files."""
+    docs = sorted((root / "docs").rglob("*.md")) if (root / "docs").is_dir() else []
+    out = []
+    for path in [root / "README.md", *docs]:
+        if path.is_file() and STRAY_LICENSE_LINK.search(path.read_text(encoding="utf-8")):
+            rel = path.relative_to(root).as_posix()
+            out.append(f"{rel}: references LICENSE-MIT / LICENSE-APACHE, which do not exist; refer to LICENSE")
+    return out
+
+
 def check_readme(root: Path, policy: str):
     path = root / "README.md"
     if not path.is_file():
         return []
     text = path.read_text(encoding="utf-8")
     out = []
-    if STRAY_LICENSE_LINK.search(text):
-        out.append("README.md: links to LICENSE-MIT / LICENSE-APACHE, which do not exist; link LICENSE")
     pattern = OPEN_SOURCE_CLAIM if policy == "proprietary" else re.compile(r"\bMIT\b")
     if pattern.search(text):
         out.append(f"README.md: license text conflicts with the {policy} policy")
@@ -190,6 +199,7 @@ def check(root, policy: str):
     manifest_check = check_apache_manifest if policy == "apache-2.0" else check_proprietary_manifest
     for path, kind in manifests(root):
         violations.extend(manifest_check(root, path, kind, path.relative_to(root).as_posix()))
+    violations.extend(check_stray_license_references(root))
     violations.extend(check_readme(root, policy))
     return violations
 

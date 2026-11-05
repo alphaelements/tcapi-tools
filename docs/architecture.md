@@ -190,8 +190,7 @@ pochi-tools/
 ├── Cargo.lock              # Committed -- reproducible builds
 ├── deny.toml               # cargo-deny configuration (license auditing)
 ├── lefthook.yml            # Pre-commit hooks (clippy, fmt, test)
-├── LICENSE-MIT
-├── LICENSE-APACHE
+├── LICENSE                 # Apache-2.0
 │
 ├── sdk/
 │   ├── rust/               # Reference SDK implementation

@@ -293,6 +293,11 @@ class ApachePolicyTest(CheckerTestCase):
         tree.write("README.md", "See [LICENSE-APACHE](LICENSE-APACHE)\n")
         self.assertViolation(self.check(tree), "README.md")
 
+    def test_docs_listing_removed_license_files(self):
+        tree = self.make(apache_tree)
+        tree.write("docs/architecture.md", "```\n├── LICENSE-MIT\n├── LICENSE-APACHE\n```\n")
+        self.assertViolation(self.check(tree), "docs/architecture.md")
+
 
 class CliTest(CheckerTestCase):
     def run_cli(self, tree, policy):
