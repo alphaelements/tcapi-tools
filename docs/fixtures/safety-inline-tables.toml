@@ -1,0 +1,9 @@
+# Inline-table spelling is equivalent to the section spelling.
+# expected: watchdog_ms=250 usbsafe=1 groups=0x000000e0
+# expected_command: excl set 0xe0
+# expected_command: usbsafe on
+# expected_command: wdog 250
+version = 2
+watchdog = { timeout_ms = 250 }
+usb = { safe = true }
+exclusive = [{ pins = ["GP5", "GP6", "GP7"] }]

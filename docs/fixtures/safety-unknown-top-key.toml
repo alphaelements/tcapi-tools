@@ -1,0 +1,7 @@
+# Unknown top-level key (misspelled table name).
+# expected_error: unknown key "watchdgo"
+# expected_line: 6
+version = 2
+
+[watchdgo]
+timeout_ms = 800

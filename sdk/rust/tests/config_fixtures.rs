@@ -18,6 +18,9 @@ fn fixture_names() -> Vec<String> {
         .expect("docs/fixtures must exist")
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .filter(|n| n.ends_with(".toml"))
+        // `safety-*` fixtures belong to the safety.toml parser, not to `config`
+        // (map/pattern); `toml_v2_fixtures.rs` and the safety conformance test own them.
+        .filter(|n| !n.starts_with("safety-"))
         .collect();
     names.sort();
     assert!(names.len() >= 50, "fixture set looks truncated");

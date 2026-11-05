@@ -1,0 +1,10 @@
+# A one-pin group is meaningless; the second group is reported.
+# expected_error: exclusive group 2: a group needs at least 2 pins
+# expected_line: 10
+version = 2
+
+[[exclusive]]
+pins = ["GP2", "GP3"]
+
+[[exclusive]]
+pins = ["GP4"]

@@ -1,0 +1,7 @@
+# timeout_ms must be an integer, not a string.
+# expected_error: watchdog.timeout_ms must be an integer
+# expected_line: 7
+version = 2
+
+[watchdog]
+timeout_ms = "800"

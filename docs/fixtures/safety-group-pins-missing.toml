@@ -1,0 +1,6 @@
+# A group needs `pins`; reported on the group header.
+# expected_error: exclusive group 1: pins is required
+# expected_line: 6
+version = 2
+
+[[exclusive]]

@@ -1,0 +1,7 @@
+# An empty group has fewer than 2 pins.
+# expected_error: exclusive group 1: a group needs at least 2 pins
+# expected_line: 7
+version = 2
+
+[[exclusive]]
+pins = []

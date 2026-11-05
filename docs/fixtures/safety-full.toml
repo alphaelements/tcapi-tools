@@ -1,0 +1,18 @@
+# Full file: watchdog, usbsafe and two exclusive groups. Groups may overlap (GP3 is in both).
+# expected: watchdog_ms=800 usbsafe=1 groups=0x0000000c,0x00000018
+# expected_command: excl set 0xc 0x18
+# expected_command: usbsafe on
+# expected_command: wdog 800
+version = 2
+
+[watchdog]
+timeout_ms = 800
+
+[usb]
+safe = true
+
+[[exclusive]]
+pins = ["GP2", "GP3"]
+
+[[exclusive]]
+pins = ["GP3", "GP4"]

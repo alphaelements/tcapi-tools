@@ -1,0 +1,11 @@
+# Present but empty tables and an empty group list are the same as absent ones.
+# expected: watchdog_ms=0 usbsafe=0 groups=none
+# expected_command: excl clear
+# expected_command: usbsafe off
+# expected_command: wdog 0
+version = 2
+exclusive = []
+
+[watchdog]
+
+[usb]

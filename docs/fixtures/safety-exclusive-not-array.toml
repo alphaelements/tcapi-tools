@@ -1,0 +1,7 @@
+# `exclusive` must be an array of tables ([[exclusive]]), not a single table.
+# expected_error: exclusive must be an array of tables
+# expected_line: 6
+version = 2
+
+[exclusive]
+pins = ["GP2", "GP3"]

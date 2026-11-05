@@ -1,0 +1,9 @@
+# GP25 (on-board LED) cannot be used as DIO at all, so it can never be an output.
+# Whether a valid pin is an output in the active map is checked by the device
+# when the group is applied (ERR BAD_PARAM); it has no file-level fixture.
+# expected_error: exclusive group 1: invalid pin "GP25" in pins
+# expected_line: 9
+version = 2
+
+[[exclusive]]
+pins = ["GP2", "GP25"]

@@ -1,0 +1,9 @@
+# Smallest enabled timeout.
+# expected: watchdog_ms=100 usbsafe=0 groups=none
+# expected_command: excl clear
+# expected_command: usbsafe off
+# expected_command: wdog 100
+version = 2
+
+[watchdog]
+timeout_ms = 100

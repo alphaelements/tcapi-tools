@@ -1,0 +1,7 @@
+# 10001 ms is above the maximum of 10000.
+# expected_error: watchdog.timeout_ms must be 0 or between 100 and 10000
+# expected_line: 7
+version = 2
+
+[watchdog]
+timeout_ms = 10001

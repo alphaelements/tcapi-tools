@@ -1,0 +1,7 @@
+# Unknown key in [watchdog].
+# expected_error: unknown key "timeout" in watchdog
+# expected_line: 7
+version = 2
+
+[watchdog]
+timeout = 800

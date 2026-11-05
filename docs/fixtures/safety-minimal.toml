@@ -1,0 +1,7 @@
+# Only the version: everything is off. Applying still sends all three commands
+# so that the device ends up equal to the file (no groups = `excl clear`).
+# expected: watchdog_ms=0 usbsafe=0 groups=none
+# expected_command: excl clear
+# expected_command: usbsafe off
+# expected_command: wdog 0
+version = 2

@@ -1,0 +1,7 @@
+# 99 ms is below the minimum of 100 (0 is the only value below it).
+# expected_error: watchdog.timeout_ms must be 0 or between 100 and 10000
+# expected_line: 7
+version = 2
+
+[watchdog]
+timeout_ms = 99

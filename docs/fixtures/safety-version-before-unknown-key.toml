@@ -1,0 +1,5 @@
+# Check order: `version` is checked before unknown keys.
+# expected_error: unsupported version: expected 2, got 1
+# expected_line: 4
+version = 1
+legacy_layout = 0

@@ -1,0 +1,6 @@
+# `watchdog` must be a table.
+# expected_error: watchdog must be a table
+# expected_line: 6
+version = 2
+
+watchdog = 800
