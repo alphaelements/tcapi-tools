@@ -6,11 +6,12 @@ extension) must accept exactly this schema and reject everything else with the
 errors listed in section 4. Conformance is checked against the fixtures in
 [`docs/fixtures/`](fixtures/) (section 5).
 
-> **Status: draft pending owner sign-off.** The schema shape of `map.toml` and
-> `pattern.toml` follows REF-V2 section 4.3; the shape of `safety.toml`
-> (section 7) follows the DCIT plan. The defaults, the pin-name grammar and the
-> error message texts below were written by the implementer and are listed in
-> section 6; do not copy them into another parser until they are approved.
+> **Status: draft pending owner sign-off, except item 8 of section 6.** The
+> schema shape of `map.toml` and `pattern.toml` follows REF-V2 section 4.3; the
+> shape of `safety.toml` (section 7) follows the DCIT plan. The defaults, the
+> pin-name grammar and the error message texts below were written by the
+> implementer and are listed in section 6; do not copy them into another parser
+> until they are approved. Item 8 (the pin rules of `safety.toml`) is approved.
 
 Requirement: **R-TOML1** — `version` other than 2, unknown keys and
 contradictory settings are errors. There is no lenient mode and no migration
@@ -425,10 +426,13 @@ change with them):
 7. **`safety.toml` error message texts** (section 4) and its line conventions
    (section 1), including the check order of section 4 (the group count before
    any group) and the position wording `exclusive group N`.
-8. **Pin rules of `safety.toml`**: a duplicate pin is an error only inside one
-   group (groups may overlap, as on the device); "not an output pin" at file
-   level means "not usable as DIO" (`invalid pin`), because whether a valid pin
-   is an output depends on the active map (section 7).
+8. **Pin rules of `safety.toml`** (**approved**): a duplicate pin is an error
+   only inside one group (groups may overlap, as on the device); "not an output
+   pin" at file level means "not usable as DIO" (`invalid pin`), because
+   whether a valid pin is an output depends on the active map (section 7). The
+   file-level fixture is `safety-pin-not-output.toml` (GP25). The device-side
+   refusal of a valid pin that is not an output (`ERR BAD_PARAM`) is covered by
+   the firmware golden, not by a host fixture.
 9. **Apply semantics of `safety.toml`**: the file is a complete declaration, so
    every apply sends `excl set`/`excl clear`, `usbsafe` and `wdog` even for
    absent sections (absent = off / none / `0`).
