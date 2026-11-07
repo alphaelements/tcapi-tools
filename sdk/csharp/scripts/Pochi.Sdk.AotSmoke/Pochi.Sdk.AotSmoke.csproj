@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Minimal NativeAOT consumer of Pochi.Sdk. `dotnet publish -r <rid>` must
+       build it with zero warnings: that is the AOT/trim compatibility check of
+       the SDK (see scripts/aot-check.sh). Not part of Pochi.Sdk.sln, and not a
+       shipped artifact. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <!-- The ILCompiler pack bundled with SDK 8.0.1xx (8.0.32) is flagged by NuGet
+       audit (NU1903, GHSA-p3jp-9v83-76w9, fixed in 8.0.33). Take the patched
+       pack instead of silencing the audit; drop this line once the installed
+       SDK bundles 8.0.33 or later. -->
+  <ItemGroup>
+    <KnownILCompilerPack Update="@(KnownILCompilerPack)" ILCompilerPackVersion="8.0.33" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pochi.Sdk\Pochi.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>

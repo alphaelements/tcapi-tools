@@ -1,0 +1,12 @@
+<Project>
+
+  <!-- aot-check.sh puts this project's build products outside the source tree
+       (-p:PochiAotWork=<dir>). Here, and not on the command line, because a
+       command-line BaseIntermediateOutputPath would also reach the referenced
+       Pochi.Sdk project. -->
+  <PropertyGroup Condition="'$(PochiAotWork)' != ''">
+    <BaseIntermediateOutputPath>$(PochiAotWork)/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(PochiAotWork)/bin/</BaseOutputPath>
+  </PropertyGroup>
+
+</Project>

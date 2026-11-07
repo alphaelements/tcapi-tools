@@ -195,8 +195,8 @@ public class SafetyConnectionTests
             _ => null,
         });
         using var conn = device.Connect();
-        TestHelpers.AssertSdkThrows(ErrorCode.BadParam, conn.FailsafeClear);
-        TestHelpers.AssertSdkThrows(ErrorCode.Failsafe, conn.OutputsReset);
+        TestHelpers.AssertSdkThrows(ErrorCode.BadParam, () => conn.FailsafeClear());
+        TestHelpers.AssertSdkThrows(ErrorCode.Failsafe, () => conn.OutputsReset());
         var ex = Assert.Throws<ExclusiveException>(() => conn.ExclSet([0xc]));
         Assert.Equal(((byte)0, 0xcU), (ex.Group, ex.Mask));
     }

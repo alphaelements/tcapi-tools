@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 
@@ -97,6 +98,23 @@ public static class Config
 
         return ParseSafety(src, path);
     }
+
+    /// <summary><see cref="ParseSafety"/> without throwing: false and the
+    /// error (a <see cref="ConfigException"/> for a bad file) instead.</summary>
+    public static bool TryParseSafety(
+        string src,
+        string file,
+        [NotNullWhen(true)] out SafetyConfig? config,
+        [NotNullWhen(false)] out SdkException? error) =>
+        SdkResult.TryInvoke(() => ParseSafety(src, file), out config, out error);
+
+    /// <summary><see cref="LoadSafety"/> without throwing: false and the error
+    /// (<see cref="ErrorCode.Io"/> for an unreadable file) instead.</summary>
+    public static bool TryLoadSafety(
+        string path,
+        [NotNullWhen(true)] out SafetyConfig? config,
+        [NotNullWhen(false)] out SdkException? error) =>
+        SdkResult.TryInvoke(() => LoadSafety(path), out config, out error);
 
     private static void CheckVersion(TomlTable table, string file)
     {
