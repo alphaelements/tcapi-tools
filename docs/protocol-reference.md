@@ -1067,7 +1067,7 @@ device sends without a request. Nothing else is ever sent unasked.
 command, including `map set`, `map default`, `write`, `reset`, `bootsel` and the
 safety commands, leaves flash alone. Each write erases and programs one flash sector
 while the device processes no commands, and flash endurance is finite: do not call
-them periodically. **Bench measurement (2026-11-06, one device, 40 writes each): `map save` 34.9-36.4 ms, `devnum` 35.0-36.5 ms, median 35.5-35.8 ms.** That is the time the device is busy; it is a typical value, not a guaranteed maximum (erase time varies with the flash part, temperature and wear).
+them periodically. **Bench measurement (2026-11-07, one device, 100 writes each): `map save` 34.5-37.8 ms, `devnum` 34.2-39.0 ms, median 35.5 ms.** That is the time the device is busy; it is a typical value, not a guaranteed maximum (erase time varies with the flash part, temperature and wear).
 
 **What a restart does not carry over.** After power-on, `reset`, a hardware
 watchdog reset or a panic the device is in the state the saved map defines for each
@@ -1090,8 +1090,8 @@ write. The lower bound for `wdog` is therefore
     timeout > (longest flash write) + (heartbeat period)
 
 with the protocol minimum of 100 ms. With the SDK heartbeat (period `timeout / 4`, at most 1 s) and the measured
-36.5 ms, the longest gap between two `OK` answers around a write is about `timeout / 4 + 37 ms`, which is
-below the timeout for every allowed value (100 ms: about 62 ms). Because 36.5 ms is a bench value and not a
+39 ms, the longest gap between two `OK` answers around a write is about `timeout / 4 + 39 ms`, which is
+below the timeout for every allowed value (100 ms: about 64 ms). Because 39 ms is a bench value and not a
 guaranteed maximum, the safe procedure stays the same: do not send `map save` or `devnum` while the watchdog is
 enabled; send `wdog 0`, save, then enable the watchdog again.
 
