@@ -2,17 +2,20 @@
 //! wrappers over `pochi-sdk` calls against the shared connection.
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use pochi_sdk::reconcile::{self, SourceEvent};
 use pochi_sdk::{
-    config, Capabilities, Connection, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus,
-    PatternStep, PinMap, TimestampResult, VersionInfo, TS_GET_MAX,
+    config, Capabilities, Connection, DeviceInfo, EdgeMode, Feature, IoState, PatternMode,
+    PatternStatus, PatternStep, PinMap, SafetyConfig, SafetyState, TimestampResult, VersionInfo,
+    TS_GET_MAX,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::events::{self, LogPayload};
-use crate::state::{with_state, SharedState};
+use crate::state::{with_state, AppInner, SharedState};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -55,27 +58,57 @@ pub async fn connect(
         // Release any previous connection first: the port is opened
         // exclusively, so a stale handle (e.g. after a webview reload)
         // would make reopening fail with EBUSY.
-        inner.stop_events();
-        inner.connection = None;
-        inner.device_info = None;
+        inner.release_connection();
         let mut conn = Connection::open(&port).map_err(err)?;
-        conn.set_traffic_hook(Some(events::traffic_hook(app)));
+        conn.set_traffic_hook(Some(events::traffic_hook(app.clone())));
         let info = conn.info().map_err(err)?;
-        inner.connection = Some(conn);
-        inner.device_info = Some(info.clone());
+        let watchdog_capable = conn.caps().map_err(err)?.has(Feature::Wdog);
+        attach(
+            inner,
+            conn,
+            info.clone(),
+            watchdog_capable,
+            heartbeat_starter(app),
+        )?;
         Ok(info)
     })
     .await
+}
+
+/// Make `conn` the active connection. The watchdog outlives a host session:
+/// one enabled before this connection (a reloaded webview, another tool)
+/// trips the device unless this session keeps it fed, so a watchdog-capable
+/// device gets its heartbeat aligned right away. When that fails the
+/// connection is dropped again (closing changes no output) and the error
+/// is returned.
+fn attach<S>(
+    inner: &mut AppInner,
+    conn: Connection,
+    info: DeviceInfo,
+    watchdog_capable: bool,
+    start: S,
+) -> Result<(), String>
+where
+    S: FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String>,
+{
+    inner.connection = Some(conn);
+    inner.device_info = Some(info);
+    if watchdog_capable {
+        if let Err(e) = sync_heartbeat(inner, start) {
+            inner.release_connection();
+            return Err(e);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| {
-        // Dropping the connection closes the port; stop the forwarder too.
-        inner.stop_events();
-        inner.connection = None;
-        inner.device_info = None;
+        // Dropping the connection closes the port; stop the forwarder and
+        // the heartbeat too. Closing sends nothing and changes no output.
+        inner.release_connection();
         Ok(())
     })
     .await
@@ -286,6 +319,7 @@ pub async fn pattern_reset(state: State<'_, SharedState>) -> Result<(), String> 
 pub async fn system_reset(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| {
+        inner.stop_heartbeat();
         let conn = inner
             .connection
             .take()
@@ -303,12 +337,194 @@ pub async fn system_reset(state: State<'_, SharedState>) -> Result<(), String> {
 pub async fn bootsel_reset(state: State<'_, SharedState>) -> Result<(), String> {
     let shared = state.inner().clone();
     with_state(shared, |inner| {
+        inner.stop_heartbeat();
         let conn = inner
             .connection
             .take()
             .ok_or_else(|| "no device connected".to_string())?;
         inner.device_info = None;
         conn.bootsel_reset().map_err(err)
+    })
+    .await
+}
+
+// --- safety ---
+
+/// Starts the heartbeat for a watchdog timeout the device has and returns
+/// the stop flag of the thread that owns it. The seam between the safety
+/// logic and the Tauri app handle (tests pass a recording starter).
+fn heartbeat_starter(
+    app: AppHandle,
+) -> impl FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String> {
+    move |conn, wdog_ms| {
+        let heartbeat = conn.start_heartbeat(wdog_ms).map_err(err)?;
+        Ok(events::spawn_heartbeat_monitor(app, heartbeat))
+    }
+}
+
+/// Restart the watchdog heartbeat for a watchdog timeout the device now
+/// has: any running heartbeat is stopped first, and none is started for `0`
+/// (disabled). The heartbeat only ever pings; ending it changes no output.
+fn restart_heartbeat<S>(inner: &mut AppInner, wdog_ms: u32, start: S) -> Result<(), String>
+where
+    S: FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String>,
+{
+    inner.stop_heartbeat();
+    if wdog_ms == 0 {
+        return Ok(());
+    }
+    let stop = start(inner.conn()?, wdog_ms)?;
+    inner.heartbeat_stop = Some(stop);
+    Ok(())
+}
+
+/// Read the device's real watchdog timeout (`safety`) and align the
+/// heartbeat with it. Used where the device state is not known from a
+/// command's success: on connect and after a failed `apply_safety`.
+fn sync_heartbeat<S>(inner: &mut AppInner, start: S) -> Result<(), String>
+where
+    S: FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String>,
+{
+    let state = inner.conn()?.safety().map_err(err)?;
+    restart_heartbeat(inner, state.wdog_ms, start)
+}
+
+/// `wdog <ms>` and the heartbeat that goes with it. A watchdog the host
+/// cannot feed would trip the device, so when the heartbeat fails to start
+/// the watchdog is disabled again and the failure (and a failed disable) is
+/// reported.
+fn set_watchdog<S>(inner: &mut AppInner, ms: u32, start: S) -> Result<(), String>
+where
+    S: FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String>,
+{
+    inner.conn()?.wdog(ms).map_err(err)?;
+    let Err(started) = restart_heartbeat(inner, ms, start) else {
+        return Ok(());
+    };
+    match inner.conn()?.wdog(0) {
+        Ok(()) => Err(started),
+        Err(revert) => Err(format!(
+            "{started}; the watchdog could not be disabled again: {revert}"
+        )),
+    }
+}
+
+/// `wdog <ms>` — enable (`100..=10000`) or disable (`0`) the watchdog. An
+/// enabled watchdog starts the heartbeat that keeps it fed while this
+/// connection lives; disabling stops it.
+#[tauri::command]
+pub async fn wdog(app: AppHandle, state: State<'_, SharedState>, ms: u32) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, move |inner| {
+        set_watchdog(inner, ms, heartbeat_starter(app))
+    })
+    .await
+}
+
+/// `safety` — the safety state; the source of truth for `pochi://failsafe`.
+#[tauri::command]
+pub async fn get_safety(state: State<'_, SharedState>) -> Result<SafetyState, String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| inner.conn()?.safety().map_err(err)).await
+}
+
+/// `failsafe clear` — release the failsafe latch; outputs stay as they are.
+#[tauri::command]
+pub async fn failsafe_clear(state: State<'_, SharedState>) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| inner.conn()?.failsafe_clear().map_err(err)).await
+}
+
+/// `outputs reset` — every output to its `def` (the safe state); stops a
+/// running pattern.
+#[tauri::command]
+pub async fn outputs_reset(state: State<'_, SharedState>) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| inner.conn()?.outputs_reset().map_err(err)).await
+}
+
+/// `excl set <mask>...` — replace all exclusive groups atomically.
+#[tauri::command]
+pub async fn excl_set(state: State<'_, SharedState>, masks: Vec<u32>) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, move |inner| {
+        inner.conn()?.excl_set(&masks).map_err(err)
+    })
+    .await
+}
+
+/// `excl clear` — remove all exclusive groups.
+#[tauri::command]
+pub async fn excl_clear(state: State<'_, SharedState>) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| inner.conn()?.excl_clear().map_err(err)).await
+}
+
+/// `excl get` — the masks of the exclusive groups in the order they were set.
+#[tauri::command]
+pub async fn excl_get(state: State<'_, SharedState>) -> Result<Vec<u32>, String> {
+    let shared = state.inner().clone();
+    with_state(shared, |inner| inner.conn()?.excl_get().map_err(err)).await
+}
+
+/// `usbsafe on|off` — failsafe when the USB link is lost.
+#[tauri::command]
+pub async fn usbsafe(state: State<'_, SharedState>, on: bool) -> Result<(), String> {
+    let shared = state.inner().clone();
+    with_state(shared, move |inner| inner.conn()?.usbsafe(on).map_err(err)).await
+}
+
+/// Evaluate a `safety.toml` (schema v2, `docs/config-files.md` section 7)
+/// into a [`SafetyConfig`] without touching the device; the frontend reviews
+/// it and applies it via `apply_safety`. Errors read `<path>:<line>: <message>`.
+fn load_safety_file(path: &str) -> Result<SafetyConfig, String> {
+    config::load_safety(Path::new(path)).map_err(err)
+}
+
+#[tauri::command]
+pub async fn safety_load_toml(path: String) -> Result<SafetyConfig, String> {
+    tauri::async_runtime::spawn_blocking(move || load_safety_file(&path))
+        .await
+        .map_err(|e| format!("blocking task failed: {e}"))?
+}
+
+/// `apply_safety` plus the heartbeat that follows the watchdog the device
+/// ends up with: after a failure part of the commands may be in effect, so
+/// the real `safety` state decides.
+fn apply_and_follow<S>(
+    inner: &mut AppInner,
+    config: &SafetyConfig,
+    start: S,
+) -> Result<SafetyState, String>
+where
+    S: FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String>,
+{
+    match inner.conn()?.apply_safety(config) {
+        Ok(applied) => {
+            restart_heartbeat(inner, applied.wdog_ms, start)?;
+            Ok(applied)
+        }
+        Err(e) => {
+            let message = err(e);
+            match sync_heartbeat(inner, start) {
+                Ok(()) => Err(message),
+                Err(sync) => Err(format!("{message}; heartbeat not aligned: {sync}")),
+            }
+        }
+    }
+}
+
+/// Make the device equal to `config` and verify it (`apply_safety`), then
+/// keep the heartbeat in step with its watchdog.
+#[tauri::command]
+pub async fn apply_safety(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    config: SafetyConfig,
+) -> Result<SafetyState, String> {
+    let shared = state.inner().clone();
+    with_state(shared, move |inner| {
+        apply_and_follow(inner, &config, heartbeat_starter(app))
     })
     .await
 }
@@ -606,6 +822,41 @@ mod tests {
         assert!(e.contains("version"), "{e}");
     }
 
+    // --- safety.toml loading ---
+
+    #[test]
+    fn load_safety_file_evaluates_the_sdk_schema() {
+        let config = load_safety_file(&fixture("safety-full.toml")).unwrap();
+        assert_eq!(
+            config,
+            SafetyConfig {
+                watchdog_ms: 800,
+                usbsafe: true,
+                groups: vec![0x0c, 0x18],
+            }
+        );
+    }
+
+    #[test]
+    fn load_safety_file_reports_file_and_line_of_a_syntax_error() {
+        let path = fixture("safety-toml-syntax.toml");
+        let e = load_safety_file(&path).unwrap_err();
+        assert!(e.contains(&format!("{path}:")), "{e}");
+        assert!(e.contains("toml syntax"), "{e}");
+    }
+
+    #[test]
+    fn load_safety_file_rejects_an_out_of_range_watchdog() {
+        let e = load_safety_file(&fixture("safety-watchdog-too-large.toml")).unwrap_err();
+        assert!(e.contains("timeout_ms"), "{e}");
+    }
+
+    #[test]
+    fn load_safety_file_rejects_a_missing_file() {
+        let e = load_safety_file(&fixture("does-not-exist.toml")).unwrap_err();
+        assert!(!e.is_empty());
+    }
+
     // --- drain_ts ---
 
     fn batch(count: usize, overflow: bool) -> TimestampResult {
@@ -749,5 +1000,407 @@ mod tests {
         };
         let payload = reconcile_rows(&result, TS_RES_NS);
         assert!(payload.overflow);
+    }
+}
+
+/// The safety command bodies against a fake device on a PTY: what the
+/// device is sent and how the heartbeat follows the watchdog it ends up
+/// with. The heartbeat itself is replaced by a recording starter (its
+/// behaviour is covered by the SDK); what is tested is when it is started,
+/// restarted and stopped.
+#[cfg(all(test, unix))]
+mod safety_flow_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+    use std::time::Duration;
+
+    use serialport::{SerialPort, TTYPort};
+
+    /// What the fake firmware keeps: the safety settings, every command it
+    /// was sent (handshake and pings excluded) and the commands it refuses.
+    #[derive(Default)]
+    struct DeviceModel {
+        wdog_ms: u32,
+        usbsafe: bool,
+        excl: Vec<u32>,
+        log: Vec<String>,
+        refuse: Vec<&'static str>,
+    }
+
+    fn hex_masks<'a>(words: impl Iterator<Item = &'a str>) -> Vec<u32> {
+        words
+            .map(|w| u32::from_str_radix(w.trim_start_matches("0x"), 16).expect("hex mask"))
+            .collect()
+    }
+
+    fn answer(model: &mut DeviceModel, cmd: &str) -> Vec<String> {
+        if cmd == "version" {
+            return vec!["OK fw=0.1.3 proto=2".to_string()];
+        }
+        if let Some(n) = cmd.strip_prefix("ping ") {
+            return vec![format!("OK pong={n}")];
+        }
+        model.log.push(cmd.to_string());
+        if model.refuse.iter().any(|p| cmd.starts_with(p)) {
+            return vec!["ERR BAD_PARAM".to_string()];
+        }
+        let mut words = cmd.split_whitespace();
+        match (words.next(), words.next()) {
+            (Some("wdog"), Some(ms)) => {
+                model.wdog_ms = ms.parse().expect("wdog ms");
+                vec!["OK".to_string()]
+            }
+            (Some("usbsafe"), Some(on)) => {
+                model.usbsafe = on == "on";
+                vec!["OK".to_string()]
+            }
+            (Some("excl"), Some("clear")) => {
+                model.excl.clear();
+                vec!["OK".to_string()]
+            }
+            (Some("excl"), Some("set")) => {
+                model.excl = hex_masks(words);
+                vec!["OK".to_string()]
+            }
+            (Some("excl"), Some("get")) => {
+                let mut lines = vec![format!("OK count={}", model.excl.len())];
+                lines.extend(model.excl.iter().map(|m| format!("  mask={m:#010x}")));
+                lines
+            }
+            (Some("safety"), None) => vec![format!(
+                "OK wdog_ms={} remaining_ms={} failsafe=0 cause=none usbsafe={} excl={}",
+                model.wdog_ms,
+                model.wdog_ms,
+                u8::from(model.usbsafe),
+                model.excl.len()
+            )],
+            _ => vec!["ERR UNKNOWN_CMD".to_string()],
+        }
+    }
+
+    struct FakeFirmware {
+        model: Arc<Mutex<DeviceModel>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl FakeFirmware {
+        fn commands(&self) -> Vec<String> {
+            self.model.lock().unwrap().log.clone()
+        }
+    }
+
+    impl Drop for FakeFirmware {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(t) = self.thread.take() {
+                drop(t.join());
+            }
+        }
+    }
+
+    /// A connection to a fake device holding `model`.
+    fn open(model: DeviceModel) -> (Connection, FakeFirmware) {
+        // `TTYPort::pair` goes through the thread-unsafe `ptsname`.
+        static PAIR_LOCK: Mutex<()> = Mutex::new(());
+        let (mut master, slave) = {
+            let _guard = PAIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            TTYPort::pair().expect("PTY pair")
+        };
+        let model = Arc::new(Mutex::new(model));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn({
+            let model = Arc::clone(&model);
+            let stop = Arc::clone(&stop);
+            move || {
+                master
+                    .set_timeout(Duration::from_millis(20))
+                    .expect("set_timeout");
+                let mut acc: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 256];
+                while !stop.load(Ordering::Relaxed) {
+                    match master.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            acc.extend_from_slice(&chunk[..n]);
+                            while let Some(pos) = acc.iter().position(|&b| b == b'\n') {
+                                let line: Vec<u8> = acc.drain(..=pos).collect();
+                                let cmd = String::from_utf8_lossy(&line)
+                                    .trim_end_matches(['\r', '\n'])
+                                    .to_string();
+                                if cmd.is_empty() {
+                                    continue;
+                                }
+                                let lines = answer(&mut model.lock().unwrap(), &cmd);
+                                let wire: String =
+                                    lines.iter().map(|l| format!("{l}\r\n")).collect();
+                                master.write_all(wire.as_bytes()).expect("mock write");
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+        let mut conn = Connection::from_port(Box::new(slave)).expect("connect");
+        conn.set_timeout(Duration::from_millis(500));
+        (
+            conn,
+            FakeFirmware {
+                model,
+                stop,
+                thread: Some(thread),
+            },
+        )
+    }
+
+    fn inner_with(conn: Connection) -> AppInner {
+        AppInner {
+            connection: Some(conn),
+            ..AppInner::default()
+        }
+    }
+
+    /// Heartbeat starter that records the timeouts it was asked for.
+    #[derive(Default, Clone)]
+    struct Starts(Arc<Mutex<Vec<u32>>>);
+
+    impl Starts {
+        fn starter(&self) -> impl FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String> {
+            let log = Arc::clone(&self.0);
+            move |_, ms| {
+                log.lock().unwrap().push(ms);
+                Ok(Arc::new(AtomicBool::new(false)))
+            }
+        }
+
+        fn timeouts(&self) -> Vec<u32> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    fn running_heartbeat(inner: &mut AppInner) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        inner.heartbeat_stop = Some(Arc::clone(&flag));
+        flag
+    }
+
+    fn failing_starter(_: &mut Connection, _: u32) -> Result<Arc<AtomicBool>, String> {
+        Err("heartbeat thread failed".to_string())
+    }
+
+    // --- wdog ---
+
+    #[test]
+    fn wdog_enable_sends_the_command_and_starts_the_heartbeat() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = inner_with(conn);
+        let starts = Starts::default();
+        set_watchdog(&mut inner, 500, starts.starter()).unwrap();
+        assert_eq!(fw.commands(), ["wdog 500"]);
+        assert_eq!(starts.timeouts(), [500]);
+        assert!(inner.heartbeat_stop.is_some());
+    }
+
+    #[test]
+    fn wdog_enable_replaces_a_running_heartbeat() {
+        let (conn, _fw) = open(DeviceModel::default());
+        let mut inner = inner_with(conn);
+        let old = running_heartbeat(&mut inner);
+        let starts = Starts::default();
+        set_watchdog(&mut inner, 200, starts.starter()).unwrap();
+        assert!(old.load(Ordering::Relaxed), "the old heartbeat is stopped");
+        assert_eq!(starts.timeouts(), [200]);
+    }
+
+    #[test]
+    fn wdog_disable_stops_the_heartbeat_and_starts_none() {
+        let (conn, fw) = open(DeviceModel {
+            wdog_ms: 500,
+            ..DeviceModel::default()
+        });
+        let mut inner = inner_with(conn);
+        let old = running_heartbeat(&mut inner);
+        let starts = Starts::default();
+        set_watchdog(&mut inner, 0, starts.starter()).unwrap();
+        assert_eq!(fw.commands(), ["wdog 0"]);
+        assert!(old.load(Ordering::Relaxed));
+        assert!(starts.timeouts().is_empty());
+        assert!(inner.heartbeat_stop.is_none());
+    }
+
+    #[test]
+    fn wdog_refused_by_the_device_leaves_the_heartbeat_alone() {
+        let (conn, _fw) = open(DeviceModel {
+            refuse: vec!["wdog"],
+            ..DeviceModel::default()
+        });
+        let mut inner = inner_with(conn);
+        let old = running_heartbeat(&mut inner);
+        let starts = Starts::default();
+        let error = set_watchdog(&mut inner, 500, starts.starter()).unwrap_err();
+        assert!(error.contains("BAD_PARAM"), "{error}");
+        assert!(!old.load(Ordering::Relaxed), "the old watchdog still runs");
+        assert!(starts.timeouts().is_empty());
+    }
+
+    #[test]
+    fn wdog_whose_heartbeat_cannot_start_is_switched_off_again() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = inner_with(conn);
+        let error = set_watchdog(&mut inner, 500, failing_starter).unwrap_err();
+        assert!(error.contains("heartbeat thread failed"), "{error}");
+        // A watchdog nobody feeds would trip the device; it is disabled.
+        assert_eq!(fw.commands(), ["wdog 500", "wdog 0"]);
+        assert!(inner.heartbeat_stop.is_none());
+    }
+
+    #[test]
+    fn wdog_whose_heartbeat_cannot_start_reports_a_failed_revert_too() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = inner_with(conn);
+        // The revert is the second `wdog`; make the device refuse it by
+        // refusing "wdog 0" only.
+        fw.model.lock().unwrap().refuse = vec!["wdog 0"];
+        let error = set_watchdog(&mut inner, 500, failing_starter).unwrap_err();
+        assert!(error.contains("heartbeat thread failed"), "{error}");
+        assert!(error.contains("could not be disabled"), "{error}");
+    }
+
+    // --- apply_safety ---
+
+    fn config(watchdog_ms: u32) -> SafetyConfig {
+        SafetyConfig {
+            watchdog_ms,
+            usbsafe: true,
+            groups: vec![0x3, 0xc],
+        }
+    }
+
+    #[test]
+    fn apply_safety_starts_the_heartbeat_for_the_applied_watchdog() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = inner_with(conn);
+        let starts = Starts::default();
+        let applied = apply_and_follow(&mut inner, &config(300), starts.starter()).unwrap();
+        assert_eq!(applied.wdog_ms, 300);
+        assert_eq!(starts.timeouts(), [300]);
+        assert_eq!(
+            fw.commands()[..3],
+            ["excl set 0x3 0xc", "usbsafe on", "wdog 300"]
+        );
+    }
+
+    #[test]
+    fn apply_safety_without_a_watchdog_stops_the_running_heartbeat() {
+        let (conn, _fw) = open(DeviceModel {
+            wdog_ms: 500,
+            ..DeviceModel::default()
+        });
+        let mut inner = inner_with(conn);
+        let old = running_heartbeat(&mut inner);
+        let starts = Starts::default();
+        apply_and_follow(&mut inner, &config(0), starts.starter()).unwrap();
+        assert!(old.load(Ordering::Relaxed));
+        assert!(starts.timeouts().is_empty());
+        assert!(inner.heartbeat_stop.is_none());
+    }
+
+    #[test]
+    fn failed_apply_aligns_the_heartbeat_with_the_real_watchdog() {
+        // `usbsafe` is refused after `excl set` went through; the device
+        // still has the watchdog it had before (250 ms).
+        let (conn, fw) = open(DeviceModel {
+            wdog_ms: 250,
+            refuse: vec!["usbsafe"],
+            ..DeviceModel::default()
+        });
+        let mut inner = inner_with(conn);
+        let old = running_heartbeat(&mut inner);
+        let starts = Starts::default();
+        let error = apply_and_follow(&mut inner, &config(300), starts.starter()).unwrap_err();
+        assert!(error.contains("BAD_PARAM"), "{error}");
+        assert!(!error.contains("heartbeat not aligned"), "{error}");
+        assert!(old.load(Ordering::Relaxed), "the old heartbeat is replaced");
+        assert_eq!(starts.timeouts(), [250]);
+        assert_eq!(fw.commands().last().map(String::as_str), Some("safety"));
+    }
+
+    #[test]
+    fn failed_apply_that_cannot_read_safety_reports_both() {
+        let (conn, _fw) = open(DeviceModel {
+            refuse: vec!["usbsafe", "safety"],
+            ..DeviceModel::default()
+        });
+        let mut inner = inner_with(conn);
+        let starts = Starts::default();
+        let error = apply_and_follow(&mut inner, &config(300), starts.starter()).unwrap_err();
+        assert!(error.contains("BAD_PARAM"), "{error}");
+        assert!(error.contains("heartbeat not aligned"), "{error}");
+        assert!(starts.timeouts().is_empty());
+    }
+
+    // --- connect ---
+
+    #[test]
+    fn attach_keeps_an_already_enabled_watchdog_fed() {
+        let (conn, _fw) = open(DeviceModel {
+            wdog_ms: 250,
+            ..DeviceModel::default()
+        });
+        let mut inner = AppInner::default();
+        let starts = Starts::default();
+        attach(&mut inner, conn, device_info(), true, starts.starter()).unwrap();
+        assert_eq!(starts.timeouts(), [250]);
+        assert!(inner.connection.is_some() && inner.device_info.is_some());
+        assert!(inner.heartbeat_stop.is_some());
+    }
+
+    #[test]
+    fn attach_to_a_device_without_watchdog_sends_nothing() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = AppInner::default();
+        let starts = Starts::default();
+        attach(&mut inner, conn, device_info(), false, starts.starter()).unwrap();
+        assert!(fw.commands().is_empty());
+        assert!(starts.timeouts().is_empty());
+        assert!(inner.connection.is_some());
+    }
+
+    #[test]
+    fn attach_with_a_disabled_watchdog_starts_no_heartbeat() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = AppInner::default();
+        let starts = Starts::default();
+        attach(&mut inner, conn, device_info(), true, starts.starter()).unwrap();
+        assert_eq!(fw.commands(), ["safety"]);
+        assert!(starts.timeouts().is_empty());
+        assert!(inner.heartbeat_stop.is_none());
+    }
+
+    #[test]
+    fn attach_that_cannot_align_the_heartbeat_drops_the_connection() {
+        let (conn, _fw) = open(DeviceModel {
+            wdog_ms: 250,
+            ..DeviceModel::default()
+        });
+        let mut inner = AppInner::default();
+        let error = attach(&mut inner, conn, device_info(), true, failing_starter).unwrap_err();
+        assert!(error.contains("heartbeat thread failed"), "{error}");
+        assert!(inner.connection.is_none() && inner.device_info.is_none());
+        assert!(inner.heartbeat_stop.is_none());
+    }
+
+    fn device_info() -> DeviceInfo {
+        DeviceInfo {
+            uid: "0123456789ABCDEF".to_string(),
+            device_number: None,
+            port: "fake".to_string(),
+            version: Some("0.1.3".to_string()),
+        }
     }
 }
