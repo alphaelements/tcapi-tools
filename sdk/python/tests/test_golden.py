@@ -10,10 +10,17 @@ from collections import Counter
 import pytest
 
 from pochi import protocol
-from pochi.errors import InvalidArgumentError
+from pochi.errors import (
+    ExclusiveError,
+    InvalidArgumentError,
+    ParseError,
+    UnknownDeviceError,
+)
 from pochi.protocol import parse_response
 from pochi.transport import Transport
 from pochi.types import (
+    FEATURE_MASK,
+    FailsafeCause,
     PatternState,
     PatternStep,
     PinMap,
@@ -38,7 +45,7 @@ def form_of(request: str) -> str:
     if not words:
         return ""
     first = words[0].lower()
-    if first in ("map", "pattern", "ts", "sync", "subscribe"):
+    if first in ("map", "pattern", "ts", "sync", "subscribe", "excl"):
         return " ".join(w.lower() for w in words[:2])
     return first
 
@@ -57,7 +64,7 @@ def check_ok(form: str, data: str, lines: list[str], seen: set[str]) -> None:
         )
         # The transcripts describe the firmware of their revision: pin neither the
         # value nor its history, only that it stays within the defined bits (0..=7).
-        assert c.features & ~0xFF == 0 and c.has_sync() and c.has_reset()
+        assert c.features & ~FEATURE_MASK == 0 and c.has_sync() and c.has_reset()
         assert c.out + c.in_ == c.dio
     elif form == "info":
         assert protocol.parse_info(data)[0] == "0000000000000000"
@@ -90,11 +97,22 @@ def check_ok(form: str, data: str, lines: list[str], seen: set[str]) -> None:
         protocol.parse_sync_count(data)
     elif form == "help":
         assert len(lines) == protocol.parse_count_field(data)
+    elif form == "safety":
+        st = protocol.parse_safety(data)
+        assert st.failsafe == (st.cause is not FailsafeCause.NONE), data
+    elif form == "excl get":
+        for mask in protocol.parse_excl_get(data, lines):
+            assert mask.bit_count() >= 2, data
+    elif form == "rstinfo":
+        protocol.parse_rstinfo(data)
+    elif form == "pads":
+        protocol.parse_pads(data)
     elif form in {
         "devnum", "map set", "map save", "map default", "write", "pattern run",
         "pattern stop", "pattern reset", "ts arm", "ts disarm", "subscribe on",
         "subscribe off", "sync arm", "sync master", "sync start", "sync stop",
-        "sync disarm", "reset", "bootsel",
+        "sync disarm", "reset", "bootsel", "wdog", "failsafe", "outputs", "excl set",
+        "excl clear", "usbsafe",
     }:  # fmt: skip
         assert data == "", f"bare OK expected for {form!r}"
     else:
@@ -118,10 +136,16 @@ def test_every_golden_response_parses():
             header = parse_response(step.response[0])
             if header.kind == "err":
                 err = protocol.from_error_code(header.data)
-                assert type(err).__name__ != "UnknownDeviceError", (
-                    f"{case.file}.txt:{step.line_no}: {header.data} has no typed error"
+                where = f"{case.file}.txt:{step.line_no}"
+                assert not isinstance(err, (UnknownDeviceError, ParseError)), (
+                    f"{where}: {header.data} has no typed error ({err})"
                 )
-                seen_errors[header.data] += 1
+                # `ERR EXCLUSIVE group=<i> mask=0x%08x` hands both values to the caller.
+                if isinstance(err, ExclusiveError):
+                    assert header.data == (
+                        f"EXCLUSIVE group={err.group} mask=0x{err.mask:08x}"
+                    ), where
+                seen_errors[header.data.split()[0]] += 1
             else:
                 try:
                     check_ok(
@@ -137,14 +161,17 @@ def test_every_golden_response_parses():
     assert ok_lines > 500
     assert {"version", "caps", "info", "ping", "read", "state", "map get", "map set",
             "pattern add", "pattern status", "ts get", "ts status", "sync count", "help",
-            "devnum", "write"} <= seen_forms  # fmt: skip
+            "devnum", "write", "wdog", "safety", "failsafe", "outputs", "excl set",
+            "excl clear", "excl get", "usbsafe", "rstinfo", "pads"} <= seen_forms  # fmt: skip
     assert seen_events == {
         "InputChangeEvent",
         "PatternDoneEvent",
         "PatternTimeoutEvent",
+        "FailsafeEvent",
     }
     for code in ("BAD_PARAM", "BAD_MAP", "BUSY", "FLASH", "TOO_LONG", "NOT_ARMED",
-                 "SYNC_STATE", "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG"):  # fmt: skip
+                 "SYNC_STATE", "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG",
+                 "FAILSAFE", "EXCLUSIVE"):  # fmt: skip
         assert seen_errors[code] > 0, f"golden never exercised {code}"
 
 

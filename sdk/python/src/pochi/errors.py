@@ -4,6 +4,8 @@ distinct, catchable exception class (docs/sdk-api-design.md section 4)."""
 
 from __future__ import annotations
 
+import re
+
 
 class SdkError(Exception):
     """Base class for all SDK errors."""
@@ -69,6 +71,34 @@ class LineTooLongError(SdkError):
     code = "LINE_TOO_LONG"
 
 
+class FailsafeError(SdkError):
+    """``ERR FAILSAFE``: the failsafe latch is set and the command would
+    move an output away from its ``def``. Check ``safety``, then
+    ``failsafe clear``."""
+
+    code = "FAILSAFE"
+
+    def __init__(self) -> None:
+        super().__init__("device error: FAILSAFE (failsafe latch is set)")
+
+
+class ExclusiveError(SdkError):
+    """``ERR EXCLUSIVE group=<i> mask=0x%08x``: the instruction would put
+    two or more pins of an exclusive group ON."""
+
+    code = "EXCLUSIVE"
+
+    def __init__(self, group: int, mask: int) -> None:
+        super().__init__(
+            f"device error: EXCLUSIVE (exclusive group {group} would be "
+            f"violated, mask {mask:#010x})"
+        )
+        #: 0-based index of the first violating group.
+        self.group = group
+        #: The pin mask of that group.
+        self.mask = mask
+
+
 class TransportNotSupportedError(SdkError):
     """``ERR TRANSPORT_NOT_SUPPORTED``: HID only; a text device never
     answers it."""
@@ -91,6 +121,19 @@ class ConnectionError_(SdkError):  # trailing _ avoids shadowing builtins
 
 class IoError(SdkError):
     code = "IO"
+
+
+class SafetyMismatchError(SdkError):
+    """The ``safety`` / ``excl get`` read-back after ``apply_safety``
+    differs from the applied settings; the message lists every
+    difference."""
+
+    code = "SAFETY_MISMATCH"
+
+    def __init__(self, differences: str) -> None:
+        super().__init__(
+            f"safety read-back differs from the applied settings: {differences}"
+        )
 
 
 class ParseError(SdkError):
@@ -158,12 +201,59 @@ _DEVICE_ERRORS: dict[str, tuple[type[SdkError], str]] = {
 }
 
 
+_U32_MAX = 0xFFFFFFFF
+_U8_MAX = 0xFF
+_DEC = re.compile(r"[0-9]+")
+_HEX = re.compile(r"0[xX][0-9a-fA-F]+")
+
+
+def _exclusive(code: str, data: list[str]) -> SdkError:
+    """``ERR EXCLUSIVE`` reads ``group=`` (decimal u8) and ``mask=``
+    (decimal or ``0x`` hex u32) from its data tokens, in any order, ignoring
+    other tokens. A line without both is a protocol violation: a
+    :class:`ParseError`, never default values."""
+    group: int | None = None
+    mask: int | None = None
+    for token in data:
+        key, sep, value = token.partition("=")
+        if not sep:
+            continue
+        if key == "group" and group is None:
+            if _DEC.fullmatch(value) and int(value) <= _U8_MAX:
+                group = int(value)
+        elif key == "mask" and mask is None:
+            if _HEX.fullmatch(value):
+                number = int(value, 16)
+            elif _DEC.fullmatch(value):
+                number = int(value)
+            else:
+                continue
+            if number <= _U32_MAX:
+                mask = number
+    if group is None or mask is None:
+        return ParseError(
+            f"malformed ERR EXCLUSIVE (expected group=<i> mask=0x%08x): ERR {code}"
+        )
+    return ExclusiveError(group, mask)
+
+
 def from_error_code(code: str) -> SdkError:
-    """Map an ``ERR <code>`` response to a typed error. A name the protocol
-    does not define is preserved verbatim (``UnknownDeviceError``), never
-    mapped to a default."""
-    entry = _DEVICE_ERRORS.get(code)
+    """Map the text after ``ERR `` to a typed error.
+
+    The first whitespace-separated token is the error name; further
+    ``key=value`` tokens are data and never make the line unparseable
+    (protocol-reference.md section 3). ``EXCLUSIVE`` reads its ``group=`` and
+    ``mask=`` data; for other known names the data tokens are ignored. A name
+    the protocol does not define is preserved verbatim, with the whole text
+    (``UnknownDeviceError``), never mapped to a default."""
+    tokens = code.split()
+    name = tokens[0] if tokens else ""
+    if name == "FAILSAFE":
+        return FailsafeError()
+    if name == "EXCLUSIVE":
+        return _exclusive(code, tokens[1:])
+    entry = _DEVICE_ERRORS.get(name)
     if entry is not None:
         cls, hint = entry
-        return cls(f"device error: {code} ({hint})")
+        return cls(f"device error: {name} ({hint})")
     return UnknownDeviceError(f"device error: {code}")

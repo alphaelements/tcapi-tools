@@ -1,2 +1,3 @@
 # Production dependencies (pinned). Dev tools live in pyproject [dev].
 pyserial==3.5
+tomli==2.4.1; python_version < "3.11"

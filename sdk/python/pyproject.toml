@@ -10,6 +10,8 @@ license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "pyserial>=3.5",
+    # TOML parsing for safety.toml; the standard library has it from 3.11.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
