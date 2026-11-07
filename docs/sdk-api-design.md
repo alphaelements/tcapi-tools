@@ -825,6 +825,25 @@ same rules as every other command. A line longer than 256 bytes is rejected
 locally (`InvalidArgument`). `subscribe` is rejected the same way: the SDK owns the subscription. This is the
 only way applications send protocol text; REPL front-ends use it.
 
+### Safety API by language
+
+All four SDKs implement the rules of *Safety Commands*, *Heartbeat* and *Error
+Handling* above. The spelling follows each language; the behaviour is the same.
+
+| | Rust | Python | TypeScript | C# |
+|---|---|---|---|---|
+| commands | `wdog` `safety` `failsafe_clear` `outputs_reset` `excl_set/_clear/_get` `usbsafe` `rstinfo` `pads` | same names, `snake_case` | `wdog` `safety` `failsafeClear` `outputsReset` `exclSet/exclClear/exclGet` `usbsafe` `rstinfo` `pads` (async) | `Wdog` `Safety` `FailsafeClear` `OutputsReset` `Excl*` `UsbSafe` `RstInfo` `Pads` |
+| apply a file | `Connection::apply_safety(&SafetyConfig)` | `apply_safety(config)` | `applySafety(config)` | `ApplySafety(config)` |
+| parse a file | `config::parse_safety` / `load_safety` | `parse_safety` / `load_safety` | `parseSafety(src, file)` / `loadSafety(path)` | `Config.ParseSafety(src, file)` / `LoadSafety(path)` |
+| config error | `ConfigError { file, line, message }` | `ConfigError` (`.file`, `.line`, `.message`; `.message` is the bare reason, `str()` is `file:line: reason`) | `ConfigError { file, line, reason }` | `ConfigException` |
+| heartbeat | `start_heartbeat(timeout_ms)` | `start_heartbeat(...)`: callback `on_failure`, `try_failure()`, `wait_failure()`, `raise_if_failed()` | `startHeartbeat(timeoutMs)`: an `EventEmitter` | `StartHeartbeat(timeoutMs)`: `IDisposable` |
+| failsafe push event | `PushEvent::Failsafe` | `FailsafeEvent` | `failsafe` event | `FailsafeEvent` |
+| refusal errors | `Failsafe`, `Exclusive { group, mask }`, `SafetyMismatch` | `FailsafeError`, `ExclusiveError(group, mask)`, `SafetyMismatchError` | `ErrorCode.Failsafe` / `Exclusive` / `SafetyMismatch` | `ErrorCode.Failsafe` / `Exclusive` / `SafetyMismatch`, `ExclusiveException { Group, Mask }` |
+
+The heartbeat period is `timeout / 4`, at most 1 s; a failure is reported once and
+never retried; closing the connection stops it without sending anything and never
+changes the outputs.
+
 ### Config Files (Rust)
 
 ```rust
@@ -1046,8 +1065,17 @@ any token order, unknown extra tokens ignored); an `ERR EXCLUSIVE` line without
 both is a protocol violation and is reported as `Parse`, not with default
 values. Data tokens after any other known name are ignored.
 
+The names above are the cross-language vocabulary. **Rust folds two of them**:
+`UNKNOWN_CMD` and `BAD_CMD` both become `BadCommand`, and `LINE_TOO_LONG` becomes
+`TooLong`. Python, TypeScript and C# keep `UnknownCmd`, `LineTooLong` and
+`BadCommand` apart (`UnknownCmdError` / `LineTooLongError` / `BadCommandError` in
+Python, `ErrorCode.UnknownCmd` / `LineTooLong` / `BadCommand` in TypeScript and C#).
+Callers that must behave the same in every language match on the wire name
+(`ERR UNKNOWN_CMD`), not on the variant.
+
 There is no `SYNC_TIMEOUT` error: a slave that sees no sync edge returns to
-idle without reporting an error.
+idle without reporting an error. (Rust still carries a `SyncTimeout` variant that
+the device never produces.)
 
 ### SDK-Specific Errors
 
