@@ -10,8 +10,10 @@
 
 use crate::error::{Result, SdkError};
 use crate::types::{
-    check_dio_mask, Capabilities, EdgeMode, IoState, PatternMode, PatternState, PatternStatus,
-    PatternStep, PinMap, PushEvent, TimestampEvent, TsStatus, VersionInfo,
+    check_dio_mask, Capabilities, EdgeMode, FailsafeCause, IoState, Pads, PatternMode,
+    PatternState, PatternStatus, PatternStep, PinMap, PushEvent, ResetCause, ResetInfo,
+    SafetyState, TimestampEvent, TsStatus, VersionInfo, MAX_EXCLUSIVE_GROUPS, WDOG_MAX_MS,
+    WDOG_MIN_MS,
 };
 
 /// Longest request line the device accepts, excluding the CR/LF terminator
@@ -80,7 +82,7 @@ pub fn parse_count_field(ok_data: &str) -> Result<u64> {
 
 /// Parse a number given as decimal or `0x` hex. Digits only: no sign, no
 /// whitespace, no empty digit string.
-fn parse_u32_hex_or_dec(s: &str) -> Result<u32> {
+pub(crate) fn parse_u32_hex_or_dec(s: &str) -> Result<u32> {
     let invalid = |what: &str| SdkError::Parse(format!("invalid {what}: {s}"));
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -447,6 +449,124 @@ pub fn parse_sync_count(data: &str) -> Result<u64> {
 
 // --- push events ---
 
+// --- safety functions ---
+
+/// `wdog <ms>`: `0` disables the watchdog, `100..=10000` enables it. Any
+/// other value is refused before sending (the device answers `BAD_PARAM`).
+pub fn wdog_command(ms: u32) -> Result<String> {
+    if ms != 0 && !(WDOG_MIN_MS..=WDOG_MAX_MS).contains(&ms) {
+        return Err(SdkError::InvalidArgument(format!(
+            "watchdog timeout {ms} ms must be 0 or between {WDOG_MIN_MS} and {WDOG_MAX_MS}"
+        )));
+    }
+    Ok(format!("wdog {ms}"))
+}
+
+/// `usbsafe on|off`.
+pub fn usbsafe_command(on: bool) -> String {
+    format!("usbsafe {}", if on { "on" } else { "off" })
+}
+
+/// `excl set <mask>...`: 1 to 16 groups, each a subset of the DIO pins with
+/// at least 2 bits. That every pin is an *output* depends on the active map
+/// and is checked by the device.
+pub fn excl_set_command(masks: &[u32]) -> Result<String> {
+    if masks.is_empty() || masks.len() > MAX_EXCLUSIVE_GROUPS {
+        return Err(SdkError::InvalidArgument(format!(
+            "excl set takes 1 to {MAX_EXCLUSIVE_GROUPS} groups, got {}",
+            masks.len()
+        )));
+    }
+    for (i, mask) in masks.iter().enumerate() {
+        check_dio_mask(&format!("exclusive group {i} mask"), *mask)?;
+        if mask.count_ones() < 2 {
+            return Err(SdkError::InvalidArgument(format!(
+                "exclusive group {i} mask {mask:#010x} needs at least 2 pins"
+            )));
+        }
+    }
+    let words: Vec<String> = masks.iter().map(|m| format!("{m:#x}")).collect();
+    Ok(format!("excl set {}", words.join(" ")))
+}
+
+/// Parse the `safety` response
+/// `wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0`.
+/// The latch and its cause must agree: `failsafe=1` has a cause other than
+/// `none`, `failsafe=0` has cause `none`.
+pub fn parse_safety(data: &str) -> Result<SafetyState> {
+    let f = Fields::parse(
+        "safety",
+        data,
+        &[
+            "wdog_ms",
+            "remaining_ms",
+            "failsafe",
+            "cause",
+            "usbsafe",
+            "excl",
+        ],
+    )?;
+    let cause = FailsafeCause::from_name(f.raw("cause")?).ok_or_else(|| f.invalid("cause"))?;
+    let failsafe = f.flag("failsafe")?;
+    if failsafe == (cause == FailsafeCause::None) {
+        return Err(SdkError::Parse(format!(
+            "failsafe latch and cause disagree in safety: {data}"
+        )));
+    }
+    let excl: u8 = f.dec("excl")?;
+    if usize::from(excl) > MAX_EXCLUSIVE_GROUPS {
+        return Err(f.invalid("excl"));
+    }
+    Ok(SafetyState {
+        wdog_ms: f.dec("wdog_ms")?,
+        remaining_ms: f.dec("remaining_ms")?,
+        failsafe,
+        cause,
+        usbsafe: f.flag("usbsafe")?,
+        excl,
+    })
+}
+
+/// Parse the `rstinfo` response `cause=por uptime_ms=0 boot=0x00000001`.
+pub fn parse_rstinfo(data: &str) -> Result<ResetInfo> {
+    let f = Fields::parse("rstinfo", data, &["cause", "uptime_ms", "boot"])?;
+    Ok(ResetInfo {
+        cause: ResetCause::from_name(f.raw("cause")?).ok_or_else(|| f.invalid("cause"))?,
+        uptime_ms: f.dec("uptime_ms")?,
+        boot: f.mask("boot")?,
+    })
+}
+
+/// Parse the `pads` response `out=0x00000005 pad=0x00000005`.
+pub fn parse_pads(data: &str) -> Result<Pads> {
+    let f = Fields::parse("pads", data, &["out", "pad"])?;
+    Ok(Pads {
+        out: f.mask("out")?,
+        pad: f.mask("pad")?,
+    })
+}
+
+/// Parse the counted `excl get` response: the header `count=<n>` and `n`
+/// lines `  mask=0x%08x`, in the order the groups were set.
+pub fn parse_excl_get(header: &str, lines: &[String]) -> Result<Vec<u32>> {
+    let count: usize = Fields::parse("excl get", header, &["count"])?.dec("count")?;
+    if count > MAX_EXCLUSIVE_GROUPS {
+        return Err(SdkError::Parse(format!(
+            "excl get announced {count} groups, the device holds at most {MAX_EXCLUSIVE_GROUPS}"
+        )));
+    }
+    if count != lines.len() {
+        return Err(SdkError::Parse(format!(
+            "excl get header announced {count} groups but {} lines were read",
+            lines.len()
+        )));
+    }
+    lines
+        .iter()
+        .map(|line| Fields::parse("excl get line", line.trim(), &["mask"])?.mask("mask"))
+        .collect()
+}
+
 /// Parse the payload of a push line (after `! `).
 ///
 /// A recognized event with malformed fields is an error. Unknown event names
@@ -469,6 +589,16 @@ pub fn parse_push_event(payload: &str) -> Result<PushEvent> {
         "PATTERN_TIMEOUT" => Ok(PushEvent::PatternTimeout {
             loops: Fields::parse("PATTERN_TIMEOUT event", rest, &["loops"])?.dec("loops")?,
         }),
+        "FAILSAFE" => {
+            let f = Fields::parse("FAILSAFE event", rest, &["cause"])?;
+            // A trip always has a cause; `none` is only the idle `safety` value.
+            match FailsafeCause::from_name(f.raw("cause")?) {
+                Some(cause @ (FailsafeCause::Wdog | FailsafeCause::Usb)) => {
+                    Ok(PushEvent::Failsafe { cause })
+                }
+                _ => Err(f.invalid("cause")),
+            }
+        }
         _ => Ok(PushEvent::Unknown {
             raw: trimmed.to_string(),
         }),
@@ -1174,5 +1304,215 @@ mod tests {
         assert_matches!(ev, PushEvent::Unknown { ref raw } if raw.starts_with("SYNC_DONE"));
         let ev = parse_push_event("FUTURE_EVENT data=1").unwrap();
         assert_matches!(ev, PushEvent::Unknown { ref raw } if raw == "FUTURE_EVENT data=1");
+    }
+
+    // --- safety functions ---
+
+    #[test]
+    fn safety_state_parses_every_golden_shape() {
+        let st = parse_safety("wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0")
+            .unwrap();
+        assert_eq!(
+            st,
+            SafetyState {
+                wdog_ms: 0,
+                remaining_ms: 0,
+                failsafe: false,
+                cause: FailsafeCause::None,
+                usbsafe: false,
+                excl: 0,
+            }
+        );
+        let st =
+            parse_safety("wdog_ms=500 remaining_ms=377 failsafe=0 cause=none usbsafe=1 excl=16")
+                .unwrap();
+        assert_eq!(
+            (st.wdog_ms, st.remaining_ms, st.usbsafe, st.excl),
+            (500, 377, true, 16)
+        );
+        let st = parse_safety("wdog_ms=100 remaining_ms=0 failsafe=1 cause=wdog usbsafe=0 excl=0")
+            .unwrap();
+        assert!(st.failsafe);
+        assert_eq!(st.cause, FailsafeCause::Wdog);
+        let st =
+            parse_safety("wdog_ms=0 remaining_ms=0 failsafe=1 cause=usb usbsafe=1 excl=0").unwrap();
+        assert_eq!(st.cause, FailsafeCause::Usb);
+    }
+
+    #[test]
+    fn safety_state_rejects_malformed_responses() {
+        for bad in [
+            "",
+            "wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0",
+            "wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0 extra=1",
+            "wdog_ms=x remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0",
+            "wdog_ms=0 remaining_ms=0 failsafe=2 cause=none usbsafe=0 excl=0",
+            "wdog_ms=0 remaining_ms=0 failsafe=0 cause=other usbsafe=0 excl=0",
+            "wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=17",
+            "wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=256",
+            // The latch and its cause must agree.
+            "wdog_ms=0 remaining_ms=0 failsafe=1 cause=none usbsafe=0 excl=0",
+            "wdog_ms=0 remaining_ms=0 failsafe=0 cause=wdog usbsafe=0 excl=0",
+        ] {
+            assert_matches!(parse_safety(bad), Err(SdkError::Parse(_)), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rstinfo_parses_every_cause() {
+        for (name, cause) in [
+            ("por", ResetCause::Por),
+            ("wdt", ResetCause::Wdt),
+            ("soft", ResetCause::Soft),
+            ("bor", ResetCause::Bor),
+            ("other", ResetCause::Other),
+        ] {
+            let info =
+                parse_rstinfo(&format!("cause={name} uptime_ms=5000 boot=0x00000002")).unwrap();
+            assert_eq!(
+                info,
+                ResetInfo {
+                    cause,
+                    uptime_ms: 5000,
+                    boot: 2
+                }
+            );
+        }
+        // uptime is 64-bit.
+        let info = parse_rstinfo("cause=por uptime_ms=18446744073709551615 boot=0x1").unwrap();
+        assert_eq!(info.uptime_ms, u64::MAX);
+    }
+
+    #[test]
+    fn rstinfo_rejects_malformed_responses() {
+        for bad in [
+            "cause=reset uptime_ms=0 boot=0x1",
+            "cause=por uptime_ms=-1 boot=0x1",
+            "cause=por uptime_ms=18446744073709551616 boot=0x1",
+            "cause=por uptime_ms=0",
+            "cause=por uptime_ms=0 boot=zz",
+            "cause=por uptime_ms=0 boot=0x1 more=1",
+        ] {
+            assert_matches!(parse_rstinfo(bad), Err(SdkError::Parse(_)), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pads_parse_and_reject() {
+        assert_eq!(
+            parse_pads("out=0x00000005 pad=0x00000001").unwrap(),
+            Pads { out: 5, pad: 1 }
+        );
+        for bad in ["out=0x5", "out=0x5 pad=zz", "pad=0x1 out=0x5 x=1", ""] {
+            assert_matches!(parse_pads(bad), Err(SdkError::Parse(_)), "{bad}");
+        }
+        // Key order is free.
+        assert_eq!(
+            parse_pads("pad=0x2 out=0x4").unwrap(),
+            Pads { out: 4, pad: 2 }
+        );
+    }
+
+    #[test]
+    fn excl_get_reads_the_counted_masks_in_order() {
+        let masks = parse_excl_get(
+            "count=2",
+            &[
+                "  mask=0x0000000c".to_string(),
+                "  mask=0x00000018".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(masks, [0xc, 0x18]);
+        assert!(parse_excl_get("count=0", &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn excl_get_rejects_inconsistent_responses() {
+        let one = ["  mask=0x3".to_string()];
+        assert_matches!(parse_excl_get("count=2", &one), Err(SdkError::Parse(_)));
+        assert_matches!(parse_excl_get("count=0", &one), Err(SdkError::Parse(_)));
+        assert_matches!(parse_excl_get("count=17", &[]), Err(SdkError::Parse(_)));
+        assert_matches!(parse_excl_get("count=x", &[]), Err(SdkError::Parse(_)));
+        assert_matches!(
+            parse_excl_get("count=1", &["  mask=zz".to_string()]),
+            Err(SdkError::Parse(_))
+        );
+        assert_matches!(
+            parse_excl_get("count=1", &["  bits=0x3".to_string()]),
+            Err(SdkError::Parse(_))
+        );
+        assert_matches!(
+            parse_excl_get("count=1 overflow=0", &one),
+            Err(SdkError::Parse(_))
+        );
+    }
+
+    #[test]
+    fn wdog_command_accepts_zero_and_the_documented_range() {
+        assert_eq!(wdog_command(0).unwrap(), "wdog 0");
+        assert_eq!(wdog_command(100).unwrap(), "wdog 100");
+        assert_eq!(wdog_command(10_000).unwrap(), "wdog 10000");
+        for bad in [1, 99, 10_001, u32::MAX] {
+            assert_matches!(
+                wdog_command(bad),
+                Err(SdkError::InvalidArgument(_)),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn excl_set_command_checks_groups_before_sending() {
+        assert_eq!(excl_set_command(&[0xc]).unwrap(), "excl set 0xc");
+        assert_eq!(excl_set_command(&[0xc, 0x18]).unwrap(), "excl set 0xc 0x18");
+        // 16 groups are the maximum; groups may overlap.
+        let sixteen = vec![0x3u32; 16];
+        assert_eq!(
+            excl_set_command(&sixteen).unwrap().matches("0x3").count(),
+            16
+        );
+        assert_matches!(excl_set_command(&[]), Err(SdkError::InvalidArgument(_)));
+        assert_matches!(
+            excl_set_command(&[0x3u32; 17]),
+            Err(SdkError::InvalidArgument(_))
+        );
+        // Fewer than 2 pins, and pins outside VALID_DIO_MASK.
+        for bad in [0u32, 0x1, 0x8000_0000, 0x0080_0003, 0x1000_0003] {
+            assert_matches!(
+                excl_set_command(&[bad]),
+                Err(SdkError::InvalidArgument(_)),
+                "{bad:#x}"
+            );
+        }
+        // The second group is the faulty one.
+        assert_matches!(
+            excl_set_command(&[0x3, 0x1]),
+            Err(SdkError::InvalidArgument(m)) if m.contains("group 1")
+        );
+    }
+
+    #[test]
+    fn push_failsafe_event() {
+        assert_matches!(
+            parse_push_event("FAILSAFE cause=wdog").unwrap(),
+            PushEvent::Failsafe {
+                cause: FailsafeCause::Wdog
+            }
+        );
+        assert_matches!(
+            parse_push_event("FAILSAFE cause=usb").unwrap(),
+            PushEvent::Failsafe {
+                cause: FailsafeCause::Usb
+            }
+        );
+        for bad in [
+            "FAILSAFE",
+            "FAILSAFE cause=none",
+            "FAILSAFE cause=disk",
+            "FAILSAFE cause=wdog x=1",
+        ] {
+            assert_matches!(parse_push_event(bad), Err(SdkError::Parse(_)), "{bad}");
+        }
     }
 }

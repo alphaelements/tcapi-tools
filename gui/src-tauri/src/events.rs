@@ -50,6 +50,7 @@ pub fn route(event: &PushEvent) -> (&'static str, Value) {
         PushEvent::PatternTimeout { loops } => {
             ("pochi://pattern-timeout", json!({ "loops": loops }))
         }
+        PushEvent::Failsafe { cause } => ("pochi://failsafe", json!({ "cause": cause.as_str() })),
         PushEvent::Unknown { raw } => ("pochi://unknown-event", json!({ "raw": raw })),
     }
 }
@@ -101,6 +102,15 @@ mod tests {
         let (name, payload) = route(&PushEvent::PatternDone { loops: 3 });
         assert_eq!(name, "pochi://pattern-done");
         assert_eq!(payload["loops"], 3);
+    }
+
+    #[test]
+    fn failsafe_routes_with_its_cause() {
+        let (name, payload) = route(&PushEvent::Failsafe {
+            cause: pochi_sdk::FailsafeCause::Wdog,
+        });
+        assert_eq!(name, "pochi://failsafe");
+        assert_eq!(payload["cause"], "wdog");
     }
 
     #[test]

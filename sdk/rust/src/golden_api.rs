@@ -275,6 +275,20 @@ fn dispatch(rig: &mut Rig, request: &str) -> Option<(&'static str, Call)> {
         ["sync", "disarm"] => ("sync_disarm", conn.sync_disarm()),
         ["sync", "count"] => ("sync_count", conn.sync_count().map(drop)),
         ["help"] => ("help", conn.help().map(drop)),
+        ["wdog", ms] => ("wdog", conn.wdog(num32(ms)?)),
+        ["safety"] => ("safety", conn.safety().map(drop)),
+        ["failsafe", "clear"] => ("failsafe_clear", conn.failsafe_clear()),
+        ["outputs", "reset"] => ("outputs_reset", conn.outputs_reset()),
+        ["excl", "set", masks @ ..] => {
+            let masks: Option<Vec<u32>> = masks.iter().map(|m| num32(m)).collect();
+            ("excl_set", conn.excl_set(&masks?))
+        }
+        ["excl", "clear"] => ("excl_clear", conn.excl_clear()),
+        ["excl", "get"] => ("excl_get", conn.excl_get().map(drop)),
+        ["usbsafe", "on"] => ("usbsafe", conn.usbsafe(true)),
+        ["usbsafe", "off"] => ("usbsafe", conn.usbsafe(false)),
+        ["rstinfo"] => ("rstinfo", conn.rstinfo().map(drop)),
+        ["pads"] => ("pads", conn.pads().map(drop)),
         ["reset"] => {
             let conn = rig.conn.take().expect("connection");
             ("system_reset", conn.system_reset())
@@ -401,6 +415,16 @@ fn typed_methods_agree_with_every_golden_exchange() {
         "help",
         "system_reset",
         "bootsel_reset",
+        "wdog",
+        "safety",
+        "failsafe_clear",
+        "outputs_reset",
+        "excl_set",
+        "excl_clear",
+        "excl_get",
+        "usbsafe",
+        "rstinfo",
+        "pads",
     ] {
         assert!(
             exercised.contains(method),

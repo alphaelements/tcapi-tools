@@ -6,8 +6,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use pochi_sdk::config::{load_map, load_pattern, parse_map, parse_pattern, ConfigError};
-use pochi_sdk::{PatternStep, PinMap, SdkError, VALID_DIO_MASK};
+use pochi_sdk::config::{
+    load_map, load_pattern, load_safety, parse_map, parse_pattern, parse_safety, ConfigError,
+};
+use pochi_sdk::{PatternStep, PinMap, SafetyConfig, SdkError, VALID_DIO_MASK};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/fixtures")
@@ -18,9 +20,6 @@ fn fixture_names() -> Vec<String> {
         .expect("docs/fixtures must exist")
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .filter(|n| n.ends_with(".toml"))
-        // `safety-*` fixtures belong to the safety.toml parser, not to `config`
-        // (map/pattern); `toml_v2_fixtures.rs` and the safety conformance test own them.
-        .filter(|n| !n.starts_with("safety-"))
         .collect();
     names.sort();
     assert!(names.len() >= 50, "fixture set looks truncated");
@@ -41,6 +40,22 @@ fn map_summary(m: &PinMap) -> String {
         "dir=0x{:08x} pull_up=0x{:08x} pull_down=0x{:08x} out_default=0x{:08x} \
          out_polarity=0x{:08x} in_polarity=0x{:08x} edge=0x{:08x}",
         m.direction, m.pull_up, m.pull_down, m.out_default, m.out_polarity, m.in_polarity, m.edge
+    )
+}
+
+/// `watchdog_ms=800 usbsafe=1 groups=0x0000000c,0x00000018` in the fixture's
+/// `# expected:` form.
+fn safety_summary(c: &SafetyConfig) -> String {
+    let groups = if c.groups.is_empty() {
+        "none".to_string()
+    } else {
+        let masks: Vec<_> = c.groups.iter().map(|m| format!("0x{m:08x}")).collect();
+        masks.join(",")
+    };
+    format!(
+        "watchdog_ms={} usbsafe={} groups={groups}",
+        c.watchdog_ms,
+        u8::from(c.usbsafe)
     )
 }
 
@@ -99,6 +114,29 @@ fn every_fixture_gives_the_documented_result() {
                     invalid += 1;
                 }
             }
+        } else if name.starts_with("safety-") {
+            match parse_safety(&src, name) {
+                Ok(cfg) => {
+                    assert!(!has_error, "{name}: expected an error, parsing succeeded");
+                    assert_eq!(
+                        annotations(&src, "expected"),
+                        [safety_summary(&cfg)],
+                        "{name}"
+                    );
+                    // DD-16: the apply order of the evaluated file.
+                    assert_eq!(
+                        cfg.commands().unwrap(),
+                        annotations(&src, "expected_command"),
+                        "{name}: apply commands"
+                    );
+                    valid += 1;
+                }
+                Err(err) => {
+                    assert!(has_error, "{name}: unexpected error {err}");
+                    expect_error(name, &src, &err);
+                    invalid += 1;
+                }
+            }
         } else {
             assert!(name.starts_with("pattern-"), "{name}: unexpected fixture");
             match parse_pattern(&src, name) {
@@ -120,7 +158,7 @@ fn every_fixture_gives_the_documented_result() {
         }
     }
     assert!(
-        valid >= 8 && invalid >= 40,
+        valid >= 18 && invalid >= 70,
         "valid={valid} invalid={invalid}"
     );
 }
@@ -184,6 +222,61 @@ fn load_reads_files_and_names_them_in_errors() {
     }
     assert!(matches!(
         load_map(&dir.join("no-such-file.toml")).unwrap_err(),
+        SdkError::Io(_)
+    ));
+}
+
+#[test]
+fn safety_parser_defaults_are_all_off() {
+    let cfg = parse_safety("version = 2\n", "s.toml").unwrap();
+    assert_eq!(cfg, SafetyConfig::default());
+    assert_eq!(cfg.watchdog_ms, 0);
+    assert!(!cfg.usbsafe);
+    assert!(cfg.groups.is_empty());
+}
+
+#[test]
+fn safety_parser_rejects_map_keys_and_the_map_parser_rejects_safety_keys() {
+    let err = parse_safety("version = 2\n[pins]\n", "s.toml").unwrap_err();
+    assert_eq!(err.message, "unknown key \"pins\"");
+    let err = parse_map("version = 2\n[watchdog]\ntimeout_ms = 500\n", "m.toml").unwrap_err();
+    assert_eq!(err.message, "unknown key \"watchdog\"");
+    assert_eq!(err.line, 2);
+}
+
+#[test]
+fn safety_parser_empty_input_and_garbage_are_errors_not_defaults() {
+    let err = parse_safety("", "s.toml").unwrap_err();
+    assert_eq!(
+        (err.message.as_str(), err.line),
+        ("missing key \"version\"", 1)
+    );
+    let err = parse_safety("version = 2\nwatchdog = \n", "s.toml").unwrap_err();
+    assert!(err.message.starts_with("toml syntax: "));
+    assert_eq!(err.line, 2);
+}
+
+#[test]
+fn safety_group_masks_follow_the_pin_names() {
+    let cfg = parse_safety(
+        "version = 2\n[[exclusive]]\npins = [\"GP26\", \"GP0\", \"GP27\"]\n",
+        "s.toml",
+    )
+    .unwrap();
+    assert_eq!(cfg.groups, [1 | (1 << 26) | (1 << 27)]);
+}
+
+#[test]
+fn load_safety_reads_files_and_names_them_in_errors() {
+    let dir = fixtures_dir();
+    let cfg = load_safety(&dir.join("safety-full.toml")).unwrap();
+    assert_eq!(cfg.watchdog_ms, 800);
+    match load_safety(&dir.join("safety-pin-duplicate.toml")).unwrap_err() {
+        SdkError::Parse(m) => assert!(m.contains("safety-pin-duplicate.toml:"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        load_safety(&dir.join("no-such-file.toml")).unwrap_err(),
         SdkError::Io(_)
     ));
 }

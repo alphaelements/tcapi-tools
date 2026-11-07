@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use pochi_sdk::protocol::{self, Response};
-use pochi_sdk::{PatternState, PinMap, PushEvent, SdkError};
+use pochi_sdk::{FailsafeCause, Feature, PatternState, PinMap, PushEvent, SdkError};
 
 const GOLDEN_FILES: [&str; 11] = [
     "version-info",
@@ -25,9 +25,6 @@ const GOLDEN_FILES: [&str; 11] = [
     "events",
     "safety",
 ];
-
-/// The feature bits defined by the protocol (`caps feat=`): bits 0..=7.
-const KNOWN_FEATURE_BITS: u32 = 0xff;
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/golden")
@@ -53,7 +50,7 @@ fn form_of(request: &str) -> String {
         .map(|w| w.to_ascii_lowercase())
         .collect();
     match words.first().map(String::as_str) {
-        Some("map" | "pattern" | "ts" | "sync" | "subscribe") => {
+        Some("map" | "pattern" | "ts" | "sync" | "subscribe" | "excl") => {
             words[..words.len().min(2)].join(" ")
         }
         Some(w) => w.to_string(),
@@ -80,7 +77,7 @@ fn check_ok(ctx: &str, form: &str, data: &str, lines: &[String], seen: &mut BTre
             // describe; pin neither its value nor its history, only that it is
             // a mask over the defined bits (the eight `feat` bits) that
             // announces what this SDK relies on.
-            assert_eq!(c.features & !KNOWN_FEATURE_BITS, 0, "undefined feat bits");
+            assert_eq!(c.features & !Feature::MASK, 0, "undefined feat bits");
             assert!(c.has_sync() && c.has_reset());
             assert!(u32::from(c.out) + u32::from(c.r#in) == u32::from(c.dio));
         }
@@ -130,10 +127,27 @@ fn check_ok(ctx: &str, form: &str, data: &str, lines: &[String], seen: &mut BTre
             let count = protocol::parse_count_field(data).unwrap();
             assert_eq!(lines.len() as u64, count);
         }
+        "safety" => {
+            let st = protocol::parse_safety(data).unwrap();
+            assert_eq!(st.failsafe, st.cause != FailsafeCause::None, "{data}");
+        }
+        "excl get" => {
+            let masks = protocol::parse_excl_get(data, lines).unwrap();
+            for mask in masks {
+                assert!(mask.count_ones() >= 2, "{data}");
+            }
+        }
+        "rstinfo" => {
+            protocol::parse_rstinfo(data).unwrap();
+        }
+        "pads" => {
+            protocol::parse_pads(data).unwrap();
+        }
         "devnum" | "map set" | "map save" | "map default" | "write" | "pattern run"
         | "pattern stop" | "pattern reset" | "ts arm" | "ts disarm" | "subscribe on"
         | "subscribe off" | "sync arm" | "sync master" | "sync start" | "sync stop"
-        | "sync disarm" | "reset" | "bootsel" => {
+        | "sync disarm" | "reset" | "bootsel" | "wdog" | "failsafe" | "outputs" | "excl set"
+        | "excl clear" | "usbsafe" => {
             assert_eq!(data, "", "bare OK expected for `{form}`");
         }
         other => panic!("{ctx}: golden response for unhandled request form `{other}`: OK {data}"),
@@ -177,11 +191,15 @@ fn every_golden_response_parses() {
                     PushEvent::InputChange { .. } => seen_events.insert("INPUT"),
                     PushEvent::PatternDone { .. } => seen_events.insert("PATTERN_DONE"),
                     PushEvent::PatternTimeout { .. } => seen_events.insert("PATTERN_TIMEOUT"),
+                    PushEvent::Failsafe { cause } => {
+                        assert_ne!(cause, FailsafeCause::None, "{ctx}");
+                        seen_events.insert("FAILSAFE")
+                    }
                     other => panic!("{ctx}: unexpected event {other:?}"),
                 };
             } else if let Some(code) = line.strip_prefix("< ERR ") {
                 assert_matches_err(&ctx, code);
-                seen_errors.insert(code.to_string());
+                seen_errors.insert(code.split_whitespace().next().unwrap().to_string());
                 match protocol::parse_response(line.strip_prefix("< ").unwrap()).unwrap() {
                     Response::Err(c) => assert_eq!(c, code),
                     other => panic!("{ctx}: {other:?}"),
@@ -228,12 +246,22 @@ fn every_golden_response_parses() {
         "help",
         "devnum",
         "write",
+        "wdog",
+        "safety",
+        "failsafe",
+        "outputs",
+        "excl set",
+        "excl clear",
+        "excl get",
+        "usbsafe",
+        "rstinfo",
+        "pads",
     ] {
         assert!(seen_forms.contains(form), "golden never exercised `{form}`");
     }
     assert_eq!(
         seen_events,
-        BTreeSet::from(["INPUT", "PATTERN_DONE", "PATTERN_TIMEOUT"])
+        BTreeSet::from(["FAILSAFE", "INPUT", "PATTERN_DONE", "PATTERN_TIMEOUT"])
     );
     for code in [
         "BAD_PARAM",
@@ -242,6 +270,8 @@ fn every_golden_response_parses() {
         "FLASH",
         "TOO_LONG",
         "NOT_ARMED",
+        "FAILSAFE",
+        "EXCLUSIVE",
     ] {
         assert!(seen_errors.contains(code), "golden never exercised {code}");
     }
@@ -250,7 +280,18 @@ fn every_golden_response_parses() {
 fn assert_matches_err(ctx: &str, code: &str) {
     let err = SdkError::from_error_code(code);
     assert!(
-        !matches!(err, SdkError::UnknownDevice(_)),
-        "{ctx}: error name {code} has no typed SdkError"
+        !matches!(err, SdkError::UnknownDevice(_) | SdkError::Parse(_)),
+        "{ctx}: error {code} has no typed SdkError ({err})"
     );
+    // `ERR EXCLUSIVE group=<i> mask=0x%08x` hands both values to the caller.
+    if let Some(data) = code.strip_prefix("EXCLUSIVE ") {
+        let SdkError::Exclusive { group, mask } = err else {
+            panic!("{ctx}: {code} is not SdkError::Exclusive");
+        };
+        assert_eq!(
+            data,
+            format!("group={group} mask=0x{mask:08x}"),
+            "{ctx}: round trip"
+        );
+    }
 }

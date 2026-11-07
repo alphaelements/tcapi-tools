@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use crate::discovery;
 use crate::error::{Result, SdkError};
+use crate::heartbeat::{self, Heartbeat};
 use crate::protocol;
-use crate::transport::{TrafficHook, Transport};
+use crate::transport::{SharedTransport, TrafficHook, Transport};
 use crate::types::{
-    Capabilities, DeviceInfo, EdgeMode, IoState, PatternMode, PatternStatus, PatternStep, PinMap,
-    PushEvent, TimestampResult, TsStatus, VersionInfo, PROTO_VERSION,
+    Capabilities, DeviceInfo, EdgeMode, IoState, Pads, PatternMode, PatternStatus, PatternStep,
+    PinMap, PushEvent, ResetInfo, SafetyConfig, SafetyState, TimestampResult, TsStatus,
+    VersionInfo, PROTO_VERSION,
 };
 
 /// An open connection to a Pochi-DIO device.
@@ -17,9 +19,10 @@ use crate::types::{
 /// Opening asserts DTR and checks `version`: a device that does not report
 /// `proto=2` is refused with [`SdkError::UnsupportedFirmware`]. The
 /// connection closes when dropped; [`Connection::close`] exists for explicit,
-/// eager shutdown.
+/// eager shutdown. Closing or dropping never sends a command and never
+/// changes the outputs (protocol-reference.md section 2).
 pub struct Connection {
-    transport: Transport,
+    transport: SharedTransport,
     port_path: String,
     firmware: String,
 }
@@ -45,7 +48,7 @@ impl Connection {
             )));
         }
         Ok(Self {
-            transport,
+            transport: SharedTransport::new(transport),
             port_path,
             firmware: format!("{}.{}.{}", version.major, version.minor, version.patch),
         })
@@ -83,14 +86,18 @@ impl Connection {
 
     /// Set the command response timeout (default 2 s).
     pub fn set_timeout(&mut self, timeout: Duration) {
-        self.transport.set_timeout(timeout);
+        // Only fails when another thread panicked while holding the
+        // transport; the next command then reports `Disconnected`.
+        let _ = self.transport.set_timeout(timeout);
     }
 
     /// Install an observer for every line exchanged with the device
     /// (command-log UIs, debug tracing). A second call replaces the first;
     /// `None` removes it. See [`TrafficHook`] for threading caveats.
     pub fn set_traffic_hook(&mut self, hook: Option<TrafficHook>) {
-        self.transport.set_traffic_hook(hook);
+        // As in `set_timeout`: a poisoned transport is reported by the next
+        // command.
+        let _ = self.transport.set_traffic_hook(hook);
     }
 
     // --- device information ---
@@ -104,14 +111,7 @@ impl Connection {
     /// `ping <value>` — echo test; returns the echoed value, failing with
     /// `Parse` when the device answers a different one.
     pub fn ping(&mut self, value: u32) -> Result<u32> {
-        let data = self.transport.command(&format!("ping {value}"))?;
-        let echoed = protocol::parse_pong(&data)?;
-        if echoed != value {
-            return Err(SdkError::Parse(format!(
-                "ping {value} was answered with pong={echoed}"
-            )));
-        }
-        Ok(echoed)
+        self.transport.ping(value)
     }
 
     /// `caps` — device capabilities. Pre-v2 firmware fails to parse.
@@ -257,8 +257,7 @@ impl Connection {
     /// consumes the connection — callers must `discover` and `open` again
     /// after the device comes back.
     pub fn system_reset(self) -> Result<()> {
-        let mut t = self.transport;
-        t.command("reset")?;
+        self.transport.command("reset")?;
         Ok(())
     }
 
@@ -269,8 +268,7 @@ impl Connection {
     /// re-enumerates as a USB mass-storage device. Callers must close this
     /// connection and either wait for the BOOTSEL drive or flash the device.
     pub fn bootsel_reset(self) -> Result<()> {
-        let mut t = self.transport;
-        t.command("bootsel")?;
+        self.transport.command("bootsel")?;
         Ok(())
     }
 
@@ -405,6 +403,161 @@ impl Connection {
             .collect())
     }
 
+    // --- safety functions ---
+
+    /// `wdog <ms>` — enable (`100..=10000`) or disable (`0`) the watchdog.
+    /// CDC only. The watchdog is off after every restart; whoever enables it
+    /// must keep a heartbeat going ([`Connection::start_heartbeat`]).
+    pub fn wdog(&mut self, ms: u32) -> Result<()> {
+        self.transport.command(&protocol::wdog_command(ms)?)?;
+        Ok(())
+    }
+
+    /// `safety` — the safety state (watchdog, failsafe latch, `usbsafe`,
+    /// number of exclusive groups). The source of truth for `! FAILSAFE`.
+    pub fn safety(&mut self) -> Result<SafetyState> {
+        let data = self.transport.command("safety")?;
+        protocol::parse_safety(&data)
+    }
+
+    /// `failsafe clear` — release the failsafe latch (CDC only). The outputs
+    /// stay where they are and the watchdog timer restarts.
+    pub fn failsafe_clear(&mut self) -> Result<()> {
+        self.transport.command("failsafe clear")?;
+        Ok(())
+    }
+
+    /// `outputs reset` — put every output at its `def` (the safe state) and
+    /// stop a running pattern. Always succeeds on the device, also with the
+    /// latch set.
+    pub fn outputs_reset(&mut self) -> Result<()> {
+        self.transport.command("outputs reset")?;
+        Ok(())
+    }
+
+    /// `excl set <mask>...` — replace all exclusive groups atomically (1-16
+    /// masks of at least 2 output pins; CDC only). A violated state is
+    /// [`SdkError::Exclusive`]; a mask with a non-output pin is `BadParam`
+    /// (the device knows the map).
+    pub fn excl_set(&mut self, masks: &[u32]) -> Result<()> {
+        self.transport
+            .command(&protocol::excl_set_command(masks)?)?;
+        Ok(())
+    }
+
+    /// `excl clear` — remove all exclusive groups (CDC only).
+    pub fn excl_clear(&mut self) -> Result<()> {
+        self.transport.command("excl clear")?;
+        Ok(())
+    }
+
+    /// `excl get` — the masks of the exclusive groups in the order they were
+    /// set (counted response).
+    pub fn excl_get(&mut self) -> Result<Vec<u32>> {
+        let (header, lines) = self.transport.command_counted("excl get")?;
+        protocol::parse_excl_get(&header, &lines)
+    }
+
+    /// `usbsafe on|off` — failsafe when the USB link is lost (CDC only).
+    pub fn usbsafe(&mut self, on: bool) -> Result<()> {
+        self.transport.command(&protocol::usbsafe_command(on))?;
+        Ok(())
+    }
+
+    /// `rstinfo` — cause and time of the last restart.
+    pub fn rstinfo(&mut self) -> Result<ResetInfo> {
+        let data = self.transport.command("rstinfo")?;
+        protocol::parse_rstinfo(&data)
+    }
+
+    /// `pads` — the recorded outputs and the level read back from the pads.
+    pub fn pads(&mut self) -> Result<Pads> {
+        let data = self.transport.command("pads")?;
+        protocol::parse_pads(&data)
+    }
+
+    /// Make the device equal to a `safety.toml` (config-files.md section 7,
+    /// DD-16) and check the result.
+    ///
+    /// The commands go out in this order and nothing else:
+    /// `excl set <masks>` when the configuration has groups, `excl clear`
+    /// only when it has none, `usbsafe on|off`, `wdog <ms>` (last, so the
+    /// watchdog cannot trip while the rest is being sent). `excl clear` is
+    /// never sent before `excl set`: `excl set` replaces atomically, and a
+    /// failed `excl set` after a clear would leave the device with less
+    /// protection than before.
+    ///
+    /// A value the device would refuse is [`SdkError::InvalidArgument`] and
+    /// nothing is sent. The first error answered by the device stops the
+    /// apply: later commands are not sent and the error keeps its code
+    /// (`BadParam`, `Busy`, ...). Accepted commands stay in effect (no
+    /// rollback); call [`Connection::safety`] and [`Connection::excl_get`]
+    /// to see what is set. Applying needs the pins of the groups to be
+    /// outputs already: apply `map.toml` first.
+    ///
+    /// After the last command, `safety` and `excl get` are read back and must
+    /// equal the configuration (`wdog_ms`, `usbsafe`, number and masks of the
+    /// groups); a difference is [`SdkError::SafetyMismatch`]. Returns the
+    /// `safety` state that was read, which also shows a failsafe latch that
+    /// was set before (the latch is not part of the file).
+    ///
+    /// With a watchdog configured, start the heartbeat afterwards.
+    pub fn apply_safety(&mut self, config: &SafetyConfig) -> Result<SafetyState> {
+        for command in config.commands()? {
+            self.transport.command(&command)?;
+        }
+        let state = self.safety()?;
+        let groups = self.excl_get()?;
+        let mut diffs = Vec::new();
+        if state.wdog_ms != config.watchdog_ms {
+            diffs.push(format!(
+                "wdog_ms is {}, expected {}",
+                state.wdog_ms, config.watchdog_ms
+            ));
+        }
+        if state.usbsafe != config.usbsafe {
+            diffs.push(format!(
+                "usbsafe is {}, expected {}",
+                u8::from(state.usbsafe),
+                u8::from(config.usbsafe)
+            ));
+        }
+        if usize::from(state.excl) != config.groups.len() {
+            diffs.push(format!(
+                "excl is {}, expected {}",
+                state.excl,
+                config.groups.len()
+            ));
+        }
+        if groups.len() != config.groups.len() {
+            diffs.push(format!(
+                "excl get returned {} groups, expected {}",
+                groups.len(),
+                config.groups.len()
+            ));
+        }
+        for (i, (got, want)) in groups.iter().zip(&config.groups).enumerate() {
+            if got != want {
+                diffs.push(format!("group {i} is {got:#010x}, expected {want:#010x}"));
+            }
+        }
+        if diffs.is_empty() {
+            Ok(state)
+        } else {
+            Err(SdkError::SafetyMismatch(diffs.join("; ")))
+        }
+    }
+
+    /// Start the watchdog heartbeat: a dedicated thread sends `ping` every
+    /// `timeout_ms / 4` (at most 1 s) so the device keeps seeing `OK`
+    /// answers. `timeout_ms` is the value given to [`Connection::wdog`]
+    /// (`100..=10000`). See [`Heartbeat`] for the rules (serialised with
+    /// every other command, one failure is reported and not retried,
+    /// dropping the connection or the heartbeat changes no output).
+    pub fn start_heartbeat(&mut self, timeout_ms: u32) -> Result<Heartbeat> {
+        heartbeat::start(&self.transport, timeout_ms)
+    }
+
     // --- escape hatch ---
 
     /// Send an arbitrary command, returning **every** line of the response
@@ -426,6 +579,7 @@ impl Connection {
 mod tests {
     use super::*;
     use crate::testutil::{pong_for, FakeDevice};
+    use crate::types::SafetyConfig;
     use assert_matches::assert_matches;
 
     fn connect(
@@ -678,5 +832,339 @@ mod tests {
         assert_matches!(conn.raw("subscribe on"), Err(SdkError::InvalidArgument(_)));
         assert_eq!(conn.raw("help").unwrap(), ["OK count=1", "  help  Help"]);
         assert_eq!(dev.commands(), ["version", "help"]);
+    }
+
+    // --- safety functions ---
+
+    use std::sync::{Arc, Mutex};
+
+    /// A device that models the volatile safety state, so `apply_safety` can
+    /// be read back. `fail_on` makes the named command answer `ERR BAD_PARAM`.
+    #[derive(Default)]
+    struct SafetyDevice {
+        wdog_ms: u32,
+        usbsafe: bool,
+        groups: Vec<String>,
+        fail_on: Option<&'static str>,
+        /// Report a wrong `wdog_ms` / group list in the read-back.
+        lie: bool,
+        /// Report the opposite `usbsafe` in `safety` only.
+        lie_usbsafe: bool,
+        /// `excl get` returns this many groups more (positive) or fewer
+        /// (negative) than were set, while `safety` reports `excl=` truthfully.
+        excl_get_extra: i8,
+    }
+
+    impl SafetyDevice {
+        fn handle(&mut self, cmd: &str) -> Option<Vec<String>> {
+            if self.fail_on.is_some_and(|f| cmd.starts_with(f)) {
+                return Some(vec!["ERR BAD_PARAM".to_string()]);
+            }
+            let ok = || Some(vec!["OK".to_string()]);
+            match cmd.split_whitespace().collect::<Vec<_>>().as_slice() {
+                ["excl", "set", masks @ ..] => {
+                    self.groups = masks.iter().map(|m| (*m).to_string()).collect();
+                    ok()
+                }
+                ["excl", "clear"] => {
+                    self.groups.clear();
+                    ok()
+                }
+                ["usbsafe", v] => {
+                    self.usbsafe = *v == "on";
+                    ok()
+                }
+                ["wdog", ms] => {
+                    self.wdog_ms = ms.parse().unwrap();
+                    ok()
+                }
+                ["safety"] => Some(vec![format!(
+                    "OK wdog_ms={} remaining_ms={} failsafe=0 cause=none usbsafe={} excl={}",
+                    self.wdog_ms + u32::from(self.lie),
+                    self.wdog_ms,
+                    u8::from(self.usbsafe != self.lie_usbsafe),
+                    self.groups.len()
+                )]),
+                ["excl", "get"] => {
+                    let mut masks: Vec<u32> = self
+                        .groups
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| {
+                            let m = u32::from_str_radix(m.trim_start_matches("0x"), 16).unwrap();
+                            // A lying device reports the first group wrong.
+                            if self.lie && i == 0 {
+                                m ^ 0x100
+                            } else {
+                                m
+                            }
+                        })
+                        .collect();
+                    if self.excl_get_extra >= 0 {
+                        masks.extend((0..self.excl_get_extra).map(|_| 0x3));
+                    } else {
+                        masks.truncate(
+                            masks
+                                .len()
+                                .saturating_sub(self.excl_get_extra.unsigned_abs().into()),
+                        );
+                    }
+                    let mut lines = vec![format!("OK count={}", masks.len())];
+                    lines.extend(masks.iter().map(|m| format!("  mask=0x{m:08x}")));
+                    Some(lines)
+                }
+                _ => None,
+            }
+        }
+    }
+
+    fn safety_conn(dev_state: SafetyDevice) -> (Connection, FakeDevice, Arc<Mutex<SafetyDevice>>) {
+        let state = Arc::new(Mutex::new(dev_state));
+        let (conn, dev) = connect(FW, {
+            let state = Arc::clone(&state);
+            move |cmd| state.lock().unwrap().handle(cmd)
+        });
+        (conn.unwrap(), dev, state)
+    }
+
+    fn full_cfg() -> SafetyConfig {
+        SafetyConfig {
+            watchdog_ms: 800,
+            usbsafe: true,
+            groups: vec![0xc, 0x18],
+        }
+    }
+
+    #[test]
+    fn safety_commands_send_the_documented_text_and_parse_the_answers() {
+        let (conn, dev) = connect(FW, |cmd| {
+            Some(match cmd {
+                "safety" => vec![
+                    "OK wdog_ms=500 remaining_ms=377 failsafe=0 cause=none usbsafe=1 excl=2"
+                        .to_string(),
+                ],
+                "rstinfo" => vec!["OK cause=por uptime_ms=1500 boot=0x00000001".to_string()],
+                "pads" => vec!["OK out=0x00000005 pad=0x00000001".to_string()],
+                "excl get" => vec![
+                    "OK count=2".to_string(),
+                    "  mask=0x0000000c".to_string(),
+                    "  mask=0x00000018".to_string(),
+                ],
+                "wdog 500" | "wdog 0" | "failsafe clear" | "outputs reset" | "excl set 0xc"
+                | "excl clear" | "usbsafe on" | "usbsafe off" => vec!["OK".to_string()],
+                _ => return None,
+            })
+        });
+        let mut c = conn.unwrap();
+        c.wdog(500).unwrap();
+        c.wdog(0).unwrap();
+        c.failsafe_clear().unwrap();
+        c.outputs_reset().unwrap();
+        c.excl_set(&[0xc]).unwrap();
+        c.excl_clear().unwrap();
+        c.usbsafe(true).unwrap();
+        c.usbsafe(false).unwrap();
+        let st = c.safety().unwrap();
+        assert_eq!((st.wdog_ms, st.remaining_ms, st.excl), (500, 377, 2));
+        assert_eq!(c.excl_get().unwrap(), [0xc, 0x18]);
+        assert_eq!(c.rstinfo().unwrap().uptime_ms, 1500);
+        assert_eq!(c.pads().unwrap().pad, 1);
+        assert_eq!(
+            dev.commands(),
+            [
+                "version",
+                "wdog 500",
+                "wdog 0",
+                "failsafe clear",
+                "outputs reset",
+                "excl set 0xc",
+                "excl clear",
+                "usbsafe on",
+                "usbsafe off",
+                "safety",
+                "excl get",
+                "rstinfo",
+                "pads"
+            ]
+        );
+    }
+
+    #[test]
+    fn safety_commands_refuse_bad_arguments_without_sending() {
+        let (conn, dev) = connect(FW, |_| None);
+        let mut c = conn.unwrap();
+        assert_matches!(c.wdog(99), Err(SdkError::InvalidArgument(_)));
+        assert_matches!(c.wdog(10_001), Err(SdkError::InvalidArgument(_)));
+        assert_matches!(c.excl_set(&[]), Err(SdkError::InvalidArgument(_)));
+        assert_matches!(c.excl_set(&[0x1]), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(dev.commands(), ["version"]);
+    }
+
+    #[test]
+    fn failsafe_and_exclusive_errors_are_typed_with_their_data() {
+        let (conn, _dev) = connect(FW, |cmd| {
+            Some(vec![match cmd {
+                "write 0x1 0x1" => "ERR FAILSAFE".to_string(),
+                "write 0x8 0x8" => "ERR EXCLUSIVE group=1 mask=0x0000000c".to_string(),
+                "wdog 100" => "ERR EXCLUSIVE group=0 mask=0x3 future=1".to_string(),
+                _ => return None,
+            }])
+        });
+        let mut c = conn.unwrap();
+        assert_matches!(c.write(1, 1), Err(SdkError::Failsafe));
+        assert_matches!(
+            c.write(8, 8),
+            Err(SdkError::Exclusive {
+                group: 1,
+                mask: 0xc
+            })
+        );
+        // Further key=value tokens never make the line unparseable.
+        assert_matches!(c.wdog(100), Err(SdkError::Exclusive { group: 0, mask: 3 }));
+    }
+
+    #[test]
+    fn excl_get_with_a_short_counted_response_is_a_parse_error() {
+        let (conn, _dev) = connect(FW, |cmd| {
+            (cmd == "excl get").then(|| vec!["OK count=2".to_string(), "  mask=0x3".to_string()])
+        });
+        let mut c = conn.unwrap();
+        // The second line never arrives: the transport times out.
+        assert_matches!(c.excl_get(), Err(SdkError::Timeout));
+    }
+
+    #[test]
+    fn apply_safety_sends_dd16_order_then_reads_back() {
+        let (mut c, dev, state) = safety_conn(SafetyDevice::default());
+        let st = c.apply_safety(&full_cfg()).unwrap();
+        assert_eq!(
+            dev.commands(),
+            [
+                "version",
+                "excl set 0xc 0x18",
+                "usbsafe on",
+                "wdog 800",
+                "safety",
+                "excl get"
+            ]
+        );
+        assert_eq!((st.wdog_ms, st.usbsafe, st.excl), (800, true, 2));
+        assert_eq!(state.lock().unwrap().groups, ["0xc", "0x18"]);
+    }
+
+    #[test]
+    fn apply_safety_without_groups_clears_them_and_never_sets() {
+        let (mut c, dev, _state) = safety_conn(SafetyDevice {
+            groups: vec!["0x3".into()],
+            ..SafetyDevice::default()
+        });
+        c.apply_safety(&SafetyConfig::default()).unwrap();
+        assert_eq!(
+            dev.commands(),
+            [
+                "version",
+                "excl clear",
+                "usbsafe off",
+                "wdog 0",
+                "safety",
+                "excl get"
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_safety_never_sends_excl_clear_before_excl_set() {
+        let (mut c, dev, _state) = safety_conn(SafetyDevice::default());
+        c.apply_safety(&full_cfg()).unwrap();
+        assert!(!dev.commands().iter().any(|c| c == "excl clear"));
+    }
+
+    #[test]
+    fn apply_safety_stops_at_the_first_error_and_reports_its_code() {
+        for (fail_on, sent) in [
+            ("excl set", vec!["excl set 0xc 0x18"]),
+            ("usbsafe", vec!["excl set 0xc 0x18", "usbsafe on"]),
+            ("wdog", vec!["excl set 0xc 0x18", "usbsafe on", "wdog 800"]),
+        ] {
+            let (mut c, dev, _state) = safety_conn(SafetyDevice {
+                fail_on: Some(fail_on),
+                ..SafetyDevice::default()
+            });
+            assert_matches!(
+                c.apply_safety(&full_cfg()),
+                Err(SdkError::BadParam),
+                "{fail_on}"
+            );
+            let mut want = vec!["version"];
+            want.extend(sent);
+            // No later command and no read-back after the error.
+            assert_eq!(dev.commands(), want, "{fail_on}");
+        }
+    }
+
+    #[test]
+    fn apply_safety_refuses_an_invalid_config_before_sending_anything() {
+        let (mut c, dev, _state) = safety_conn(SafetyDevice::default());
+        let bad = SafetyConfig {
+            watchdog_ms: 50,
+            ..full_cfg()
+        };
+        assert_matches!(c.apply_safety(&bad), Err(SdkError::InvalidArgument(_)));
+        assert_eq!(dev.commands(), ["version"]);
+    }
+
+    #[test]
+    fn apply_safety_detects_a_read_back_that_differs() {
+        let (mut c, _dev, _state) = safety_conn(SafetyDevice {
+            lie: true,
+            ..SafetyDevice::default()
+        });
+        assert_matches!(
+            c.apply_safety(&full_cfg()),
+            Err(SdkError::SafetyMismatch(m)) if m.contains("wdog_ms") && m.contains("group 0")
+        );
+    }
+
+    #[test]
+    fn apply_safety_detects_a_differing_usbsafe_alone() {
+        let (mut c, _dev, _state) = safety_conn(SafetyDevice {
+            lie_usbsafe: true,
+            ..SafetyDevice::default()
+        });
+        assert_matches!(
+            c.apply_safety(&full_cfg()),
+            Err(SdkError::SafetyMismatch(m)) if m == "usbsafe is 0, expected 1"
+        );
+    }
+
+    #[test]
+    fn apply_safety_detects_excl_get_with_extra_or_missing_groups() {
+        // `safety` reports the right `excl=` count; only `excl get` disagrees.
+        for (extra, want) in [
+            (1, "excl get returned 3 groups, expected 2"),
+            (-1, "excl get returned 1 groups, expected 2"),
+        ] {
+            let (mut c, _dev, _state) = safety_conn(SafetyDevice {
+                excl_get_extra: extra,
+                ..SafetyDevice::default()
+            });
+            assert_matches!(
+                c.apply_safety(&full_cfg()),
+                Err(SdkError::SafetyMismatch(m)) if m == want,
+                "extra {extra}"
+            );
+        }
+    }
+
+    #[test]
+    fn close_and_drop_send_nothing() {
+        let (mut c, dev, _state) = safety_conn(SafetyDevice::default());
+        c.apply_safety(&full_cfg()).unwrap();
+        let before = dev.commands();
+        c.close().unwrap();
+        assert_eq!(dev.commands(), before);
+        let (c2, dev2, _state2) = safety_conn(SafetyDevice::default());
+        drop(c2);
+        assert_eq!(dev2.commands(), ["version"]);
     }
 }

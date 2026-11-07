@@ -163,10 +163,29 @@ Helper methods on `Capabilities`:
 - `has_sync() -> bool` — bit 0 (`FEAT_SYNC = 0x1`): multi-device clock
   sync (`sync` commands).
 - `has_reset() -> bool` — bit 1 (`FEAT_RESET = 0x2`): reset commands.
+- `has(feature: Feature) -> bool` — any of the eight bits below.
+- `feature_list() -> Vec<Feature>` — the defined features whose bit is set,
+  in bit order.
 
-Both bit values are exported as public constants (`FEAT_SYNC`, `FEAT_RESET`
-in Rust/Python/TS; `Feature.Sync` / `Feature.Reset` in C#) so callers can
-test feature support without hard-coded literals.
+The eight feature bits of `caps feat=` are a public type (`Feature` enum in
+Rust/Python/TS/C#) with a constant for each bit, so callers test feature
+support without hard-coded literals:
+
+| Bit | Feature (`Feature`) | Constant | Commands announced |
+|----:|---------------------|----------|--------------------|
+| 0 | `Sync` | `FEAT_SYNC = 0x01` | `sync` |
+| 1 | `Reset` | `FEAT_RESET = 0x02` | `reset`, `bootsel`, `pattern reset` |
+| 2 | `Wdog` | `FEAT_WDOG = 0x04` | `wdog`, `safety`, `failsafe clear`, `! FAILSAFE` |
+| 3 | `Excl` | `FEAT_EXCL = 0x08` | `excl set|clear|get` |
+| 4 | `OutReset` | `FEAT_OUTRESET = 0x10` | `outputs reset` |
+| 5 | `RstInfo` | `FEAT_RSTINFO = 0x20` | `rstinfo` |
+| 6 | `UsbSafe` | `FEAT_USBSAFE = 0x40` | `usbsafe` |
+| 7 | `Pads` | `FEAT_PADS = 0x80` | `pads` |
+
+`Feature::ALL` lists them in bit order and `Feature::MASK` (`0xff`) is the mask
+of all defined bits. A host sends a command only when its bit is set (an older
+firmware answers `UNKNOWN_CMD`). The SDK does not check the bit before every
+call; applications that must support older firmware call `caps()` first.
 
 ### IoState
 
@@ -318,6 +337,47 @@ pub struct TsStatus {
     pub overflow: bool,
 }
 ```
+
+### Safety types
+
+Parsed from the safety responses of [`protocol-reference.md`](protocol-reference.md)
+section 4, "Safety". Fields keep the wire names; flags are booleans.
+
+```rust
+pub enum FailsafeCause { None, Wdog, Usb }      // wire: none | wdog | usb
+
+pub struct SafetyState {          // `safety`
+    pub wdog_ms: u32,             // 0 = disabled
+    pub remaining_ms: u32,        // 0 when disabled or latched
+    pub failsafe: bool,           // the latch
+    pub cause: FailsafeCause,     // None exactly when `failsafe` is false
+    pub usbsafe: bool,
+    pub excl: u8,                 // number of exclusive groups, 0..=16
+}
+
+pub enum ResetCause { Por, Wdt, Soft, Bor, Other }
+
+pub struct ResetInfo {            // `rstinfo`
+    pub cause: ResetCause,
+    pub uptime_ms: u64,
+    pub boot: u32,                // differs at every restart
+}
+
+pub struct Pads { pub out: u32, pub pad: u32 }  // `pads`, logical masks
+
+pub struct SafetyConfig {         // a parsed safety.toml
+    pub watchdog_ms: u32,         // 0 = disabled, else 100..=10000
+    pub usbsafe: bool,
+    pub groups: Vec<u32>,         // one mask per [[exclusive]], file order, <= 16
+}
+```
+
+Constants: `WDOG_MIN_MS = 100`, `WDOG_MAX_MS = 10000`,
+`MAX_EXCLUSIVE_GROUPS = 16`. Parsers are strict like every other parser: a
+missing, extra or malformed key is `Parse`, and a `safety` line whose latch and
+cause disagree (`failsafe=1 cause=none`, `failsafe=0 cause=wdog`) is `Parse`.
+`excl get` is a counted response (`OK count=N`, then N lines `  mask=0x%08x`);
+a count above 16 or a line count that differs from `N` is `Parse`.
 
 ### EdgeMode
 
@@ -628,6 +688,119 @@ impl Connection {
 `sync_count` parses the single line `OK clocks=<n>`; it is not a counted
 response. Wrong-state calls fail with `SyncState`.
 
+### Safety Commands
+
+```rust
+impl Connection {
+    pub fn wdog(&mut self, ms: u32) -> Result<()>              // 0 or 100..=10000
+    pub fn safety(&mut self) -> Result<SafetyState>
+    pub fn failsafe_clear(&mut self) -> Result<()>
+    pub fn outputs_reset(&mut self) -> Result<()>
+    pub fn excl_set(&mut self, masks: &[u32]) -> Result<()>    // 1..=16 groups
+    pub fn excl_clear(&mut self) -> Result<()>
+    pub fn excl_get(&mut self) -> Result<Vec<u32>>             // counted response
+    pub fn usbsafe(&mut self, on: bool) -> Result<()>
+    pub fn rstinfo(&mut self) -> Result<ResetInfo>
+    pub fn pads(&mut self) -> Result<Pads>
+}
+```
+
+Wire forms: `wdog <ms>`, `safety`, `failsafe clear`, `outputs reset`,
+`excl set <mask>...` (masks as `0x%x`), `excl clear`, `excl get`,
+`usbsafe on|off`, `rstinfo`, `pads`. Semantics are those of
+`protocol-reference.md` section 4, "Safety"; the SDK adds only host-side
+validation, before anything is sent (`InvalidArgument`):
+
+- `wdog`: `ms` is `0` or in `100..=10000`;
+- `excl_set`: 1 to 16 masks, each a subset of `VALID_DIO_MASK` with at least
+  2 bits. That every pin is an *output* depends on the device's map and is
+  answered by the device (`BadParam`).
+
+`wdog`, `failsafe_clear`, `excl_set`, `excl_clear` and `usbsafe` are CDC only;
+the text SDK always speaks CDC, so it never sees `TRANSPORT_NOT_SUPPORTED`.
+`outputs_reset` always succeeds on the device (also with the latch set).
+A command that would move an output away from `def` while the latch is set is
+`Failsafe`; one that would violate a group is `Exclusive { group, mask }`
+(section 4, "Error Code Mapping").
+
+#### Applying a `safety.toml` (`apply_safety`)
+
+```rust
+impl Connection {
+    pub fn apply_safety(&mut self, config: &SafetyConfig) -> Result<SafetyState>
+}
+```
+
+The rules (config-files.md section 7, DD-16), identical in every SDK:
+
+1. The configuration is validated first (`SafetyConfig.commands()`); a value
+   the device would refuse is `InvalidArgument` and **nothing is sent**.
+2. The commands go out in this order and nothing else:
+   `excl set <masks>` when the file has groups, or `excl clear` **only when it
+   has none**; then `usbsafe on|off`; then `wdog <ms>` (`wdog 0` when
+   disabled). `excl set` replaces all groups atomically, so `excl clear` is
+   **never** sent before an `excl set`.
+3. The first error answered by the device **stops** the apply: later commands
+   are not sent, no read-back is attempted, and the error keeps its code
+   (`BadParam`, `Busy`, `Exclusive`, ...). Accepted commands stay in effect (no
+   rollback); the caller can inspect them with `safety()` and `excl_get()`.
+4. After the last command the SDK reads `safety` and `excl get` and compares
+   them with the file: `wdog_ms`, `usbsafe`, `excl` (the count) and the masks in
+   file order. Any difference is `SafetyMismatch` (the message lists every
+   difference). The latch (`failsafe`/`cause`) and `remaining_ms` are not part
+   of the file and are not compared.
+5. On success the `safety` state that was read is returned.
+
+The pins of the groups must already be outputs: apply `map.toml` first.
+Reading `safety.toml` is `config.parse_safety` / `config.load_safety`
+(section "Config Files (Rust)").
+
+### Heartbeat
+
+```rust
+impl Connection {
+    pub fn start_heartbeat(&mut self, timeout_ms: u32) -> Result<Heartbeat>
+}
+pub fn heartbeat_period(timeout_ms: u32) -> Result<Duration>
+
+impl Heartbeat {
+    pub fn period(&self) -> Duration
+    pub fn is_running(&self) -> bool
+    pub fn try_failure(&self) -> Option<SdkError>
+    pub fn wait_failure(&self, timeout: Duration) -> Option<SdkError>
+    pub fn stop(self)                       // also on drop
+}
+```
+
+Whoever enables the watchdog (`wdog <ms>`) must keep the device busy; the SDK
+provides this helper. `timeout_ms` is the value given to `wdog` (`100..=10000`;
+`0` is refused with `InvalidArgument` because a disabled watchdog needs no
+heartbeat). Normative rules for every SDK:
+
+- **Period.** `timeout / 4`, at most 1 s (`heartbeat_period`: 100 ms gives
+  25 ms, 4000 ms and above give 1 s). The first ping is sent one period after
+  the start (the `wdog` answer has just restarted the timer).
+- **Command.** `ping <n>` with a counter starting at 0 (every value distinct, the
+  answered `pong` must equal it), run from a dedicated thread/task.
+- **Serialised.** A heartbeat ping is a normal command exchange: it takes the
+  connection for the whole request and response. It is never written between
+  another command and its response, nor inside a counted response, and a
+  caller's command is never interleaved with it. (Rust: one lock around each
+  exchange.) A long command of the caller (for example `map save`) delays the
+  ping; choose a timeout above the longest flash operation plus the period.
+- **A failure is notified once and not retried.** The first failed ping
+  (timeout, `ERR`, wrong `pong`, disconnect) is delivered through
+  `try_failure` / `wait_failure` (TypeScript: an `error` event; Python: a
+  callback or exception on the next call; C#: an event) and the heartbeat ends.
+  It does not send another ping and does not repair the connection; the device
+  trips its watchdog, which is the safe outcome.
+- **Closing changes nothing.** Dropping or stopping the heartbeat, `close`, and
+  dropping the connection send no command and change no output. A heartbeat
+  does not keep a dropped connection alive: it ends silently (not a failure).
+  Without a heartbeat the device trips `timeout` after the last `OK`; a
+  one-shot command-line run that enables the watchdog therefore trips the
+  device when it exits.
+
 ### Help
 
 ```rust
@@ -658,8 +831,10 @@ only way applications send protocol text; REPL front-ends use it.
 pub mod config {
     pub fn parse_map(src: &str, file: &str) -> Result<PinMap, ConfigError>
     pub fn parse_pattern(src: &str, file: &str) -> Result<Vec<PatternStep>, ConfigError>
+    pub fn parse_safety(src: &str, file: &str) -> Result<SafetyConfig, ConfigError>
     pub fn load_map(path: &Path) -> Result<PinMap>
     pub fn load_pattern(path: &Path) -> Result<Vec<PatternStep>>
+    pub fn load_safety(path: &Path) -> Result<SafetyConfig>
 
     pub struct ConfigError { pub file: String, pub line: usize, pub message: String }
     // Display: "<file>:<line>: <message>"
@@ -667,8 +842,9 @@ pub mod config {
 ```
 
 Implements [`config-files.md`](config-files.md) exactly (schema v2, no lenient
-mode). Every fixture in `docs/fixtures/` yields the documented masks, steps,
-message and line (`sdk/rust/tests/config_fixtures.rs`). `ConfigError` converts
+mode). Every fixture in `docs/fixtures/` (`map-*`, `pattern-*` and `safety-*`)
+yields the documented masks, steps, settings, apply commands, message and line
+(`sdk/rust/tests/config_fixtures.rs`). `ConfigError` converts
 into `SdkError::Parse` with the same text.
 
 ### Traffic Hook (Rust)
@@ -859,7 +1035,16 @@ The SDK parses `ERR <name>` responses and maps them 1:1:
 | `ERR LINE_TOO_LONG` | LineTooLong |
 | `ERR BAD_CMD` | BadCommand |
 | `ERR TRANSPORT_NOT_SUPPORTED` | TransportNotSupported |
+| `ERR FAILSAFE` | Failsafe |
+| `ERR EXCLUSIVE group=<i> mask=0x%08x` | Exclusive { group: u8, mask: u32 } |
 | Anything else | UnknownDevice(raw name) |
+
+The first token after `ERR` is the error name; further `key=value` tokens are
+data and **never make the line unparseable**. `Exclusive` reads `group=` (the
+0-based index of the first violating group) and `mask=` (decimal or `0x` hex,
+any token order, unknown extra tokens ignored); an `ERR EXCLUSIVE` line without
+both is a protocol violation and is reported as `Parse`, not with default
+values. Data tokens after any other known name are ignored.
 
 There is no `SYNC_TIMEOUT` error: a slave that sees no sync edge returns to
 idle without reporting an error.
@@ -877,12 +1062,16 @@ idle without reporting an error.
 | MultipleDevices | Multiple devices found but no selector specified |
 | Disconnected | Device went away mid-session (unplug, reader thread exit), or resynchronisation failed |
 | UnsupportedFirmware | `version` reported a `proto` other than 2 ("unsupported protocol"). Never parsed leniently |
+| SafetyMismatch | The `safety` / `excl get` read-back after `apply_safety` differs from the applied file (the message lists the differences) |
 
 ## 5. Event Model
 
-The device sends exactly three events: `! INPUT in=0x%08x t=<u64 us>`,
-`! PATTERN_DONE loops=<n>` and `! PATTERN_TIMEOUT loops=<n>`. There is no
-other event type. `INPUT` carries the logical levels of all input pins and is
+The device sends exactly four events: `! INPUT in=0x%08x t=<u64 us>`,
+`! PATTERN_DONE loops=<n>`, `! PATTERN_TIMEOUT loops=<n>` and
+`! FAILSAFE cause=<wdog|usb>` (a device with `FEAT_WDOG`; it can be missed, so
+`safety` is the source of truth; `cause` is never `none`). There is no other
+event type. The other SDKs name the new event like the existing ones
+(TypeScript `"failsafe"`, Python/C# `Failsafe`, each carrying `cause`). `INPUT` carries the logical levels of all input pins and is
 sent when `((in ^ previous) & edge) != 0` for the active map; `t` is the
 detection time in microseconds.
 
@@ -908,6 +1097,8 @@ pub enum PushEvent {
     /// Pattern aborted by the firmware wall-clock safety budget. The output
     /// latch keeps the last step; recover with `write` or `pattern_reset`.
     PatternTimeout { loops: u16 },
+    /// The failsafe latch was set (`cause` is `Wdog` or `Usb`, never `None`).
+    Failsafe { cause: FailsafeCause },
 }
 ```
 
