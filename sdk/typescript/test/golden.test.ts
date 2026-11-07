@@ -11,9 +11,13 @@
  *    typed values re-encode to the recorded text.
  */
 import { describe, expect, it } from "vitest";
+import { ErrorCode, ExclusiveError, SdkError } from "../src/errors.js";
 import * as protocol from "../src/protocol.js";
 import { Transport } from "../src/transport.js";
 import {
+  FEATURE_MASK,
+  hasSync,
+  hasReset,
   patternStepToText,
   pinMapToSetArgs,
   type PatternStep,
@@ -61,7 +65,7 @@ describe("golden transcripts: transport replay", () => {
 function formOf(request: string): string {
   const words = request.split(/\s+/).filter((w) => w !== "").map((w) => w.toLowerCase());
   const [first, second] = words;
-  if (["map", "pattern", "ts", "sync", "subscribe"].includes(first ?? "")) {
+  if (["map", "pattern", "ts", "sync", "subscribe", "excl"].includes(first ?? "")) {
     return second === undefined ? first : `${first} ${second}`;
   }
   return first ?? "";
@@ -87,6 +91,12 @@ const BARE_OK_FORMS = new Set([
   "sync disarm",
   "reset",
   "bootsel",
+  "wdog",
+  "failsafe",
+  "outputs",
+  "excl set",
+  "excl clear",
+  "usbsafe",
 ]);
 
 /** Parse one OK response of the given form; `lines` are the continuation wire lines. */
@@ -99,8 +109,10 @@ function checkOk(form: string, data: string, lines: string[]): void {
       const c = protocol.parseCaps(data);
       expect(c).toMatchObject({ dio: 25, tsResNs: 40, tickNs: 200, patternMax: 256, ring: 256 });
       // The transcripts describe the firmware of their revision: pin neither the value
-      // nor its history, only that it stays within the defined bits (0..=7).
-      expect(c.features & ~0xff).toBe(0);
+      // nor its history, only that it is a mask over the defined bits (the eight `feat`
+      // bits) that announces what this SDK relies on.
+      expect(c.features & ~FEATURE_MASK).toBe(0);
+      expect(hasSync(c) && hasReset(c)).toBe(true);
       expect(c.out + c.in).toBe(c.dio);
       return;
     }
@@ -146,6 +158,22 @@ function checkOk(form: string, data: string, lines: string[]): void {
     case "help":
       expect(lines).toHaveLength(protocol.parseCountField(data) ?? -1);
       return;
+    case "safety": {
+      const st = protocol.parseSafety(data);
+      expect(st.failsafe, data).toBe(st.cause !== "none");
+      return;
+    }
+    case "excl get":
+      for (const mask of protocol.parseExclGet(data, lines)) {
+        expect(popcount(mask), data).toBeGreaterThanOrEqual(2);
+      }
+      return;
+    case "rstinfo":
+      protocol.parseRstinfo(data);
+      return;
+    case "pads":
+      protocol.parsePads(data);
+      return;
     default:
       if (BARE_OK_FORMS.has(form)) {
         expect(data, `bare OK expected for \`${form}\``).toBe("");
@@ -153,6 +181,12 @@ function checkOk(form: string, data: string, lines: string[]): void {
       }
       throw new Error(`golden response for unhandled request form \`${form}\`: OK ${data}`);
   }
+}
+
+function popcount(value: number): number {
+  let n = 0;
+  for (let v = value >>> 0; v !== 0; v >>>= 1) n += v & 1;
+  return n;
 }
 
 /** Hex number in the SDK's own spelling: no leading zeros. */
@@ -175,6 +209,17 @@ function checkBuilder(request: string): void {
     );
   } else if ((m = /^ts get (\d+)$/.exec(request))) {
     expect(protocol.tsGetCommand(Number(m[1]))).toBe(request);
+  } else if ((m = /^wdog (0|[1-9]\d*)$/.exec(request))) {
+    // Only requests inside the accepted range are expected to be reproduced.
+    const ms = Number(m[1]);
+    if (ms === 0 || (ms >= 100 && ms <= 10_000)) expect(protocol.wdogCommand(ms)).toBe(request);
+  } else if (request === "usbsafe on" || request === "usbsafe off") {
+    expect(protocol.usbsafeCommand(request === "usbsafe on")).toBe(request);
+  } else if ((m = new RegExp(`^excl set((?: ${MIN_HEX})+)$`).exec(request))) {
+    const masks = m[1].trim().split(" ").map(Number);
+    if (masks.length <= 16 && masks.every((x) => popcount(x) >= 2 && (x & ~0x0c7fffff) === 0)) {
+      expect(protocol.exclSetCommand(masks)).toBe(request);
+    }
   } else if (request === "pattern run once") {
     expect(protocol.patternRunCommand("once", 1)).toBe(request);
   } else if ((m = /^pattern run loop (\d+)$/.exec(request))) {
@@ -192,6 +237,25 @@ function checkBuilder(request: string): void {
       expect(patternStepToText(step)).toBe(token);
     }
   }
+}
+
+/**
+ * Every error the device answers has a typed SdkError (not UnknownDevice, not
+ * Parse); `ERR EXCLUSIVE group=<i> mask=0x%08x` hands both values to the caller.
+ * Returns the error name.
+ */
+function assertTypedError(ctx: string, text: string): string {
+  const err = SdkError.fromErrorCode(text);
+  expect([ErrorCode.UnknownDevice, ErrorCode.Parse], `${ctx}: ERR ${text} has no typed error`).not.toContain(
+    err.code,
+  );
+  const data = /^EXCLUSIVE (.*)$/.exec(text)?.[1];
+  if (data !== undefined) {
+    expect(err, ctx).toBeInstanceOf(ExclusiveError);
+    const ex = err as ExclusiveError;
+    expect(data, `${ctx}: round trip`).toBe(`group=${ex.group} mask=0x${ex.mask.toString(16).padStart(8, "0")}`);
+  }
+  return text.split(/\s+/)[0];
 }
 
 describe("golden transcripts: parser replay", () => {
@@ -215,7 +279,7 @@ describe("golden transcripts: parser replay", () => {
             // Responses to raw `~ send_hex` bytes: parse only, there is no request form.
             for (const line of item.response) {
               const resp = protocol.parseResponse(line);
-              if (resp.kind === "err") errors.add(resp.code);
+              if (resp.kind === "err") errors.add(assertTypedError(ctx, resp.code));
             }
             continue;
           }
@@ -225,7 +289,7 @@ describe("golden transcripts: parser replay", () => {
           const resp = protocol.parseResponse(header);
           if (resp.kind === "err") {
             expect(() => protocol.okData(resp), ctx).toThrow();
-            errors.add(resp.code);
+            errors.add(assertTypedError(ctx, resp.code));
             continue;
           }
           expect(resp.kind, ctx).toBe("ok");
@@ -248,9 +312,14 @@ describe("golden transcripts: parser replay", () => {
       "pattern add", "pattern status", "ts get", "ts status", "sync count", "help"]) {
       expect(forms, `no golden example for \`${form}\``).toContain(form);
     }
-    expect([...events].sort()).toEqual(["input_change", "pattern_done", "pattern_timeout"]);
+    for (const form of ["wdog", "safety", "failsafe", "outputs", "excl set", "excl clear", "excl get",
+      "usbsafe", "rstinfo", "pads"]) {
+      expect(forms, `no golden example for \`${form}\``).toContain(form);
+    }
+    expect([...events].sort()).toEqual(["failsafe", "input_change", "pattern_done", "pattern_timeout"]);
     for (const name of ["BAD_PARAM", "BAD_MAP", "BUSY", "FLASH", "TOO_LONG", "NOT_ARMED",
-      "SYNC_STATE", "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG"]) {
+      "SYNC_STATE", "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG", "FAILSAFE",
+      "EXCLUSIVE"]) {
       expect(errors, `no golden example for ERR ${name}`).toContain(name);
     }
   });
