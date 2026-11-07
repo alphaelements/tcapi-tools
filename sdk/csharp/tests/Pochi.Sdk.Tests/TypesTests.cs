@@ -227,15 +227,13 @@ public class CapabilitiesTests
             Features: features);
 
     [Fact]
-    public void FeatureBits()
+    public void SyncAndResetFeatureBits()
     {
-        Assert.Equal(0x1U, Feature.Sync);
-        Assert.Equal(0x2U, Feature.Reset);
-        Assert.True(WithFeatures(Feature.Sync).HasSync);
-        Assert.False(WithFeatures(Feature.Sync).HasReset);
-        Assert.True(WithFeatures(Feature.Reset).HasReset);
-        Assert.False(WithFeatures(Feature.Reset).HasSync);
-        Assert.True(WithFeatures(Feature.Sync | Feature.Reset).HasSync);
+        Assert.False(WithFeatures(0x1).HasReset);
+        Assert.True(WithFeatures(0x1).HasSync);
+        Assert.True(WithFeatures(0x2).HasReset);
+        Assert.False(WithFeatures(0x2).HasSync);
+        Assert.True(WithFeatures(0x3).HasSync && WithFeatures(0x3).HasReset);
         Assert.False(WithFeatures(0).HasSync || WithFeatures(0).HasReset);
     }
 }

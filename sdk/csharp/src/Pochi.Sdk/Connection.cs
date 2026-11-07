@@ -20,6 +20,7 @@ public sealed class Connection : IDisposable
     private readonly string _portPath;
     private readonly string _firmware;
     private readonly PushEventSource _events;
+    private volatile bool _closed;
 
     private Connection(Transport transport, string portPath, VersionInfo firmware)
     {
@@ -128,7 +129,7 @@ public sealed class Connection : IDisposable
     }
 
     /// <summary>Push events (<c>! INPUT</c>, <c>! PATTERN_DONE</c>,
-    /// <c>! PATTERN_TIMEOUT</c>), delivered on the reader thread, including
+    /// <c>! PATTERN_TIMEOUT</c>, <c>! FAILSAFE</c>), delivered on the reader thread, including
     /// while commands are in flight. Subscribing to the first observer sends
     /// <c>subscribe on</c> and throws the device error if it is refused (for
     /// example <see cref="ErrorCode.NoResource"/> with no input pins);
@@ -136,12 +137,22 @@ public sealed class Connection : IDisposable
     /// after close completes immediately.</summary>
     public IObservable<PushEvent> Events => _events;
 
-    /// <summary>Close the connection.</summary>
+    /// <summary>Close the connection. Sends no command and changes no output; a
+    /// running <see cref="Heartbeat"/> ends silently.</summary>
     public void Close()
     {
+        _closed = true;
         _transport.Close();
         _events.Complete();
     }
+
+    /// <summary>True once <see cref="Close"/> was called on this object (a
+    /// device that went away is reported by the operations, not by this flag).</summary>
+    internal bool IsClosed => _closed;
+
+    /// <summary>Report an error with no caller to throw to, through
+    /// <see cref="ErrorLog"/>.</summary>
+    internal void LogError(string message) => _transport.LogError(message);
 
     public void Dispose() => Close();
 
@@ -375,6 +386,132 @@ public sealed class Connection : IDisposable
 
     /// <summary><c>sync disarm</c> — return to idle (always accepted).</summary>
     public void SyncDisarm() => Ok("sync disarm");
+
+    // --- safety functions ---
+
+    /// <summary><c>wdog &lt;ms&gt;</c> — set the watchdog timeout (0 disables it,
+    /// otherwise 100-10000; CDC only). Every <c>OK</c> answer restarts the timer;
+    /// when it expires the device sets the failsafe latch and puts the outputs at
+    /// their <c>def</c>. With the watchdog on, keep the device busy:
+    /// <see cref="StartHeartbeat"/>.</summary>
+    public void Wdog(uint ms) => Ok(Protocol.WdogCommand(ms));
+
+    /// <summary><c>safety</c> — the safety state (watchdog, failsafe latch,
+    /// <c>usbsafe</c>, number of exclusive groups). The source of truth for
+    /// <see cref="FailsafeEvent"/>.</summary>
+    public SafetyState Safety() => Query("safety", Protocol.ParseSafety);
+
+    /// <summary><c>failsafe clear</c> — release the failsafe latch (CDC only). The
+    /// outputs stay where they are and the watchdog timer restarts.</summary>
+    public void FailsafeClear() => Ok("failsafe clear");
+
+    /// <summary><c>outputs reset</c> — put every output at its <c>def</c> (the safe
+    /// state) and stop a running pattern. Always succeeds on the device, also with
+    /// the latch set.</summary>
+    public void OutputsReset() => Ok("outputs reset");
+
+    /// <summary><c>excl set</c> — replace all exclusive groups atomically: 1 to 16
+    /// masks, each a subset of the DIO pins with at least 2 bits (CDC only).
+    /// That every pin is an output depends on the active map and is answered by
+    /// the device (<see cref="ErrorCode.BadParam"/>).</summary>
+    public void ExclSet(IReadOnlyList<uint> masks) => Ok(Protocol.ExclSetCommand(masks));
+
+    /// <summary><c>excl clear</c> — remove all exclusive groups (CDC only).</summary>
+    public void ExclClear() => Ok("excl clear");
+
+    /// <summary><c>excl get</c> — the exclusive groups in the order they were set
+    /// (a counted response; at most 16).</summary>
+    public IReadOnlyList<uint> ExclGet()
+    {
+        var (header, lines) = _transport.CommandCounted("excl get");
+        return Parsed(header, h => Protocol.ParseExclGet(h, lines));
+    }
+
+    /// <summary><c>usbsafe on|off</c> — set the failsafe for a lost USB link (CDC only).</summary>
+    public void UsbSafe(bool on) => Ok(Protocol.UsbsafeCommand(on));
+
+    /// <summary><c>rstinfo</c> — cause and time of the last restart.</summary>
+    public ResetInfo RstInfo() => Query("rstinfo", Protocol.ParseRstinfo);
+
+    /// <summary><c>pads</c> — the recorded outputs and the level read back from the pads.</summary>
+    public Pads Pads() => Query("pads", Protocol.ParsePads);
+
+    /// <summary>Make the device equal to a <c>safety.toml</c> (config-files.md
+    /// section 7, DD-16) and check the result. The rules are identical in every SDK:
+    /// <list type="number">
+    /// <item>The configuration is validated first; a value the device would refuse is
+    /// <see cref="ErrorCode.InvalidArgument"/> and nothing is sent.</item>
+    /// <item>The commands go out in this order and nothing else: <c>excl set</c> (or
+    /// <c>excl clear</c> only when the file has no groups), <c>usbsafe on|off</c>,
+    /// <c>wdog &lt;ms&gt;</c>.</item>
+    /// <item>The first error answered by the device stops the apply: later commands
+    /// are not sent, no read-back is attempted and the error keeps its code.
+    /// Accepted commands stay in effect (no rollback).</item>
+    /// <item>After the last command the SDK reads <c>safety</c> and <c>excl get</c>
+    /// and compares them with the file (watchdog, usbsafe, group count and masks in
+    /// order); a difference is <see cref="ErrorCode.SafetyMismatch"/> listing every
+    /// difference. The latch and <see cref="SafetyState.RemainingMs"/> are not
+    /// compared.</item>
+    /// </list>
+    /// The pins of the groups must already be outputs: apply <c>map.toml</c> first.
+    /// Returns the <c>safety</c> state that was read, which also shows a failsafe
+    /// latch that was set before. With a watchdog configured, start the heartbeat
+    /// afterwards.</summary>
+    public SafetyState ApplySafety(SafetyConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        foreach (var command in config.Commands())
+        {
+            Ok(command);
+        }
+
+        var state = Safety();
+        var groups = ExclGet();
+        var differences = new List<string>();
+        if (state.WdogMs != config.WatchdogMs)
+        {
+            differences.Add($"wdog_ms is {state.WdogMs}, expected {config.WatchdogMs}");
+        }
+
+        if (state.UsbSafe != config.UsbSafe)
+        {
+            differences.Add(
+                $"usbsafe is {(state.UsbSafe ? 1 : 0)}, expected {(config.UsbSafe ? 1 : 0)}");
+        }
+
+        if (state.Excl != config.Groups.Count)
+        {
+            differences.Add($"excl is {state.Excl}, expected {config.Groups.Count}");
+        }
+
+        if (groups.Count != config.Groups.Count)
+        {
+            differences.Add(
+                $"excl get returned {groups.Count} groups, expected {config.Groups.Count}");
+        }
+
+        for (var i = 0; i < Math.Min(groups.Count, config.Groups.Count); i++)
+        {
+            if (groups[i] != config.Groups[i])
+            {
+                differences.Add(
+                    $"group {i} is 0x{groups[i]:x8}, expected 0x{config.Groups[i]:x8}");
+            }
+        }
+
+        return differences.Count == 0
+            ? state
+            : throw new SdkException(ErrorCode.SafetyMismatch, string.Join("; ", differences));
+    }
+
+    /// <summary>Start the watchdog heartbeat: a dedicated thread sends <c>ping</c>
+    /// every timeout / 4 (at most 1 s) so the device keeps seeing <c>OK</c>
+    /// answers. <paramref name="timeoutMs"/> is the value given to
+    /// <see cref="Wdog"/> (100-10000). See <see cref="Heartbeat"/> for the rules
+    /// (serialised with every other command, one failure is reported and not
+    /// retried, closing the connection or the heartbeat changes no output).
+    /// Using it is optional.</summary>
+    public Heartbeat StartHeartbeat(uint timeoutMs) => Heartbeat.Start(this, timeoutMs);
 
     // --- escape hatch ---
 

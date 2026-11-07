@@ -170,7 +170,7 @@ internal static class GoldenReplay
         var words = step.Text.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
             .Select(w => w.ToLowerInvariant())
             .ToArray();
-        var form = words.Length > 1 && words[0] is "map" or "pattern" or "ts" or "sync"
+        var form = words.Length > 1 && words[0] is "map" or "pattern" or "ts" or "sync" or "excl"
             ? $"{words[0]} {words[1]}"
             : words.FirstOrDefault() ?? "";
         switch (form)
@@ -219,6 +219,26 @@ internal static class GoldenReplay
                 break;
             case "sync count":
                 Protocol.ParseSyncCount(data);
+                break;
+            case "safety":
+                {
+                    var state = Protocol.ParseSafety(data);
+                    Assert.Equal(state.Failsafe, state.Cause != FailsafeCause.None);
+                    break;
+                }
+
+            case "excl get":
+                {
+                    var masks = Protocol.ParseExclGet(data, lines.Skip(1).ToList());
+                    Assert.All(masks, m => Assert.True(uint.PopCount(m) >= 2, data));
+                    break;
+                }
+
+            case "rstinfo":
+                Protocol.ParseRstinfo(data);
+                break;
+            case "pads":
+                Protocol.ParsePads(data);
                 break;
         }
     }
@@ -463,7 +483,8 @@ internal static class TypedDispatch
         or ErrorCode.TooLong or ErrorCode.NotArmed or ErrorCode.SyncState
         or ErrorCode.NoResource or ErrorCode.NotRunning or ErrorCode.UnknownCmd
         or ErrorCode.LineTooLong or ErrorCode.BadCommand
-        or ErrorCode.TransportNotSupported or ErrorCode.UnknownDevice;
+        or ErrorCode.TransportNotSupported or ErrorCode.UnknownDevice
+        or ErrorCode.Failsafe or ErrorCode.Exclusive;
 
     public static TypedOutcome? Execute(Connection c, string[] w)
     {
@@ -624,6 +645,79 @@ internal static class TypedDispatch
                 });
             case ["sync", "count"]:
                 return Run(() => Ok($"clocks={c.SyncCount()}"));
+            case ["wdog", var ms] when Num(ms, out var wdogMs):
+                return Run(() =>
+                {
+                    c.Wdog(wdogMs);
+                    return Ok();
+                });
+            case ["safety"]:
+                return Run(() =>
+                {
+                    var s = c.Safety();
+                    return Ok($"wdog_ms={s.WdogMs} remaining_ms={s.RemainingMs} "
+                        + $"failsafe={(s.Failsafe ? 1 : 0)} cause={s.Cause.ToString().ToLowerInvariant()} "
+                        + $"usbsafe={(s.UsbSafe ? 1 : 0)} excl={s.Excl}");
+                });
+            case ["failsafe", "clear"]:
+                return Run(() =>
+                {
+                    c.FailsafeClear();
+                    return Ok();
+                });
+            case ["outputs", "reset"]:
+                return Run(() =>
+                {
+                    c.OutputsReset();
+                    return Ok();
+                });
+            case ["excl", "set", .. var masks] when masks.Length > 0 && ExclMasks(masks) is { } list:
+                return Run(() =>
+                {
+                    c.ExclSet(list);
+                    return Ok();
+                });
+            case ["excl", "clear"]:
+                return Run(() =>
+                {
+                    c.ExclClear();
+                    return Ok();
+                });
+            case ["excl", "get"]:
+                return Run(() =>
+                {
+                    var groups = c.ExclGet();
+                    return
+                    [
+                        $"OK count={groups.Count}",
+                        .. groups.Select(m => $"  mask={Hex(m)}"),
+                    ];
+                });
+            case ["usbsafe", "on"]:
+                return Run(() =>
+                {
+                    c.UsbSafe(true);
+                    return Ok();
+                });
+            case ["usbsafe", "off"]:
+                return Run(() =>
+                {
+                    c.UsbSafe(false);
+                    return Ok();
+                });
+            case ["rstinfo"]:
+                return Run(() =>
+                {
+                    var r = c.RstInfo();
+                    return Ok($"cause={r.Cause.ToString().ToLowerInvariant()} "
+                        + $"uptime_ms={r.UptimeMs} boot={Hex(r.Boot)}");
+                });
+            case ["pads"]:
+                return Run(() =>
+                {
+                    var p = c.Pads();
+                    return Ok($"out={Hex(p.Out)} pad={Hex(p.Pad)}");
+                });
             case ["reset"]:
                 return Run(() =>
                 {
@@ -639,6 +733,22 @@ internal static class TypedDispatch
             default:
                 return null;
         }
+    }
+
+    /// <summary>The masks of an <c>excl set</c> request, or null when one is not a
+    /// number the typed signature can carry.</summary>
+    private static uint[]? ExclMasks(string[] tokens)
+    {
+        var masks = new uint[tokens.Length];
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            if (!Num(tokens[i], out masks[i]))
+            {
+                return null;
+            }
+        }
+
+        return masks;
     }
 
     private static EdgeMode? ParseEdge(string s) => s switch

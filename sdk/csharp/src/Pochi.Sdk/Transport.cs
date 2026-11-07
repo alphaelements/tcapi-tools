@@ -482,7 +482,7 @@ public sealed class Transport : IDisposable
         }
     }
 
-    private void LogError(string message)
+    internal void LogError(string message)
     {
         var log = ErrorLog;
         if (log is null)

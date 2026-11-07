@@ -105,16 +105,60 @@ public sealed record VersionInfo(
     byte ProtocolVersion
 );
 
-/// <summary>Bit flags for <see cref="Capabilities.Features"/>.</summary>
-public static class Feature
+/// <summary>The eight feature bits of the <c>caps</c> <c>feat</c> field. A
+/// host sends a command only when its bit is set (an older firmware answers
+/// <c>UNKNOWN_CMD</c>); the SDK does not check the bit before every call, so
+/// applications that must support older firmware call
+/// <see cref="Connection.Caps"/> first and test <see cref="Capabilities.Has"/>.
+/// The numeric value of a member is its bit mask.</summary>
+[Flags]
+public enum Feature : uint
 {
-    /// <summary><c>caps</c> <c>feat</c> bit 0: multi-device clock sync
-    /// (<c>sync</c> commands).</summary>
-    public const uint Sync = 0x1;
+    /// <summary>Bit 0: multi-device clock sync (<c>sync</c> commands).</summary>
+    Sync = 0x01,
 
-    /// <summary><c>caps</c> <c>feat</c> bit 1: reset commands
-    /// (<c>reset</c> / <c>bootsel</c> / <c>pattern reset</c>).</summary>
-    public const uint Reset = 0x2;
+    /// <summary>Bit 1: reset commands (<c>reset</c> / <c>bootsel</c> /
+    /// <c>pattern reset</c>).</summary>
+    Reset = 0x02,
+
+    /// <summary>Bit 2: watchdog and failsafe (<c>wdog</c>, <c>safety</c>,
+    /// <c>failsafe clear</c>, <c>! FAILSAFE</c>).</summary>
+    Wdog = 0x04,
+
+    /// <summary>Bit 3: exclusive output groups (<c>excl set|clear|get</c>).</summary>
+    Excl = 0x08,
+
+    /// <summary>Bit 4: <c>outputs reset</c>.</summary>
+    OutReset = 0x10,
+
+    /// <summary>Bit 5: <c>rstinfo</c>.</summary>
+    RstInfo = 0x20,
+
+    /// <summary>Bit 6: <c>usbsafe</c>.</summary>
+    UsbSafe = 0x40,
+
+    /// <summary>Bit 7: <c>pads</c>.</summary>
+    Pads = 0x80,
+}
+
+/// <summary>The set of defined <see cref="Feature"/> bits.</summary>
+public static class FeatureBits
+{
+    /// <summary>The mask of every defined bit (<c>0xff</c>).</summary>
+    public const uint Mask = 0xff;
+
+    /// <summary>Every defined feature, in bit order.</summary>
+    public static IReadOnlyList<Feature> All { get; } =
+    [
+        Feature.Sync,
+        Feature.Reset,
+        Feature.Wdog,
+        Feature.Excl,
+        Feature.OutReset,
+        Feature.RstInfo,
+        Feature.UsbSafe,
+        Feature.Pads,
+    ];
 }
 
 /// <summary>Parsed <c>caps</c> response
@@ -140,11 +184,18 @@ public sealed record Capabilities(
 {
     /// <summary>True if bit 0 of <see cref="Features"/> (sync capability) is set.</summary>
     [JsonIgnore]
-    public bool HasSync => (Features & Feature.Sync) != 0;
+    public bool HasSync => Has(Feature.Sync);
 
     /// <summary>True if bit 1 of <see cref="Features"/> (reset commands) is set.</summary>
     [JsonIgnore]
-    public bool HasReset => (Features & Feature.Reset) != 0;
+    public bool HasReset => Has(Feature.Reset);
+
+    /// <summary>True if the bit of <paramref name="feature"/> is set.</summary>
+    public bool Has(Feature feature) => (Features & (uint)feature) != 0;
+
+    /// <summary>The defined features whose bit is set, in bit order (undefined
+    /// bits are ignored).</summary>
+    public IReadOnlyList<Feature> FeatureList() => FeatureBits.All.Where(Has).ToArray();
 }
 
 /// <summary>Parsed <c>state</c> response: physical GP bits, logical levels.</summary>
@@ -152,6 +203,136 @@ public sealed record IoState(
     uint Inputs,
     uint Outputs
 );
+
+/// <summary>Limits of the safety functions (docs/sdk-api-design.md, "Safety
+/// types").</summary>
+public static class SafetyLimits
+{
+    /// <summary>Smallest enabled watchdog timeout in milliseconds (<c>0</c> disables it).</summary>
+    public const uint WdogMinMs = 100;
+
+    /// <summary>Largest watchdog timeout in milliseconds.</summary>
+    public const uint WdogMaxMs = 10000;
+
+    /// <summary>Largest number of exclusive groups.</summary>
+    public const int MaxExclusiveGroups = 16;
+}
+
+/// <summary>Cause of the failsafe latch (wire: <c>none</c> | <c>wdog</c> | <c>usb</c>).</summary>
+public enum FailsafeCause
+{
+    /// <summary>The latch is not set.</summary>
+    None,
+
+    /// <summary>The watchdog tripped.</summary>
+    Wdog,
+
+    /// <summary>The USB link was lost with <c>usbsafe on</c>.</summary>
+    Usb,
+}
+
+/// <summary>Parsed <c>safety</c> response: the volatile safety state of the
+/// device.</summary>
+/// <param name="WdogMs">Configured watchdog timeout in milliseconds, 0 = disabled.</param>
+/// <param name="RemainingMs">Time left, rounded up, read before this command
+/// restarted the timer; 0 when disabled or latched.</param>
+/// <param name="Failsafe">The failsafe latch.</param>
+/// <param name="Cause">The cause of the latch (the first cause is kept);
+/// <see cref="FailsafeCause.None"/> exactly when <paramref name="Failsafe"/> is false.</param>
+/// <param name="UsbSafe">The <c>usbsafe</c> setting (wire key <c>usbsafe</c>).</param>
+/// <param name="Excl">Number of exclusive groups, 0-16.</param>
+public sealed record SafetyState(
+    uint WdogMs,
+    uint RemainingMs,
+    bool Failsafe,
+    FailsafeCause Cause,
+    [property: JsonPropertyName("usbsafe")] bool UsbSafe,
+    byte Excl
+);
+
+/// <summary>Cause of the last restart (<c>rstinfo cause=</c>).</summary>
+public enum ResetCause
+{
+    /// <summary>Power-on.</summary>
+    Por,
+
+    /// <summary>Hardware watchdog.</summary>
+    Wdt,
+
+    /// <summary>Software reset (including the <c>reset</c> command).</summary>
+    Soft,
+
+    /// <summary>Brown-out.</summary>
+    Bor,
+
+    /// <summary>Anything else.</summary>
+    Other,
+}
+
+/// <summary>Parsed <c>rstinfo</c> response: the cause and time of the last restart.</summary>
+/// <param name="Cause">Why the device restarted.</param>
+/// <param name="UptimeMs">Milliseconds since the restart.</param>
+/// <param name="Boot">A value that differs at every restart; a changed value
+/// tells the host the device restarted and its safety settings must be
+/// re-applied.</param>
+public sealed record ResetInfo(ResetCause Cause, ulong UptimeMs, uint Boot);
+
+/// <summary>Parsed <c>pads</c> response: the recorded outputs and the level read
+/// back from the pads of the output pins, both logical. A difference means
+/// something outside the device drives the pin.</summary>
+public sealed record Pads(uint Out, uint Pad);
+
+/// <summary>The declared safety settings of a <c>safety.toml</c>: what the
+/// device must look like after <see cref="Connection.ApplySafety"/>. The
+/// all-off <see cref="Default"/> is the content of a file with only
+/// <c>version = 2</c>. Groups compare by value, in order.</summary>
+/// <param name="WatchdogMs"><c>watchdog.timeout_ms</c>: 0 = disabled, otherwise 100-10000.</param>
+/// <param name="UsbSafe"><c>usb.safe</c>: <c>usbsafe on</c> when true (wire key <c>usbsafe</c>).</param>
+/// <param name="Groups">One pin mask per <c>[[exclusive]]</c>, in file order (at
+/// most 16, each a subset of the DIO pins with at least 2 bits).</param>
+public sealed record SafetyConfig(
+    uint WatchdogMs,
+    [property: JsonPropertyName("usbsafe")] bool UsbSafe,
+    IReadOnlyList<uint> Groups
+)
+{
+    /// <summary>Everything off: no watchdog, no usbsafe, no groups.</summary>
+    public static SafetyConfig Default { get; } = new(0, false, []);
+
+    /// <summary>The commands that make the device equal to this configuration,
+    /// in the DD-16 order (config-files.md section 7): <c>excl set &lt;masks&gt;</c>
+    /// (or <c>excl clear</c> when there are no groups), <c>usbsafe on|off</c>,
+    /// <c>wdog &lt;ms&gt;</c>. <c>excl set</c> replaces all groups atomically, so
+    /// <c>excl clear</c> is sent only when there are no groups and never before
+    /// an <c>excl set</c>; the watchdog goes last so it cannot trip while the
+    /// rest is still being sent. A value the device would refuse is an
+    /// <see cref="ErrorCode.InvalidArgument"/> and nothing is produced.</summary>
+    public IReadOnlyList<string> Commands() =>
+    [
+        Groups.Count == 0 ? "excl clear" : Protocol.ExclSetCommand(Groups),
+        Protocol.UsbsafeCommand(UsbSafe),
+        Protocol.WdogCommand(WatchdogMs),
+    ];
+
+    public bool Equals(SafetyConfig? other) =>
+        other is not null
+        && WatchdogMs == other.WatchdogMs
+        && UsbSafe == other.UsbSafe
+        && Groups.SequenceEqual(other.Groups);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(WatchdogMs);
+        hash.Add(UsbSafe);
+        foreach (var group in Groups)
+        {
+            hash.Add(group);
+        }
+
+        return hash.ToHashCode();
+    }
+}
 
 /// <summary>The v2 pin map: eight fields, all masks physical GP bits. Parsed
 /// from <c>map get</c> and sent with <c>map set</c>.</summary>
@@ -396,8 +577,9 @@ public enum SyncState
 
 // --- push events ---
 
-/// <summary>Asynchronous push event. The device sends exactly three kinds:
-/// <c>! INPUT</c>, <c>! PATTERN_DONE</c> and <c>! PATTERN_TIMEOUT</c>.</summary>
+/// <summary>Asynchronous push event. The device sends exactly four kinds:
+/// <c>! INPUT</c>, <c>! PATTERN_DONE</c>, <c>! PATTERN_TIMEOUT</c> and
+/// <c>! FAILSAFE</c>.</summary>
 public abstract record PushEvent;
 
 /// <summary><c>! INPUT in=0x%08x t=&lt;u64 us&gt;</c>: logical levels of all
@@ -411,3 +593,9 @@ public sealed record PatternDoneEvent(ushort Loops) : PushEvent;
 /// aborted the run. The output latch keeps the last step; recover with
 /// <c>write</c> or <c>pattern reset</c>.</summary>
 public sealed record PatternTimeoutEvent(ushort Loops) : PushEvent;
+
+/// <summary><c>! FAILSAFE cause=&lt;wdog|usb&gt;</c>: the failsafe latch was set
+/// (a device with <see cref="Feature.Wdog"/>). The event can be missed, so
+/// <see cref="Connection.Safety"/> is the source of truth. <c>Cause</c> is
+/// never <see cref="FailsafeCause.None"/>.</summary>
+public sealed record FailsafeEvent(FailsafeCause Cause) : PushEvent;
