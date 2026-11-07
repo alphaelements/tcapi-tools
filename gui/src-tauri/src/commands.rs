@@ -1028,6 +1028,9 @@ mod safety_flow_tests {
         excl: Vec<u32>,
         log: Vec<String>,
         refuse: Vec<&'static str>,
+        /// Answered `ping`s: what the real heartbeat sends, kept out of
+        /// `log` so command assertions stay about commands.
+        pings: u32,
     }
 
     fn hex_masks<'a>(words: impl Iterator<Item = &'a str>) -> Vec<u32> {
@@ -1041,6 +1044,7 @@ mod safety_flow_tests {
             return vec!["OK fw=0.1.3 proto=2".to_string()];
         }
         if let Some(n) = cmd.strip_prefix("ping ") {
+            model.pings += 1;
             return vec![format!("OK pong={n}")];
         }
         model.log.push(cmd.to_string());
@@ -1090,6 +1094,10 @@ mod safety_flow_tests {
     impl FakeFirmware {
         fn commands(&self) -> Vec<String> {
             self.model.lock().unwrap().log.clone()
+        }
+
+        fn pings(&self) -> u32 {
+            self.model.lock().unwrap().pings
         }
     }
 
@@ -1187,6 +1195,49 @@ mod safety_flow_tests {
         let flag = Arc::new(AtomicBool::new(false));
         inner.heartbeat_stop = Some(Arc::clone(&flag));
         flag
+    }
+
+    /// Handle on the monitor thread of a real heartbeat.
+    type Monitor = Arc<Mutex<Option<JoinHandle<()>>>>;
+
+    /// Heartbeat starter that runs the SDK's real heartbeat (pinging the fake
+    /// firmware) under the same `watch_heartbeat` loop the app uses, only
+    /// without a Tauri `AppHandle` to emit failures to. The monitor thread is
+    /// kept in `monitor` so a test can wait for it to finish.
+    fn real_starter(
+        monitor: &Monitor,
+    ) -> impl FnOnce(&mut Connection, u32) -> Result<Arc<AtomicBool>, String> {
+        let monitor = Arc::clone(monitor);
+        move |conn, ms| {
+            let heartbeat = conn.start_heartbeat(ms).map_err(err)?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread = std::thread::spawn({
+                let stop = Arc::clone(&stop);
+                move || {
+                    events::watch_heartbeat(
+                        &stop,
+                        || match heartbeat.wait_failure(Duration::from_millis(20)) {
+                            Some(e) => events::HeartbeatPoll::Failed(e.to_string()),
+                            None if heartbeat.is_running() => events::HeartbeatPoll::Running,
+                            None => events::HeartbeatPoll::Ended,
+                        },
+                        drop,
+                    );
+                    heartbeat.stop();
+                }
+            });
+            *monitor.lock().unwrap() = Some(thread);
+            Ok(stop)
+        }
+    }
+
+    /// Block until `cond` holds (up to 5 s).
+    fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn failing_starter(_: &mut Connection, _: u32) -> Result<Arc<AtomicBool>, String> {
@@ -1342,6 +1393,72 @@ mod safety_flow_tests {
         assert!(error.contains("BAD_PARAM"), "{error}");
         assert!(error.contains("heartbeat not aligned"), "{error}");
         assert!(starts.timeouts().is_empty());
+    }
+
+    // --- heartbeat end ---
+
+    /// Run a real 100 ms watchdog heartbeat (a ping every 25 ms) against the
+    /// fake firmware and wait until it has been fed.
+    fn running_real_heartbeat(
+        fw: &FakeFirmware,
+        inner: &mut AppInner,
+        monitor: &Monitor,
+    ) -> Arc<AtomicBool> {
+        set_watchdog(inner, 100, real_starter(monitor)).unwrap();
+        wait_until("the heartbeat feeds the device", || fw.pings() >= 3);
+        Arc::clone(inner.heartbeat_stop.as_ref().expect("heartbeat running"))
+    }
+
+    /// Nothing but the `wdog` command was ever sent: no `outputs reset`, no
+    /// `write`, nothing that changes an output.
+    fn assert_no_output_change(fw: &FakeFirmware) {
+        assert_eq!(fw.commands(), ["wdog 100"]);
+    }
+
+    /// After `stopped`, the heartbeat must stay silent for several periods.
+    fn assert_silent(fw: &FakeFirmware) {
+        let settled = fw.pings();
+        std::thread::sleep(Duration::from_millis(200)); // 8 periods
+        assert_eq!(fw.pings(), settled, "no ping after the heartbeat ended");
+    }
+
+    #[test]
+    fn heartbeat_stops_without_output_change() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = inner_with(conn);
+        let monitor = Monitor::default();
+        let flag = running_real_heartbeat(&fw, &mut inner, &monitor);
+
+        // Disconnect: the heartbeat ends and the device is told nothing.
+        inner.release_connection();
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "the heartbeat is told to stop"
+        );
+        assert!(inner.heartbeat_stop.is_none() && inner.connection.is_none());
+        monitor.lock().unwrap().take().unwrap().join().unwrap();
+
+        assert_silent(&fw);
+        assert_no_output_change(&fw);
+    }
+
+    #[test]
+    fn heartbeat_ends_when_the_connection_is_dropped_without_output_change() {
+        let (conn, fw) = open(DeviceModel::default());
+        let mut inner = inner_with(conn);
+        let monitor = Monitor::default();
+        let flag = running_real_heartbeat(&fw, &mut inner, &monitor);
+
+        // The connection goes away (a reset or an unplug) without anyone
+        // stopping the heartbeat: it notices by itself and ends.
+        inner.connection = None;
+        wait_until("the monitor sees the heartbeat end", || {
+            flag.load(Ordering::Relaxed)
+        });
+        monitor.lock().unwrap().take().unwrap().join().unwrap();
+
+        assert_silent(&fw);
+        assert_no_output_change(&fw);
     }
 
     // --- connect ---

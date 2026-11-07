@@ -25,7 +25,7 @@ async function enableWatchdog(page: Page, ms: string) {
   await expect(page.getByTestId("heartbeat-status")).toHaveAttribute("data-state", "running");
 }
 
-test("a device without the safety feature bits shows no safety UI", async ({ page }) => {
+test("hides safety controls without feature bits: a device without them shows no safety UI", async ({ page }) => {
   await gotoMock(page);
   await connectTo(page, "Pochi-DIO #43");
   await expect(page.getByRole("button", { name: "Safety", exact: true })).toHaveCount(0);
@@ -88,6 +88,38 @@ test("a failed heartbeat is shown, then the watchdog trips the FAILSAFE banner",
   await expect.poll(async () => (await mockState(page)).outputs).toBe(0);
 });
 
+test("failsafe banner with outputs reset and confirm-clear", async ({ page }) => {
+  await connect(page);
+  await outputSwitch(page, 0).click();
+  await outputSwitch(page, 3).click();
+  await expect.poll(async () => (await mockState(page)).outputs).toBe(0x9);
+  await enableWatchdog(page, "300");
+  await hooks(page, (h) => h.failHeartbeat("link lost"));
+
+  // The watchdog trips: banner with the cause, outputs already at default.
+  const banner = page.getByTestId("failsafe-banner");
+  await expect(banner).toBeVisible();
+  await expect(page.getByTestId("failsafe-cause")).toHaveText("cause: wdog");
+  await expect.poll(async () => (await mockState(page)).outputs).toBe(0);
+
+  // Outputs reset is offered on the banner and works while latched.
+  await banner.getByTestId("outputs-default").click();
+  await expect(page.getByText("outputs reset", { exact: true })).toBeVisible();
+  await expect.poll(async () => (await mockState(page)).outputs).toBe(0);
+  await expect(banner).toBeVisible(); // resetting outputs does not release
+
+  // Clearing the latch asks first; cancel keeps it, confirm clears it.
+  await banner.getByTestId("failsafe-release").click();
+  await expect(page.getByTestId("confirm-dialog")).toBeVisible();
+  await page.getByTestId("confirm-cancel").click();
+  await expect(banner).toBeVisible();
+  await expect(page.getByText("failsafe clear", { exact: true })).toHaveCount(0);
+  await banner.getByTestId("failsafe-release").click();
+  await page.getByTestId("confirm-ok").click();
+  await expect(banner).toHaveCount(0);
+  await expect(page.getByText("failsafe clear", { exact: true })).toBeVisible();
+});
+
 test("release needs a confirmation; cancelling keeps the latch", async ({ page }) => {
   await connect(page);
   await enableWatchdog(page, "300");
@@ -135,7 +167,7 @@ test("safety.toml: applied through the backend and summarised", async ({ page })
   expect((await mockState(page)) as unknown as { heartbeatMs: number }).toMatchObject({ heartbeatMs: 1000 });
 });
 
-test("safety.toml: a parse error is shown as file:line: message", async ({ page }) => {
+test("safety toml apply shows line numbered errors: a parse error is shown as file:line: message", async ({ page }) => {
   await connect(page);
   await dockTab(page, "Safety");
   const message = "/mock/sample.toml:4: watchdog.timeout_ms must be 0 or 100-10000";
@@ -144,6 +176,7 @@ test("safety.toml: a parse error is shown as file:line: message", async ({ page 
   }, "parse error: " + message);
   await page.getByTestId("safety-apply-file").click();
   await expect(page.getByTestId("safety-file-error")).toContainText(message);
+  await expect(page.getByTestId("safety-file-error")).toContainText(/:\d+: /);
   await expect(page.getByTestId("safety-applied")).toHaveCount(0);
   // The device was not touched.
   await expect(page.getByTestId("safety-wdog")).toHaveText("off");
@@ -152,7 +185,7 @@ test("safety.toml: a parse error is shown as file:line: message", async ({ page 
   await expect(page.getByTestId("safety-file-error")).toHaveCount(0);
 });
 
-test("exclusive violation names the group and its pins", async ({ page }) => {
+test("exclusive violation shows pin names: it names the group and its pins", async ({ page }) => {
   await connect(page);
   await dockTab(page, "Safety");
   await page.getByTestId("safety-apply-file").click();
