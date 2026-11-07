@@ -89,8 +89,35 @@ with an error and changes nothing; the next line is parsed normally:
 
 A truncation that is itself a valid command (for example a number that lost its
 last digit) cannot be detected. A host that needs certainty reads the result back
-(`state`). A transport other than USB (for example a network relay) would
-need its own integrity check; none is defined.
+(`state`).
+
+**Why there is no line checksum.**
+
+- The device is connected by USB to one host. USB data packets are protected by a
+  CRC and are retransmitted by the hardware, so a bit error on the cable never
+  reaches the text layer.
+- What damages a line in practice is the host side: a write cut short, two
+  writers sharing one port, a wrong encoding. A checksum computed by the same
+  faulty host over the faulty content would not catch any of these.
+- A checksum would make the protocol harder to type in a terminal.
+
+**When this has to be reconsidered.** If a transport other than USB (for example a
+TCP relay for a remote device, or a serial line without hardware retransmission) is
+ever supported, the link no longer has the integrity described above. The transport
+must then provide it (an authenticated, checksummed stream) or the protocol gets a
+line checksum under a new feature bit. Until then none is defined, and a host must
+not assume that the text protocol is safe on such a transport.
+
+**The behaviour is fixed by golden transcripts** (`protocol/golden/boundary.txt`), not
+only by this text:
+
+| Case in `boundary.txt` | What it fixes |
+|---|---|
+| `line length 257 bytes is refused with one ERR LINE_TOO_LONG, the stream recovers at the next line` | An over-long line gives exactly one error, and the next line (`ping`, `pattern status`) is answered normally |
+| `line length 300 bytes ending in reset: one error, the tail is discarded, the device does NOT reset` | The discarded tail is never executed, so a line cut and joined with `reset` does not reset |
+| `a valid line right after an overlong one is not affected` and `two overlong lines in a row give one error each` | Re-synchronisation happens at the next terminator |
+| `boundary_truncated_line_does_not_change_outputs` | A truncated line (missing argument) is `ERR BAD_PARAM`; outputs, map and state are unchanged |
+| `boundary_invalid_chars_rejected` | A non-printable or non-ASCII byte makes the token invalid (`ERR BAD_PARAM` in a number, `ERR UNKNOWN_CMD` in a name) and nothing is executed |
 
 ### Line Ending and Length
 
@@ -837,7 +864,8 @@ The application that enables the watchdog is responsible for the heartbeat:
 send `ping` periodically (a period of timeout/4 or less, from a dedicated
 thread). Choose a timeout larger than the longest
 time the device needs to answer: `map save` and `devnum` write flash and take
-longer than other commands.
+longer than other commands. The lower bound, and why no number is given yet, is
+under "Persistent and volatile settings" below.
 
 A command-line tool that connects, runs one command and exits has no heartbeat:
 the device trips `timeout` after the tool exits.
@@ -1017,14 +1045,55 @@ difference means something outside the device drives the pin.
 
 #### Persistent and volatile settings
 
-| Setting | Persistent (flash) | Volatile (RAM; default after every restart) |
-|---|---|---|
-| Pin map | what `map save` stored | what `map set` set |
-| Device number | `devnum` (immediately) | |
-| Watchdog, failsafe latch, `cause` | | disabled, released |
-| Exclusive groups | | none |
-| `usbsafe` | | off |
-| Pattern, timestamp, `subscribe`, sync | | idle / off |
+One table for what survives a restart, what writes flash, and what the device
+sends on its own. "Unsolicited line" means a `! ...` event (section 7) that the
+device sends without a request. Nothing else is ever sent unasked.
+
+| Setting | Set by | Stored in flash | After every restart | Unsolicited line |
+|---|---|---|---|---|
+| Pin map (`dir` `pu` `pd` `def` `opol` `ipol` `edge`) | `map set` changes RAM only; **`map save` writes flash**; `map default` resets RAM only | Only what `map save` stored | The saved map, or the default map (all inputs, pull-down) if none or if it is invalid | None |
+| Device number | **`devnum <n>` writes flash at once** | Yes | The saved number, or 255 (unassigned) | None |
+| Output levels (`write`, pattern, `outputs reset`) | `write`, `pattern ...` | No | Every output pin at its `def` of the saved map | `! PATTERN_DONE` or `! PATTERN_TIMEOUT` when a pattern run ends (always, `subscribe` is not needed) |
+| `subscribe` | `subscribe on\|off` | No | Off | `! INPUT` while on, for input pins in `edge` only; nothing for output pins |
+| Pattern | `pattern add\|run\|stop\|reset` | No | Idle, no steps | See output levels |
+| Timestamp | `ts arm\|disarm` | No | Disarmed, ring empty | None (read with `ts get`) |
+| Multi-device sync | `sync ...` | No | Idle | None |
+| Watchdog | `wdog <ms>` | No | Disabled | `! FAILSAFE cause=wdog` when it trips |
+| Failsafe latch and `cause` | A trip; `failsafe clear` | No | Released | `! FAILSAFE` once per trip |
+| Exclusive groups | `excl set\|clear` | No | None | None (`ERR EXCLUSIVE` answers the offending command) |
+| `usbsafe` | `usbsafe on\|off` | No | Off | `cause=usb` is latched when the link is lost, so the event cannot be delivered; read `safety` after reconnecting |
+
+**Commands that write flash.** Exactly two: `map save` and `devnum <n>`. Every other
+command, including `map set`, `map default`, `write`, `reset`, `bootsel` and the
+safety commands, leaves flash alone. Each write erases and programs one flash sector
+while the device processes no commands, and flash endurance is finite: do not call
+them periodically. **Bench measurement (2026-11-06, one device, 40 writes each): `map save` 34.9-36.4 ms, `devnum` 35.0-36.5 ms, median 35.5-35.8 ms.** That is the time the device is busy; it is a typical value, not a guaranteed maximum (erase time varies with the flash part, temperature and wear).
+
+**What a restart does not carry over.** After power-on, `reset`, a hardware
+watchdog reset or a panic the device is in the state the saved map defines for each
+pin (section 10, "Initial state after a restart"). The failsafe latch, exclusive
+groups, watchdog, `usbsafe`, pattern, timestamp and `subscribe` are not carried over.
+A pin that must be OFF after a restart (and in the safe state: a trip, USB loss with
+`usbsafe`, `outputs reset`) has its `def` on the OFF side. These states use the same
+value `def`: there is no separate "off polarity" setting.
+
+**A session that only drives outputs sees no unsolicited line.** With no
+subscription, pattern or failsafe trip nothing is sent, also across DTR changes and
+`outputs reset` (golden case `events_output_only_session_is_silent` in
+`protocol/golden/events.txt`).
+
+**Choosing the watchdog timeout.** The timer restarts when a command is answered
+`OK`. A flash-writing command (`map save`, `devnum`) is answered only after the
+write, so the time between two `OK`s can be as long as the heartbeat period plus the
+write. The lower bound for `wdog` is therefore
+
+    timeout > (longest flash write) + (heartbeat period)
+
+with the protocol minimum of 100 ms. With the SDK heartbeat (period `timeout / 4`, at most 1 s) and the measured
+36.5 ms, the longest gap between two `OK` answers around a write is about `timeout / 4 + 37 ms`, which is
+below the timeout for every allowed value (100 ms: about 62 ms). Because 36.5 ms is a bench value and not a
+guaranteed maximum, the safe procedure stays the same: do not send `map save` or `devnum` while the watchdog is
+enabled; send `wdog 0`, save, then enable the watchdog again.
 
 After a restart the host re-applies, in this order: `excl set`, `usbsafe`,
 `wdog` (the watchdog last; never send `excl clear` first because `excl set`
