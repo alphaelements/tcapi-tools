@@ -119,14 +119,178 @@ export const FEAT_SYNC = 0x01;
 /** `caps.features` bit 1: reset commands (`pattern reset` / `reset` / `bootsel`). */
 export const FEAT_RESET = 0x02;
 
+/** `caps.features` bit 2: `wdog`, `safety`, `failsafe clear`, `! FAILSAFE`. */
+export const FEAT_WDOG = 0x04;
+
+/** `caps.features` bit 3: `excl` (exclusive output groups). */
+export const FEAT_EXCL = 0x08;
+
+/** `caps.features` bit 4: `outputs reset`. */
+export const FEAT_OUTRESET = 0x10;
+
+/** `caps.features` bit 5: `rstinfo`. */
+export const FEAT_RSTINFO = 0x20;
+
+/** `caps.features` bit 6: `usbsafe`. */
+export const FEAT_USBSAFE = 0x40;
+
+/** `caps.features` bit 7: `pads`. */
+export const FEAT_PADS = 0x80;
+
+/**
+ * One feature bit of `caps feat=` (protocol-reference.md section 4, `caps`).
+ * A host sends a command only when its bit is set; an older firmware answers
+ * `UNKNOWN_CMD`. The values are the JSON spellings of the Rust SDK.
+ */
+export enum Feature {
+  /** Bit 0: multi-device clock sync. */
+  Sync = "sync",
+  /** Bit 1: reset commands. */
+  Reset = "reset",
+  /** Bit 2: watchdog, `safety`, failsafe latch. */
+  Wdog = "wdog",
+  /** Bit 3: exclusive output groups. */
+  Excl = "excl",
+  /** Bit 4: `outputs reset`. */
+  OutReset = "out_reset",
+  /** Bit 5: `rstinfo`. */
+  RstInfo = "rst_info",
+  /** Bit 6: `usbsafe`. */
+  UsbSafe = "usb_safe",
+  /** Bit 7: `pads`. */
+  Pads = "pads",
+}
+
+/** Every defined feature, in bit order (bit 0 first). */
+export const FEATURE_ALL: readonly Feature[] = [
+  Feature.Sync,
+  Feature.Reset,
+  Feature.Wdog,
+  Feature.Excl,
+  Feature.OutReset,
+  Feature.RstInfo,
+  Feature.UsbSafe,
+  Feature.Pads,
+];
+
+/** The mask of all defined feature bits (bits 0-7). */
+export const FEATURE_MASK = 0xff;
+
+const FEATURE_BITS: Readonly<Record<Feature, number>> = {
+  [Feature.Sync]: FEAT_SYNC,
+  [Feature.Reset]: FEAT_RESET,
+  [Feature.Wdog]: FEAT_WDOG,
+  [Feature.Excl]: FEAT_EXCL,
+  [Feature.OutReset]: FEAT_OUTRESET,
+  [Feature.RstInfo]: FEAT_RSTINFO,
+  [Feature.UsbSafe]: FEAT_USBSAFE,
+  [Feature.Pads]: FEAT_PADS,
+};
+
+/** The `caps.features` bit of a feature. */
+export function featureBit(feature: Feature): number {
+  return FEATURE_BITS[feature];
+}
+
+/** True if the feature bit is set in `caps.features`. */
+export function hasFeature(caps: Capabilities, feature: Feature): boolean {
+  return (caps.features & featureBit(feature)) !== 0;
+}
+
+/** The defined features whose bit is set, in bit order. */
+export function featureList(caps: Capabilities): Feature[] {
+  return FEATURE_ALL.filter((f) => hasFeature(caps, f));
+}
+
 /** True if bit 0 of `features` (sync capability) is set. */
 export function hasSync(caps: Capabilities): boolean {
-  return (caps.features & FEAT_SYNC) !== 0;
+  return hasFeature(caps, Feature.Sync);
 }
 
 /** True if the device supports `pattern reset` / `reset` / `bootsel`. */
 export function hasReset(caps: Capabilities): boolean {
-  return (caps.features & FEAT_RESET) !== 0;
+  return hasFeature(caps, Feature.Reset);
+}
+
+// --- safety functions (docs/sdk-api-design.md "Safety types") ---
+
+/** Smallest enabled watchdog timeout in milliseconds (`wdog <ms>`). */
+export const WDOG_MIN_MS = 100;
+
+/** Largest watchdog timeout in milliseconds. */
+export const WDOG_MAX_MS = 10_000;
+
+/** Most exclusive groups the device holds (`excl set`). */
+export const MAX_EXCLUSIVE_GROUPS = 16;
+
+/** Why the failsafe latch is set (`safety cause=`); `none` when it is clear. */
+export type FailsafeCause = "none" | "wdog" | "usb";
+
+const FAILSAFE_CAUSES: readonly FailsafeCause[] = ["none", "wdog", "usb"];
+
+/** Parse the wire spelling of a failsafe cause (exact, lower case). */
+export function failsafeCauseFromName(name: string): FailsafeCause | undefined {
+  return FAILSAFE_CAUSES.find((c) => c === name);
+}
+
+/** Cause of the last restart (`rstinfo cause=`). */
+export type ResetCause = "por" | "wdt" | "soft" | "bor" | "other";
+
+const RESET_CAUSES: readonly ResetCause[] = ["por", "wdt", "soft", "bor", "other"];
+
+/** Parse the wire spelling of a reset cause (exact, lower case). */
+export function resetCauseFromName(name: string): ResetCause | undefined {
+  return RESET_CAUSES.find((c) => c === name);
+}
+
+/** `safety` response: the volatile safety state of the device. */
+export interface SafetyState {
+  /** Configured watchdog timeout in milliseconds, 0 = disabled. */
+  wdogMs: number;
+  /** Time left (rounded up) before this command restarted the timer; 0 when disabled or latched. */
+  remainingMs: number;
+  /** The failsafe latch. */
+  failsafe: boolean;
+  /** The cause of the latch (the first cause is kept); `none` exactly when `failsafe` is false. */
+  cause: FailsafeCause;
+  /** The `usbsafe` setting. */
+  usbsafe: boolean;
+  /** Number of exclusive groups, 0-16. */
+  excl: number;
+}
+
+/** `rstinfo` response: the cause and time of the last restart. */
+export interface ResetInfo {
+  cause: ResetCause;
+  /** Milliseconds since the restart (exact up to 2^53-1, like every counter of this SDK). */
+  uptimeMs: number;
+  /** A value that differs at every restart: a changed value means the safety settings must be re-applied. */
+  boot: number;
+}
+
+/** `pads` response: the recorded outputs and the level read back from the pads, both logical masks. */
+export interface Pads {
+  out: number;
+  pad: number;
+}
+
+/**
+ * The declared settings of a `safety.toml`: what the device must look like
+ * after `applySafety`. `defaultSafetyConfig()` is the content of a file with
+ * only `version = 2`.
+ */
+export interface SafetyConfig {
+  /** `watchdog.timeout_ms`: 0 = disabled, otherwise 100-10000. */
+  watchdogMs: number;
+  /** `usb.safe`: `usbsafe on` when true. */
+  usbsafe: boolean;
+  /** One pin mask per `[[exclusive]]`, in file order (at most 16, each a subset of `VALID_DIO_MASK` with at least 2 bits). */
+  groups: number[];
+}
+
+/** Everything off: no watchdog, `usbsafe off`, no groups. */
+export function defaultSafetyConfig(): SafetyConfig {
+  return { watchdogMs: 0, usbsafe: false, groups: [] };
 }
 
 /** `state` response: input and output levels as physical GP bit masks. */
@@ -343,13 +507,17 @@ export interface TimestampResult {
 
 /**
  * Asynchronous push event from the device (`! ...` lines). The device sends
- * exactly these three; an unrecognised line is logged and discarded by the
+ * exactly these four; an unrecognised line is logged and discarded by the
  * transport and never reaches a subscriber.
+ *
+ * `failsafe` (a device with `FEAT_WDOG`) can be missed: `safety` is the source
+ * of truth. Its `cause` is never `none`.
  */
 export type PushEvent =
   | { type: "input_change"; inputs: number; timestampUs: number }
   | { type: "pattern_done"; loops: number }
-  | { type: "pattern_timeout"; loops: number };
+  | { type: "pattern_timeout"; loops: number }
+  | { type: "failsafe"; cause: "wdog" | "usb" };
 
 export type SyncRole = "master" | "slave";
 

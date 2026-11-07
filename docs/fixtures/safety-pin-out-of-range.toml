@@ -1,0 +1,7 @@
+# GP28 is outside VALID_DIO_MASK.
+# expected_error: exclusive group 1: invalid pin "GP28" in pins
+# expected_line: 7
+version = 2
+
+[[exclusive]]
+pins = ["GP28", "GP2"]

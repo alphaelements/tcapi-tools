@@ -42,6 +42,13 @@ enum Loc<'a> {
     Step(usize),
     /// Key `name` inside step `n`; the step header if the key is absent.
     StepKey(usize, &'a str),
+    /// Key `key` of the `[table]` section (or of the inline table `table = {...}`);
+    /// the section header if the key is absent.
+    Field(&'a str, &'a str),
+    /// The header of exclusive group `n` (1-based `[[exclusive]]`).
+    Group(usize),
+    /// Key `name` inside exclusive group `n`; the group header if the key is absent.
+    GroupKey(usize, &'a str),
 }
 
 #[derive(Debug, PartialEq)]
@@ -93,23 +100,47 @@ impl<'a> Src<'a> {
             .map(|(i, _)| i)
     }
 
+    /// 0-based index of the `n`-th (1-based) line that is exactly `header`.
+    fn nth_header(&self, header: &str, n: usize) -> Option<usize> {
+        self.lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == header)
+            .nth(n - 1)
+            .map(|(i, _)| i)
+    }
+
+    /// Line of key `k` in the section whose header is at index `h`; `h` if absent.
+    fn key_in_section(&self, h: usize, k: &str) -> usize {
+        self.lines[h + 1..]
+            .iter()
+            .take_while(|l| !l.trim_start().starts_with('['))
+            .position(|l| {
+                Self::is_code(l)
+                    && l.trim_start()
+                        .strip_prefix(k)
+                        .is_some_and(|r| r.starts_with([' ', '\t', '=']))
+            })
+            .map_or(h, |p| h + 1 + p)
+    }
+
     fn line(&self, loc: Loc) -> usize {
         let idx = match loc {
             Loc::File => None,
             Loc::Key(k) => self.key_line(k),
             Loc::Step(n) => self.step_header(n),
-            Loc::StepKey(n, k) => self.step_header(n).map(|h| {
-                self.lines[h + 1..]
-                    .iter()
-                    .take_while(|l| !l.trim_start().starts_with('['))
-                    .position(|l| {
-                        Self::is_code(l)
-                            && l.trim_start()
-                                .strip_prefix(k)
-                                .is_some_and(|r| r.starts_with([' ', '\t', '=']))
-                    })
-                    .map_or(h, |p| h + 1 + p)
-            }),
+            Loc::StepKey(n, k) => self.step_header(n).map(|h| self.key_in_section(h, k)),
+            Loc::Field(t, k) => self
+                .nth_header(&format!("[{t}]"), 1)
+                .map(|h| self.key_in_section(h, k))
+                .or_else(|| self.key_line(t)),
+            Loc::Group(n) => self
+                .nth_header("[[exclusive]]", n)
+                .or_else(|| self.key_line("exclusive")),
+            Loc::GroupKey(n, k) => self
+                .nth_header("[[exclusive]]", n)
+                .map(|h| self.key_in_section(h, k))
+                .or_else(|| self.key_line("exclusive")),
         };
         idx.map_or(1, |i| i + 1)
     }
@@ -419,6 +450,199 @@ fn eval_pattern(src: &str) -> Result<Vec<String>, Fail> {
     Ok(out)
 }
 
+// ------------------------------------------------------------------ safety
+
+const WDOG_MIN_MS: i64 = 100;
+const WDOG_MAX_MS: i64 = 10_000;
+const MAX_EXCLUSIVE_GROUPS: usize = 16;
+
+/// A validated `safety.toml`.
+#[derive(Debug, PartialEq)]
+struct Safety {
+    watchdog_ms: u32,
+    usbsafe: bool,
+    /// One pin mask per `[[exclusive]]`, in file order.
+    groups: Vec<u32>,
+}
+
+impl Safety {
+    /// The `# expected:` summary of a valid safety file.
+    fn summary(&self) -> String {
+        let groups = if self.groups.is_empty() {
+            "none".to_string()
+        } else {
+            let masks: Vec<_> = self.groups.iter().map(|m| format!("0x{m:08x}")).collect();
+            masks.join(",")
+        };
+        format!(
+            "watchdog_ms={} usbsafe={} groups={groups}",
+            self.watchdog_ms, self.usbsafe as u8
+        )
+    }
+
+    /// The `# expected_command:` lines: the apply order of DD-16. The file is a
+    /// complete declaration, so all three commands are always sent.
+    fn commands(&self) -> Vec<String> {
+        let excl = if self.groups.is_empty() {
+            "excl clear".to_string()
+        } else {
+            let masks: Vec<_> = self.groups.iter().map(|m| format!("0x{m:x}")).collect();
+            format!("excl set {}", masks.join(" "))
+        };
+        vec![
+            excl,
+            format!("usbsafe {}", if self.usbsafe { "on" } else { "off" }),
+            format!("wdog {}", self.watchdog_ms),
+        ]
+    }
+}
+
+/// Unknown-key check for the `[table]` section `name`.
+fn check_table_keys(s: &Src, t: &Table, allowed: &[&str], name: &str) -> Result<(), Fail> {
+    for k in t.keys() {
+        if !allowed.contains(&k.as_str()) {
+            return s.fail(
+                Loc::Field(name, k),
+                format!("unknown key \"{k}\" in {name}"),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn eval_watchdog(s: &Src, t: &Table) -> Result<u32, Fail> {
+    let Some(w) = t.get("watchdog") else {
+        return Ok(0);
+    };
+    let Value::Table(w) = w else {
+        return s.fail(Loc::Key("watchdog"), "watchdog must be a table");
+    };
+    check_table_keys(s, w, &["timeout_ms"], "watchdog")?;
+    let loc = Loc::Field("watchdog", "timeout_ms");
+    match w.get("timeout_ms") {
+        None => Ok(0),
+        Some(Value::Integer(ms)) if *ms == 0 || (WDOG_MIN_MS..=WDOG_MAX_MS).contains(ms) => {
+            Ok(u32::try_from(*ms).expect("range checked"))
+        }
+        Some(Value::Integer(_)) => s.fail(
+            loc,
+            "watchdog.timeout_ms must be 0 or between 100 and 10000",
+        ),
+        Some(_) => s.fail(loc, "watchdog.timeout_ms must be an integer"),
+    }
+}
+
+fn eval_usb(s: &Src, t: &Table) -> Result<bool, Fail> {
+    let Some(u) = t.get("usb") else {
+        return Ok(false);
+    };
+    let Value::Table(u) = u else {
+        return s.fail(Loc::Key("usb"), "usb must be a table");
+    };
+    check_table_keys(s, u, &["safe"], "usb")?;
+    match u.get("safe") {
+        None => Ok(false),
+        Some(Value::Boolean(b)) => Ok(*b),
+        Some(_) => s.fail(Loc::Field("usb", "safe"), "usb.safe must be a boolean"),
+    }
+}
+
+/// Mask of one `[[exclusive]]` group `n` (1-based).
+fn eval_group(s: &Src, n: usize, g: &Value) -> Result<u32, Fail> {
+    let Value::Table(g) = g else {
+        return s.fail(
+            Loc::Group(n),
+            format!("exclusive group {n}: must be a table"),
+        );
+    };
+    for k in g.keys() {
+        if k != "pins" {
+            return s.fail(
+                Loc::GroupKey(n, k),
+                format!("unknown key \"{k}\" in exclusive group {n}"),
+            );
+        }
+    }
+    let Some(pins) = g.get("pins") else {
+        return s.fail(
+            Loc::Group(n),
+            format!("exclusive group {n}: pins is required"),
+        );
+    };
+    let loc = Loc::GroupKey(n, "pins");
+    let not_names = || format!("exclusive group {n}: pins must be an array of pin names");
+    let Value::Array(pins) = pins else {
+        return s.fail(loc, not_names());
+    };
+    let mut mask = 0u32;
+    for pin in pins {
+        let Value::String(name) = pin else {
+            return s.fail(loc, not_names());
+        };
+        let Some(bit) = pin_number(name) else {
+            return s.fail(
+                loc,
+                format!("exclusive group {n}: invalid pin \"{name}\" in pins"),
+            );
+        };
+        if mask & (1 << bit) != 0 {
+            return s.fail(
+                loc,
+                format!("exclusive group {n}: duplicate pin \"{name}\" in pins"),
+            );
+        }
+        mask |= 1 << bit;
+    }
+    if mask.count_ones() < 2 {
+        return s.fail(
+            loc,
+            format!("exclusive group {n}: a group needs at least 2 pins"),
+        );
+    }
+    Ok(mask)
+}
+
+fn eval_safety(src: &str) -> Result<Safety, Fail> {
+    let s = Src::new(src);
+    let t = s.parse(src)?;
+    check_version(&s, &t)?;
+    check_keys(
+        &s,
+        &t,
+        &["version", "watchdog", "usb", "exclusive"],
+        None,
+        "",
+    )?;
+    let watchdog_ms = eval_watchdog(&s, &t)?;
+    let usbsafe = eval_usb(&s, &t)?;
+    let mut groups = Vec::new();
+    if let Some(ex) = t.get("exclusive") {
+        let Value::Array(entries) = ex else {
+            return s.fail(
+                Loc::Key("exclusive"),
+                "exclusive must be an array of tables",
+            );
+        };
+        if entries.len() > MAX_EXCLUSIVE_GROUPS {
+            return s.fail(
+                Loc::Group(MAX_EXCLUSIVE_GROUPS + 1),
+                format!(
+                    "too many exclusive groups: {} (at most {MAX_EXCLUSIVE_GROUPS})",
+                    entries.len()
+                ),
+            );
+        }
+        for (i, g) in entries.iter().enumerate() {
+            groups.push(eval_group(&s, i + 1, g)?);
+        }
+    }
+    Ok(Safety {
+        watchdog_ms,
+        usbsafe,
+        groups,
+    })
+}
+
 // ----------------------------------------------------------------- fixtures
 
 fn annotations(src: &str, key: &str) -> Vec<String> {
@@ -448,6 +672,8 @@ fn read_fixture(name: &str) -> String {
 fn fixture_error(name: &str, src: &str) -> Option<Fail> {
     if name.starts_with("map-") {
         eval_map(src).err()
+    } else if name.starts_with("safety-") {
+        eval_safety(src).err()
     } else {
         eval_pattern(src).err()
     }
@@ -458,8 +684,9 @@ fn every_fixture_matches_its_expectation() {
     for name in &fixture_names() {
         let src = read_fixture(name);
         let is_map = name.starts_with("map-");
+        let is_safety = name.starts_with("safety-");
         assert!(
-            is_map || name.starts_with("pattern-"),
+            is_map || is_safety || name.starts_with("pattern-"),
             "{name}: unexpected fixture name"
         );
         let exact = annotations(&src, "expected_error");
@@ -490,6 +717,16 @@ fn every_fixture_matches_its_expectation() {
             let expected = annotations(&src, "expected");
             assert_eq!(expected.len(), 1, "{name}: needs exactly one `# expected:`");
             assert_eq!(eval_map(&src).as_ref(), Ok(&expected[0]), "{name}");
+        } else if is_safety {
+            let expected = annotations(&src, "expected");
+            assert_eq!(expected.len(), 1, "{name}: needs exactly one `# expected:`");
+            let safety = eval_safety(&src).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            assert_eq!(safety.summary(), expected[0], "{name}");
+            assert_eq!(
+                safety.commands(),
+                annotations(&src, "expected_command"),
+                "{name}: apply commands (DD-16 order)"
+            );
         } else {
             let expected = annotations(&src, "expected_step");
             assert!(
@@ -516,6 +753,20 @@ fn fixture_set_covers_required_cases() {
         "map-out-with-pull.toml",
         "pattern-bad-unit.toml",
         "pattern-ns-not-multiple.toml",
+        "safety-full.toml",
+        "safety-minimal.toml",
+        "safety-watchdog-min.toml",
+        "safety-watchdog-max.toml",
+        "safety-groups-max.toml",
+        "safety-invalid-version.toml",
+        "safety-unknown-top-key.toml",
+        "safety-watchdog-too-small.toml",
+        "safety-watchdog-too-large.toml",
+        "safety-pin-not-output.toml",
+        "safety-pin-duplicate.toml",
+        "safety-group-empty.toml",
+        "safety-group-one-pin.toml",
+        "safety-too-many-groups.toml",
     ] {
         assert!(
             names.iter().any(|n| n == required),
@@ -553,6 +804,9 @@ fn documented_messages(doc: &str) -> Vec<String> {
     msgs
 }
 
+/// Message prefixes whose trailing `N` is the 1-based index of a step or group.
+const NUMBERED: [&str; 2] = ["step N", "exclusive group N"];
+
 /// Splits a template into literal pieces; `<...>` and the `N` of `step N` are wildcards.
 fn template_pieces(t: &str) -> Vec<String> {
     let mut pieces = vec![String::new()];
@@ -562,9 +816,13 @@ fn template_pieces(t: &str) -> Vec<String> {
             let end = rest.find('>').expect("unterminated <placeholder>");
             rest = &rest[end + 1..];
             pieces.push(String::new());
-        } else if rest.starts_with("step N") {
-            pieces.last_mut().unwrap().push_str("step ");
-            rest = &rest[6..];
+        } else if let Some(prefix) = NUMBERED.iter().find(|p| rest.starts_with(**p)) {
+            // `N` of "step N" / "exclusive group N" is a wildcard.
+            pieces
+                .last_mut()
+                .unwrap()
+                .push_str(&prefix[..prefix.len() - 1]);
+            rest = &rest[prefix.len()..];
             pieces.push(String::new());
         } else {
             let c = rest.chars().next().unwrap();
@@ -627,6 +885,14 @@ fn template_matcher_semantics() {
     assert!(!template_matches(
         "invalid pin <name>: x",
         "invalid pin : x"
+    ));
+    assert!(template_matches(
+        "exclusive group N: pins is required",
+        "exclusive group 16: pins is required"
+    ));
+    assert!(!template_matches(
+        "exclusive group N: pins is required",
+        "exclusive group : pins is required"
     ));
 }
 

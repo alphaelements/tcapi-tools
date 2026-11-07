@@ -1,0 +1,7 @@
+# usb.safe must be a boolean.
+# expected_error: usb.safe must be a boolean
+# expected_line: 7
+version = 2
+
+[usb]
+safe = "yes"

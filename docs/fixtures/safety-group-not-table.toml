@@ -1,0 +1,5 @@
+# Every entry of `exclusive` must be a table.
+# expected_error: exclusive group 1: must be a table
+# expected_line: 5
+version = 2
+exclusive = [1]

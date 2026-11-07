@@ -1,0 +1,4 @@
+# `version` must be an integer, not a string.
+# expected_error: version must be an integer
+# expected_line: 4
+version = "2"

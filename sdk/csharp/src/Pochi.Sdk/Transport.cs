@@ -26,7 +26,7 @@ internal sealed class SerialDuplexPort : IDuplexPort
         _port = port;
     }
 
-    public static SerialDuplexPort Open(string path)
+    public static SerialDuplexPort Open(string path, bool omitPortPath)
     {
         var port = new SerialPort(path, Transport.BaudRate)
         {
@@ -43,8 +43,14 @@ internal sealed class SerialDuplexPort : IDuplexPort
         }
         catch (Exception ex)
         {
-            throw new SdkException(
-                ErrorCode.Io, $"failed to open serial port {path}: {ex.Message}", ex);
+            port.Dispose();
+            throw omitPortPath
+                ? new SdkException(
+                    ErrorCode.Io,
+                    "failed to open serial port: "
+                        + PortPathScrubber.Scrub(ex.Message, path, omitPortPath: true))
+                : new SdkException(
+                    ErrorCode.Io, $"failed to open serial port {path}: {ex.Message}", ex);
         }
 
         return new SerialDuplexPort(port);
@@ -99,7 +105,10 @@ public sealed class Transport : IDisposable
 
     private readonly IDuplexPort _port;
     private readonly BlockingCollection<string> _responses = new();
-    private readonly object _commandLock = new();
+    private readonly SemaphoreSlim _commandGate = new(1, 1);
+    private readonly object _stateLock = new();
+    private readonly string _portPath;
+    private readonly bool _omitPortPath;
     private readonly object _eventLock = new();
     private readonly ManualResetEventSlim _disconnected = new(false);
     private readonly Thread _reader;
@@ -129,7 +138,7 @@ public sealed class Transport : IDisposable
     {
         get
         {
-            lock (_commandLock)
+            lock (_stateLock)
             {
                 return _desync;
             }
@@ -137,15 +146,32 @@ public sealed class Transport : IDisposable
     }
 
     public Transport(IDuplexPort port)
+        : this(port, "", omitPortPath: false)
+    {
+    }
+
+    /// <summary>Create a transport over <paramref name="port"/>. With
+    /// <paramref name="omitPortPath"/> no error message the transport raises
+    /// contains <paramref name="portPath"/> and no inner exception (whose
+    /// message may) is attached.</summary>
+    internal Transport(IDuplexPort port, string portPath, bool omitPortPath)
     {
         _port = port;
+        _portPath = portPath;
+        _omitPortPath = omitPortPath;
         _reader = new Thread(ReaderLoop) { IsBackground = true, Name = "pochi-reader" };
         _reader.Start();
     }
 
     /// <summary>Open the serial port at <paramref name="path"/> (asserting DTR)
     /// and start the reader thread.</summary>
-    public static Transport Open(string path) => new(SerialDuplexPort.Open(path));
+    public static Transport Open(string path) => Open(path, omitPortPath: false);
+
+    /// <summary>Open the serial port at <paramref name="path"/>; with
+    /// <paramref name="omitPortPath"/> the errors raised for this transport
+    /// leave the path out (see <see cref="ConnectionOptions"/>).</summary>
+    internal static Transport Open(string path, bool omitPortPath) =>
+        new(SerialDuplexPort.Open(path, omitPortPath), path, omitPortPath);
 
     /// <summary>Install a push event subscriber (replaces any previous one).
     /// Push events arriving with no subscriber installed are discarded.
@@ -161,37 +187,41 @@ public sealed class Transport : IDisposable
 
     /// <summary>Send a command expecting a single OK/ERR response line and
     /// return the OK data.</summary>
-    public string Command(string cmd) =>
-        Exchange(cmd, () => Protocol.ParseResponse(RecvResponse()).OkData());
+    public string Command(string cmd, CancellationToken cancellationToken = default) =>
+        Exchange(
+            cmd,
+            () => Protocol.ParseResponse(RecvResponse(cancellationToken)).OkData(),
+            cancellationToken);
 
     /// <summary>Send a command whose response is <c>OK count=N</c> followed
     /// by exactly N data lines (<c>ts get</c>, <c>help</c>). Returns the OK
     /// data and the N lines, which keep their two leading spaces.</summary>
-    public (string Data, IReadOnlyList<string> Lines) CommandCounted(string cmd) =>
+    public (string Data, IReadOnlyList<string> Lines) CommandCounted(
+        string cmd, CancellationToken cancellationToken = default) =>
         Exchange(cmd, () =>
         {
-            var data = Protocol.ParseResponse(RecvResponse()).OkData();
-            return (data, ReadCountedLines(Protocol.ParseCountField(data)));
-        });
+            var data = Protocol.ParseResponse(RecvResponse(cancellationToken)).OkData();
+            return (data, ReadCountedLines(Protocol.ParseCountField(data), cancellationToken));
+        }, cancellationToken);
 
     /// <summary>Send an arbitrary command and return <b>all</b> lines of the
     /// response under the same rules as every other command: one line
     /// (<c>OK ...</c> / <c>ERR ...</c>), or for a counted response the header
     /// and its N lines. The lines are returned as received, without CR/LF.</summary>
-    public IReadOnlyList<string> Raw(string cmd) =>
+    public IReadOnlyList<string> Raw(string cmd, CancellationToken cancellationToken = default) =>
         Exchange(cmd, () =>
         {
-            var header = RecvResponse();
+            var header = RecvResponse(cancellationToken);
             var response = Protocol.ParseResponse(header);
             var lines = new List<string> { header };
             if (response.Kind == ResponseKind.Ok
                 && Protocol.TryParseCountField(response.Data) is { } count)
             {
-                lines.AddRange(ReadCountedLines(count));
+                lines.AddRange(ReadCountedLines(count, cancellationToken));
             }
 
             return lines;
-        });
+        }, cancellationToken);
 
     /// <summary>Stop the reader thread and close the port.</summary>
     public void Close()
@@ -214,7 +244,7 @@ public sealed class Transport : IDisposable
         }
         catch (Exception ex)
         {
-            throw new SdkException(ErrorCode.Io, $"failed to close port: {ex.Message}", ex);
+            throw Io($"failed to close port: {Scrub(ex.Message)}", ex);
         }
     }
 
@@ -225,7 +255,7 @@ public sealed class Transport : IDisposable
     /// resynchronises first.</summary>
     internal void MarkDesync()
     {
-        lock (_commandLock)
+        lock (_stateLock)
         {
             _desync = true;
         }
@@ -233,11 +263,25 @@ public sealed class Transport : IDisposable
 
     // --- internals ---
 
+    /// <summary>Remove the port path from text taken from the OS when the
+    /// transport was opened to keep it out of errors.</summary>
+    private string Scrub(string text) => PortPathScrubber.Scrub(text, _portPath, _omitPortPath);
+
+    /// <summary>An <see cref="ErrorCode.Io"/> error; the inner exception is
+    /// attached unless the port path is being kept out of errors (its message
+    /// may name the path).</summary>
+    private SdkException Io(string message, Exception inner) =>
+        _omitPortPath
+            ? new SdkException(ErrorCode.Io, message)
+            : new SdkException(ErrorCode.Io, message, inner);
+
     /// <summary>Run one request/response exchange: serialise callers, check the
     /// request, resynchronise if needed, write the line and read the response
-    /// with <paramref name="readResponse"/>. A timeout or a parse failure
-    /// leaves the stream out of step.</summary>
-    private T Exchange<T>(string cmd, Func<T> readResponse)
+    /// with <paramref name="readResponse"/>. A timeout, a parse failure or a
+    /// cancellation after the request was written leaves the stream out of
+    /// step. A token cancelled before the request is written sends nothing and
+    /// changes nothing.</summary>
+    private T Exchange<T>(string cmd, Func<T> readResponse, CancellationToken cancellationToken)
     {
         if (Thread.CurrentThread == _reader)
         {
@@ -246,23 +290,30 @@ public sealed class Transport : IDisposable
         }
 
         Protocol.CheckRequestLine(cmd);
-        lock (_commandLock)
+        _commandGate.Wait(cancellationToken);
+        try
         {
-            ResyncIfNeeded();
+            cancellationToken.ThrowIfCancellationRequested();
+            ResyncIfNeeded(cancellationToken);
             WriteLine(cmd);
             try
             {
                 return readResponse();
             }
-            catch (SdkException ex) when (ex.Code is ErrorCode.Timeout or ErrorCode.Parse)
+            catch (Exception ex) when (ex is SdkException { Code: ErrorCode.Timeout or ErrorCode.Parse }
+                or OperationCanceledException)
             {
-                _desync = true;
+                MarkDesync();
                 throw;
             }
         }
+        finally
+        {
+            _commandGate.Release();
+        }
     }
 
-    private List<string> ReadCountedLines(ulong count)
+    private List<string> ReadCountedLines(ulong count, CancellationToken cancellationToken)
     {
         // Per-line budget: large captures (e.g. ts get on a full ring) stream
         // many data lines and the USB CDC scheduler may pace them slower than
@@ -271,7 +322,7 @@ public sealed class Transport : IDisposable
         var lines = new List<string>();
         for (var i = 0UL; i < count; i++)
         {
-            lines.Add(RecvResponse());
+            lines.Add(RecvResponse(cancellationToken));
         }
 
         return lines;
@@ -283,11 +334,11 @@ public sealed class Transport : IDisposable
     /// <c>OK pong=&lt;same value&gt;</c> arrives. Push events are routed to the
     /// event path by the reader meanwhile. If the pong never arrives the
     /// connection is closed.</summary>
-    private void ResyncIfNeeded()
+    private void ResyncIfNeeded(CancellationToken cancellationToken)
     {
         // A response line queued while no command is pending is stale (a late
         // answer of an earlier command); it must not become the next answer.
-        if (!_desync && _responses.Count == 0)
+        if (!IsDesynced && _responses.Count == 0)
         {
             return;
         }
@@ -301,7 +352,13 @@ public sealed class Transport : IDisposable
             string line;
             try
             {
-                line = RecvResponse(deadline);
+                line = RecvResponse(deadline, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // The ping is on the wire and its answer is still to come.
+                MarkDesync();
+                throw;
             }
             catch (SdkException ex) when (ex.Code is ErrorCode.Timeout)
             {
@@ -322,7 +379,11 @@ public sealed class Transport : IDisposable
 
             if (line == expected)
             {
-                _desync = false;
+                lock (_stateLock)
+                {
+                    _desync = false;
+                }
+
                 return;
             }
         }
@@ -349,14 +410,15 @@ public sealed class Transport : IDisposable
                 throw new SdkException(ErrorCode.Disconnected, "device disconnected", ex);
             }
 
-            throw new SdkException(ErrorCode.Io, $"write failed: {ex.Message}", ex);
+            throw Io($"write failed: {Scrub(ex.Message)}", ex);
         }
     }
 
-    private string RecvResponse() =>
-        RecvResponse(Environment.TickCount64 + (long)CommandTimeout.TotalMilliseconds);
+    private string RecvResponse(CancellationToken cancellationToken) =>
+        RecvResponse(
+            Environment.TickCount64 + (long)CommandTimeout.TotalMilliseconds, cancellationToken);
 
-    private string RecvResponse(long deadlineTicks)
+    private string RecvResponse(long deadlineTicks, CancellationToken cancellationToken)
     {
         while (true)
         {
@@ -372,8 +434,10 @@ public sealed class Transport : IDisposable
             }
 
             // Wake periodically so a disconnect surfaces promptly instead
-            // of after the full command timeout.
-            if (_responses.TryTake(out var line, (int)Math.Min(remaining, 50)))
+            // of after the full command timeout; a cancelled token wakes it
+            // at once.
+            if (_responses.TryTake(
+                    out var line, (int)Math.Min(remaining, 50), cancellationToken))
             {
                 return line;
             }
@@ -482,7 +546,7 @@ public sealed class Transport : IDisposable
         }
     }
 
-    private void LogError(string message)
+    internal void LogError(string message)
     {
         var log = ErrorLog;
         if (log is null)

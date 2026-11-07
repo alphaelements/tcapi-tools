@@ -1,6 +1,6 @@
 # proto=2
 # generated_by=hand
-# fw_commit=f376234f2f93
+# fw_commit=b3b07c8
 # Events are lines starting with `< ! ` and are never part of a request's response.
 
 # --- INPUT: every change on an edge pin is reported with the full input snapshot and the time in us ---
@@ -353,3 +353,37 @@
 > state
 < OK in=0x00000000 out=0x00000001
 ~ expect_pins out=0x00000000
+
+# --- events_output_only_session_is_silent ---
+# A session that only drives outputs (no input subscription, pattern or timestamp) sees no event line at all,
+# also across DTR changes and outputs reset. A response without a following "< !" line asserts silence.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+> state
+< OK in=0x00000000 out=0x00000005
+~ advance us=1000000
+> write 0xa 0xf
+< OK
+~ dtr 0
+~ dtr 1
+> outputs reset
+< OK
+> state
+< OK in=0x00000000 out=0x00000000
+~ advance us=1000000
+
+# --- events_failsafe_is_pushed_once_per_trip ---
+# ! FAILSAFE cause=wdog is sent once when the latch is set (not repeated while latched) and again after clear and a new trip.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+~ advance us=1000000
+> failsafe clear
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog

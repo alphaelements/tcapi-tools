@@ -1,15 +1,17 @@
-# Configuration files: `map.toml` and `pattern.toml` (schema v2)
+# Configuration files: `map.toml`, `pattern.toml` and `safety.toml` (schema v2)
 
-Canonical definition of the two host-side TOML formats. Every implementation
+Canonical definition of the three host-side TOML formats. Every implementation
 (Rust / TypeScript / Python / C# SDKs, `pochi-cli`, the GUI and the VSCode
 extension) must accept exactly this schema and reject everything else with the
 errors listed in section 4. Conformance is checked against the fixtures in
 [`docs/fixtures/`](fixtures/) (section 5).
 
-> **Status: draft pending owner sign-off.** The schema shape follows REF-V2
-> section 4.3. The defaults, the pin-name grammar and the error message texts
-> below were written by the implementer and are listed in section 6; do not copy
-> them into another parser until they are approved.
+> **Status: draft pending owner sign-off, except item 8 of section 6.** The
+> schema shape of `map.toml` and `pattern.toml` follows REF-V2 section 4.3; the
+> shape of `safety.toml` (section 7) follows the DCIT plan. The defaults, the
+> pin-name grammar and the error message texts below were written by the
+> implementer and are listed in section 6; do not copy them into another parser
+> until they are approved. Item 8 (the pin rules of `safety.toml`) is approved.
 
 Requirement: **R-TOML1** — `version` other than 2, unknown keys and
 contradictory settings are errors. There is no lenient mode and no migration
@@ -17,10 +19,11 @@ of older layouts.
 
 ## 1. Common rules
 
-- Both files start with `version = 2` (integer). Missing `version` or any other
+- Every file starts with `version = 2` (integer). Missing `version` or any other
   value is an error.
 - Any key not listed in this document is an error, at every level (top level,
-  pin table, step table). Keys are case-sensitive.
+  pin table, step table, `[watchdog]`, `[usb]`, exclusive group). Keys are
+  case-sensitive.
 - **Pin names** have the canonical form `GP(0|[1-9][0-9]*)`: the letters `GP`
   (upper case) followed by a decimal number without sign, leading zeros,
   spaces or non-ASCII digits. The number must be one of `0-22, 26, 27`, which
@@ -32,6 +35,14 @@ of older layouts.
   - unknown key / invalid value: the line of the key (for a pin entry, the line
     of the pin key, which also holds the inline table; for the `[pins.GPn]`
     sub-table form, the line of that header);
+  - `safety.toml`: an error about a key inside `[watchdog]`, `[usb]` or an
+    `[[exclusive]]` group is reported on the line of that key (for the inline
+    spellings `watchdog = { ... }` / `exclusive = [ ... ]`, on the line of the
+    key that holds the table); an error about a table as a whole, or about a key
+    that is absent (`pins` missing), on the line of its header (the
+    `[[exclusive]]` header of that group); a table of the wrong type
+    (`watchdog = 800`, `[exclusive]`), on the line of that key or header;
+    `too many exclusive groups`, on the header of the 17th group;
   - step errors: the line of the offending key inside that `[[step]]`; when the
     error concerns the step as a whole or a key that is absent (`out` and
     `out_bits` both present or both absent, `hold` missing), the line of the
@@ -45,8 +56,9 @@ of older layouts.
   2. `version` (missing, not an integer, not 2). This comes before unknown keys,
      so a v1-style file is reported as an unsupported version.
   3. Unknown top-level keys.
-  4. The remaining top-level keys, then the pins (map) or the steps in file
-     order (pattern), each in the order of the tables in section 4.
+  4. The remaining top-level keys, then the pins (map), the steps in file order
+     (pattern) or the sections `watchdog`, `usb`, `exclusive` in that order
+     (safety), each in the order of the tables in section 4.
 
   For several faulty pins in one map file, which pin is reported first is
   implementation-defined (the fixtures contain one fault each).
@@ -57,10 +69,12 @@ of older layouts.
 
 Bit `n` corresponds to `GPn`. The mask covers bits 0-22 (GP0-GP22) and bits
 26-27 (GP26, GP27). GP23, GP24, GP25 (on-board LED) and GP28 are not usable as
-DIO. Any pin outside the mask is an error in `map.toml` and `pattern.toml`.
+DIO. Any pin outside the mask is an error in `map.toml`, `pattern.toml` and
+`safety.toml`.
 Every mask field produced from these files (`dir`, `pull_up`, `pull_down`,
-`out_default`, `out_polarity`, `in_polarity`, `edge`, and each step's
-`out_bits`) is a subset of `VALID_DIO_MASK`.
+`out_default`, `out_polarity`, `in_polarity`, `edge`, each step's
+`out_bits` and each exclusive group of `safety.toml`) is a subset of
+`VALID_DIO_MASK`.
 
 ## 2. `map.toml`
 
@@ -85,7 +99,7 @@ GP26 = { dir = "in",  pull = "up" }
 | Key      | Type                       | Applies to | Default  | Meaning |
 |----------|----------------------------|------------|----------|---------|
 | `dir`    | `"in"` \| `"out"`          | both       | `"in"`   | Pin direction. |
-| `default`| integer `0` or `1`         | output     | `0`      | Level driven when the map is applied (before polarity). |
+| `default`| integer `0` or `1`         | output     | `0`      | Level driven when the map is applied (before polarity). It is also the level the pin has after every restart and its safe state, so a pin that must start OFF keeps `default = 0`; for an active-low board set `invert = true`. |
 | `invert` | boolean                    | both       | `false`  | Output: invert driven level. Input: invert sampled level. |
 | `pull`   | `"up"` \| `"down"` \| `"none"` | input  | `"down"` | Internal pull resistor. |
 | `edge`   | boolean                    | input      | `true`   | Include the pin in edge (change) detection. |
@@ -169,7 +183,7 @@ The message texts below are shown without the `<file>:<line>: ` prefix of
 section 1. Position `N` in `step N` is 1-based. `<value>` placeholders are replaced by the
 offending input. All of these are hard errors; nothing is applied to the device.
 
-### Both files
+### All files
 
 | Condition                         | Message |
 |-----------------------------------|---------|
@@ -228,6 +242,36 @@ is reported); steps are checked in file order. For a map, the checks of one pin
 run in the order of the map table above (pin name, pin is a table, unknown keys,
 `dir`, `invert`, then the direction-specific checks).
 
+### `safety.toml`
+
+`N` in `exclusive group N` is the 1-based position of the `[[exclusive]]` entry.
+
+| Condition                               | Message |
+|-----------------------------------------|---------|
+| `watchdog` not a table                  | `watchdog must be a table` |
+| unknown key in `watchdog`               | `unknown key "<key>" in watchdog` |
+| `timeout_ms` not an integer             | `watchdog.timeout_ms must be an integer` |
+| `timeout_ms` neither `0` nor in `100..=10000` (negative included) | `watchdog.timeout_ms must be 0 or between 100 and 10000` |
+| `usb` not a table                       | `usb must be a table` |
+| unknown key in `usb`                    | `unknown key "<key>" in usb` |
+| `safe` not a boolean                    | `usb.safe must be a boolean` |
+| `exclusive` present but not an array of tables | `exclusive must be an array of tables` |
+| more than 16 groups                     | `too many exclusive groups: <count> (at most 16)` |
+| group entry not a table                 | `exclusive group N: must be a table` |
+| unknown key in a group                  | `unknown key "<key>" in exclusive group N` |
+| `pins` absent                           | `exclusive group N: pins is required` |
+| `pins` not an array, or an entry that is not a string | `exclusive group N: pins must be an array of pin names` |
+| pin not in `VALID_DIO_MASK` (also lower case, `GP00`, `GP+5`, ...) | `exclusive group N: invalid pin "<name>" in pins` |
+| same pin twice in one group             | `exclusive group N: duplicate pin "<name>" in pins` |
+| fewer than 2 pins (empty list included) | `exclusive group N: a group needs at least 2 pins` |
+
+Checks run in the order of the table: `watchdog`, then `usb`, then `exclusive`
+(its type, then the group count, then the groups in file order). Within a group
+the order is: entry is a table, unknown keys, `pins` present, `pins` shape, then
+each pin in file order (invalid, then duplicate), then the pin count. The group
+count is checked before any group, so a file with 17 groups is always reported as
+`too many exclusive groups` even if one group is also faulty.
+
 ## 5. Fixtures
 
 [`docs/fixtures/`](fixtures/) is the shared conformance set. Each file begins
@@ -237,12 +281,15 @@ trivial so any language can read it:
 | Comment line | Used in | Meaning |
 |--------------|---------|---------|
 | `# expected: dir=0x... pull_up=0x... pull_down=0x... out_default=0x... out_polarity=0x... in_polarity=0x... edge=0x...` | valid `map-*.toml` | Exact evaluated masks (8 hex digits each). |
+| `# expected: watchdog_ms=<n> usbsafe=<0\|1> groups=0x...,0x...` | valid `safety-*.toml` | Evaluated settings; `groups` lists one 8-hex-digit mask per `[[exclusive]]` in file order, or `none`. |
+| `# expected_command: <command line>` | valid `safety-*.toml` | One line per command of the apply sequence of section 7, in order (`excl set 0xc 0x18` / `excl clear`, `usbsafe on\|off`, `wdog <ms>`). Masks are lower-case hex without padding, as in `protocol-reference.md`. |
 | `# expected_step: out_bits=0x... hold_ticks=N` | valid `pattern-*.toml` | One line per step, in order. |
 | `# expected_error: <message>` | invalid files | The exact error message (section 4), without the `<file>:<line>: ` prefix. |
 | `# expected_error_prefix: <text>` | `*-toml-syntax.toml` | The message must start with this text (the rest is parser specific). |
 | `# expected_line: N` | invalid files | The 1-based line the error is reported on (section 1). |
 
-Fixture names starting with `map-` are map files, `pattern-` are pattern files.
+Fixture names starting with `map-` are map files, `pattern-` are pattern files,
+`safety-` are `safety.toml` files.
 Every message of section 4 has at least one fixture; the boundary values
 (`u32::MAX` ticks, `VALID_DIO_MASK`) have positive fixtures.
 
@@ -305,6 +352,44 @@ Every message of section 4 has at least one fixture; the boundary values
 | `pattern-us-max.toml` | valid | Largest `us` hold: 858993459 us = 4294967295 ticks |
 | `pattern-us-overflow.toml` | invalid | error `step 1: hold 858993460 us exceeds the u32 tick range` |
 | `pattern-zero-hold.toml` | invalid | error `step 1: hold must be at least 1 tick` |
+| `safety-empty-tables.toml` | valid | Empty `[watchdog]`, `[usb]` and `exclusive = []` = everything off |
+| `safety-exclusive-not-array.toml` | invalid | error `exclusive must be an array of tables` |
+| `safety-full.toml` | valid | Watchdog 800, `usb.safe`, two overlapping groups |
+| `safety-group-empty.toml` | invalid | error `exclusive group 1: a group needs at least 2 pins` |
+| `safety-group-not-table.toml` | invalid | error `exclusive group 1: must be a table` |
+| `safety-group-one-pin.toml` | invalid | error `exclusive group 2: a group needs at least 2 pins` |
+| `safety-group-pins-entry-not-string.toml` | invalid | error `exclusive group 1: pins must be an array of pin names` |
+| `safety-group-pins-missing.toml` | invalid | error `exclusive group 1: pins is required` |
+| `safety-group-pins-not-array.toml` | invalid | error `exclusive group 1: pins must be an array of pin names` |
+| `safety-groups-max.toml` | valid | The maximum of 16 groups |
+| `safety-inline-bad-timeout.toml` | invalid | error `watchdog.timeout_ms must be 0 or between 100 and 10000` |
+| `safety-inline-tables.toml` | valid | Inline-table spellings |
+| `safety-invalid-pin-lowercase.toml` | invalid | error `exclusive group 2: invalid pin "gp3" in pins` |
+| `safety-invalid-version.toml` | invalid | error `unsupported version: expected 2, got 1` |
+| `safety-minimal.toml` | valid | Only `version`: all off, `excl clear` / `usbsafe off` / `wdog 0` |
+| `safety-missing-version.toml` | invalid | error `missing key "version"` |
+| `safety-pin-duplicate.toml` | invalid | error `exclusive group 1: duplicate pin "GP2" in pins` |
+| `safety-pin-not-output.toml` | invalid | error `exclusive group 1: invalid pin "GP25" in pins` |
+| `safety-pin-out-of-range.toml` | invalid | error `exclusive group 1: invalid pin "GP28" in pins` |
+| `safety-pins-high.toml` | valid | GP22, GP26, GP27 in groups |
+| `safety-toml-syntax.toml` | invalid | error `toml syntax:` |
+| `safety-too-many-groups.toml` | invalid | error `too many exclusive groups: 17 (at most 16)` |
+| `safety-unknown-group-key.toml` | invalid | error `unknown key "name" in exclusive group 1` |
+| `safety-unknown-top-key.toml` | invalid | error `unknown key "watchdgo"` |
+| `safety-unknown-usb-key.toml` | invalid | error `unknown key "safe_mode" in usb` |
+| `safety-unknown-watchdog-key.toml` | invalid | error `unknown key "timeout" in watchdog` |
+| `safety-usb-not-table.toml` | invalid | error `usb must be a table` |
+| `safety-usb-safe-not-boolean.toml` | invalid | error `usb.safe must be a boolean` |
+| `safety-version-before-unknown-key.toml` | invalid | error `unsupported version: expected 2, got 1` |
+| `safety-version-not-integer.toml` | invalid | error `version must be an integer` |
+| `safety-watchdog-max.toml` | valid | `timeout_ms = 10000` |
+| `safety-watchdog-min.toml` | valid | `timeout_ms = 100` |
+| `safety-watchdog-negative.toml` | invalid | error `watchdog.timeout_ms must be 0 or between 100 and 10000` |
+| `safety-watchdog-not-table.toml` | invalid | error `watchdog must be a table` |
+| `safety-watchdog-timeout-not-integer.toml` | invalid | error `watchdog.timeout_ms must be an integer` |
+| `safety-watchdog-too-large.toml` | invalid | error `watchdog.timeout_ms must be 0 or between 100 and 10000` |
+| `safety-watchdog-too-small.toml` | invalid | error `watchdog.timeout_ms must be 0 or between 100 and 10000` |
+| `safety-watchdog-zero.toml` | valid | `timeout_ms = 0` and `safe = false` |
 
 `sdk/rust/tests/toml_v2_fixtures.rs` evaluates every fixture with a small
 reference evaluator of this document and compares message and line to the
@@ -314,6 +399,10 @@ template, every fixture must appear in the table above, and the
 `VALID_DIO_MASK` defined in section 1 must equal the constant in the test. The
 schema text, the messages and the fixtures therefore cannot drift apart
 silently.
+
+For the `safety-*` fixtures the evaluator also checks the apply sequence: the
+commands derived from the evaluated settings must equal the `# expected_command:`
+lines (so the order of section 7 cannot change silently).
 
 The fixtures are distributed to `pochi-cli` and `pochi-vscode` by
 `scripts/sync-protocol-golden.sh` in the `pochi` parent repository
@@ -334,3 +423,115 @@ change with them):
    (including the line conventions of section 1).
 5. **Check order** of section 1 (version before unknown keys).
 6. `pull = "none"` (floating input) as a third pull value.
+7. **`safety.toml` error message texts** (section 4) and its line conventions
+   (section 1), including the check order of section 4 (the group count before
+   any group) and the position wording `exclusive group N`.
+8. **Pin rules of `safety.toml`** (**approved**): a duplicate pin is an error
+   only inside one group (groups may overlap, as on the device); "not an output
+   pin" at file level means "not usable as DIO" (`invalid pin`), because
+   whether a valid pin is an output depends on the active map (section 7). The
+   file-level fixture is `safety-pin-not-output.toml` (GP25). The device-side
+   refusal of a valid pin that is not an output (`ERR BAD_PARAM`) is covered by
+   the firmware golden, not by a host fixture.
+9. **Apply semantics of `safety.toml`**: the file is a complete declaration, so
+   every apply sends `excl set`/`excl clear`, `usbsafe` and `wdog` even for
+   absent sections (absent = off / none / `0`).
+10. **Watchdog range** `0` or `100..=10000` is the device range
+    (`protocol-reference.md`); the file rejects anything else before sending.
+
+## 7. `safety.toml`
+
+Declares the **volatile** safety settings of the device: the watchdog, the
+USB-loss behaviour (`usbsafe`) and the exclusive output groups. All three are
+reset by every restart of the device and are never stored in flash.
+
+```toml
+version = 2
+
+[watchdog]
+timeout_ms = 800          # 0 or absent = disabled; enabled: 100..=10000
+
+[usb]
+safe = true               # usbsafe on (default: off)
+
+[[exclusive]]
+pins = ["GP2", "GP3"]     # at least 2 output pins; at most one may be ON
+
+[[exclusive]]
+pins = ["GP4", "GP5", "GP6"]
+```
+
+### Separation from `map.toml` (DD-11)
+
+`safety.toml` is a separate file; the keys above are **not** accepted in
+`map.toml` (an unknown-key error there), and map keys are not accepted here. The
+map is persistent (it can be saved to flash); the safety settings are not.
+Keeping them in different files means a user can tell which file survives a
+power cycle. `map.toml` rejects unknown keys, so merging the formats would also
+break every existing `map.toml` parser.
+
+### Keys
+
+| Key                    | Type                | Required | Default | Meaning |
+|------------------------|---------------------|----------|---------|---------|
+| `version`              | integer             | yes      | -       | Must be `2`. |
+| `watchdog`             | table               | no       | empty   | Watchdog settings. |
+| `watchdog.timeout_ms`  | integer             | no       | `0`     | `0` disables the watchdog; otherwise `100..=10000` (`wdog <ms>`). |
+| `usb`                  | table               | no       | empty   | USB-loss behaviour. |
+| `usb.safe`             | boolean             | no       | `false` | `true` = `usbsafe on`, `false` = `usbsafe off`. |
+| `exclusive`            | array of tables (`[[exclusive]]`) | no | none | 0 to 16 exclusive groups. |
+| `exclusive.pins`       | array of pin names  | yes (per group) | - | 2 or more distinct pins; at most one of them may be ON. |
+
+Pin names follow section 1. Groups may overlap (the same pin in several groups).
+A pin may appear only once inside one group. The order of the groups in the file
+is the order in which the device reports them (`excl get`). An absent table, an
+empty table and `exclusive = []` mean the same: disabled / off / no groups.
+
+The evaluated settings are `watchdog_ms`, `usbsafe` and one mask per group (bit
+`n` = `GPn`, a subset of `VALID_DIO_MASK`); fixtures state them as
+`# expected: ...`.
+
+### Output pins are checked by the device
+
+A file by itself is valid when every pin is a usable DIO pin (section 1). That
+every pin of a group is an **output** depends on the `dir` of the map active on
+the device, which a file cannot know. The device checks it when the groups are
+applied and answers `ERR BAD_PARAM` (the previous groups stay); the apply stops
+there (below). Hosts that know the map should report this before sending. This is
+a property of the device state, so it has no fixture (compare the upload-time
+check of section 3).
+
+### Applying (DD-16)
+
+Applying makes the device equal to the file. The commands are sent in this order
+and nothing else:
+
+| Step | Command                                   | Notes |
+|------|-------------------------------------------|-------|
+| 1    | `excl set <mask>...` (one mask per group), or `excl clear` when the file has no groups | `excl set` replaces all groups atomically. **Never send `excl clear` first**: if `excl set` then failed, the device would be left with no groups, which is less safe than before. |
+| 2    | `usbsafe on` or `usbsafe off`             | |
+| 3    | `wdog <ms>` (`wdog 0` when disabled)      | Last, so the watchdog cannot trip while the other settings are still being sent. |
+
+The first error answered by the device stops the apply: later commands are not
+sent, and the error (with its original code, e.g. `BAD_PARAM`, `BUSY`,
+`TRANSPORT_NOT_SUPPORTED`) is reported. Commands already accepted stay in effect;
+there is no rollback, so the host reads the state back with `safety` and
+`excl get` after an error as well. After a successful apply, the read-back must
+match the file: `wdog_ms`, `usbsafe` and `excl` of `safety`, and the masks of
+`excl get` in file order.
+
+The commands are CDC only. They need a map with the pins already configured as
+outputs: apply `map.toml` first. While groups exist the device refuses
+`map default`, and a `map set` that turns a pin of a group into an input
+(`ERR BAD_MAP`); changing the map that way afterwards needs `excl clear` (which
+removes the protection) and a new apply of `safety.toml`.
+
+### Watchdog and the host
+
+The watchdog trips when the device receives no `OK` for `timeout_ms`. Whoever
+enables it must keep sending commands (the SDKs provide a heartbeat helper that
+sends every `timeout_ms / 4`, at most 1 s). A one-shot command-line run that
+enables the watchdog and exits trips the device `timeout_ms` later; use the
+continuous mode of the CLI. Choose a timeout comfortably above the time of the
+longest flash operation (`map save`, `devnum`), during which the device does not
+answer, plus the heartbeat period.

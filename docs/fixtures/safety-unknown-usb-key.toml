@@ -1,0 +1,7 @@
+# Unknown key in [usb].
+# expected_error: unknown key "safe_mode" in usb
+# expected_line: 7
+version = 2
+
+[usb]
+safe_mode = true

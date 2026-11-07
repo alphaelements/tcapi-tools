@@ -29,14 +29,14 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use pochi_sdk::{
-    Connection, EdgeMode, PatternMode, PatternState, PatternStep, PinMap, PushEvent, SdkError,
-    TS_GET_MAX, VALID_DIO_MASK,
+    Connection, EdgeMode, PatternMode, PatternState, PatternStep, PinMap, PushEvent, ResetCause,
+    SdkError, TS_GET_MAX, VALID_DIO_MASK,
 };
 use serialport::{SerialPort, TTYPort};
 
 // ------------------------------------------------------------ golden loading
 
-const GOLDEN_FILES: [&str; 10] = [
+const GOLDEN_FILES: [&str; 11] = [
     "version-info",
     "map",
     "io",
@@ -47,6 +47,7 @@ const GOLDEN_FILES: [&str; 10] = [
     "errors",
     "boundary",
     "events",
+    "safety",
 ];
 
 /// Longest request line the device accepts (the SDK refuses longer ones
@@ -459,7 +460,10 @@ fn caps_matches_golden() {
             (caps.dio, caps.out, caps.r#in, caps.ts_res_ns, caps.tick_ns),
             (25, 0, 25, 40, 200)
         );
-        assert_eq!((caps.pattern_max, caps.ring, caps.features), (256, 256, 3));
+        assert_eq!((caps.pattern_max, caps.ring), (256, 256));
+        // The transcript carries the feature mask of its firmware revision: pin
+        // neither the value nor its history, only the defined bits (0..=7).
+        assert_eq!(caps.features & !0xff, 0, "undefined feat bits");
         assert!(caps.has_sync() && caps.has_reset());
     });
 }
@@ -1004,11 +1008,172 @@ fn bootsel_reset_consumes_the_connection() {
 
 #[test]
 fn help_is_a_counted_response() {
+    let golden = case("reset", "help: counted response");
+    // The command list grows with the firmware: the transcript decides how
+    // many lines there are (its first response line is the `OK count=N`
+    // header); `version` stays first and `help` last.
+    let expected = golden.steps[0].response.len() - 1;
     run_case("reset", "help: counted response", |conn| {
         let lines = conn.help().unwrap();
-        assert_eq!(lines.len(), 16);
+        assert_eq!(lines.len(), expected, "help lines vs the golden transcript");
         assert!(lines[0].trim_start().starts_with("version"));
-        assert!(lines[15].trim_start().starts_with("help"));
+        assert!(lines[lines.len() - 1].trim_start().starts_with("help"));
+    });
+}
+
+// -------------------------------------------------------- scenarios: safety
+
+/// MAP A of `protocol/golden/safety.txt`: GP0-GP3 outputs, default 0.
+fn safety_map_a() -> PinMap {
+    PinMap::parse_get(
+        "v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 \
+         opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0",
+    )
+    .unwrap()
+}
+
+#[test]
+fn exclusive_violations_are_typed_with_group_and_mask() {
+    run_case("safety", "safety_excl_violation_rejected_whole", |conn| {
+        conn.map_set(&safety_map_a()).unwrap();
+        conn.excl_set(&[0xc]).unwrap();
+        conn.write(0x4, 0x4).unwrap();
+        let violation = |r: Result<(), SdkError>| match r {
+            Err(SdkError::Exclusive { group, mask }) => assert_eq!((group, mask), (0, 0xc)),
+            other => panic!("{other:?}"),
+        };
+        violation(conn.write(0x8, 0x8));
+        assert_eq!(conn.state().unwrap().outputs, 0x4);
+        violation(conn.write(0xc, 0xc));
+        violation(conn.write(0xf, 0xf));
+        assert_eq!(conn.state().unwrap().outputs, 0x4);
+        conn.excl_set(&[0x3, 0xc]).unwrap();
+        conn.write(0x4, 0xf).unwrap();
+        assert!(matches!(
+            conn.write(0x7, 0x7),
+            Err(SdkError::Exclusive {
+                group: 0,
+                mask: 0x3
+            })
+        ));
+        assert!(matches!(
+            conn.write(0x8, 0x8),
+            Err(SdkError::Exclusive {
+                group: 1,
+                mask: 0xc
+            })
+        ));
+        conn.write(0x1, 0x3).unwrap();
+        assert_eq!(conn.state().unwrap().outputs, 0x5);
+    });
+}
+
+#[test]
+fn exclusive_groups_round_trip_through_excl_get() {
+    run_case("safety", "safety_excl_set_get_roundtrip", |conn| {
+        conn.map_set(
+            &PinMap::parse_get(
+                "v=2 flags=0x00 dir=0x0000ffff pu=0x00000000 pd=0x0c7f0000 def=0x00000000 \
+             opol=0x00000000 ipol=0x00000000 edge=0x0c7f0000",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(conn.excl_get().unwrap().is_empty());
+        conn.excl_set(&[0xc]).unwrap();
+        assert_eq!(conn.excl_get().unwrap(), [0xc]);
+        conn.excl_set(&[0x3, 0xc]).unwrap();
+        assert_eq!(conn.excl_get().unwrap(), [0x3, 0xc]);
+        assert_eq!(conn.safety().unwrap().excl, 2);
+        conn.excl_clear().unwrap();
+        assert!(conn.excl_get().unwrap().is_empty());
+        // The upper-case spelling goes through the raw path.
+        assert_eq!(
+            conn.raw("EXCL SET 0x3 0xc 0x30 0xc0 0x300 0xc00 0x3000 0xc000")
+                .unwrap(),
+            ["OK"]
+        );
+        assert_eq!(conn.excl_get().unwrap().len(), 8);
+        let sixteen = [
+            0x3, 0xc, 0x30, 0xc0, 0x300, 0xc00, 0x3000, 0xc000, 0x5, 0xa, 0x50, 0xa0, 0x500, 0xa00,
+            0x5000, 0xa000,
+        ];
+        conn.excl_set(&sixteen).unwrap();
+        assert_eq!(conn.excl_get().unwrap(), sixteen);
+        // 17 groups never leave the host; the device answered BAD_PARAM.
+        let mut seventeen = sixteen.to_vec();
+        seventeen.push(0x9);
+        assert!(matches!(
+            conn.excl_set(&seventeen),
+            Err(SdkError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            conn.raw(&format!(
+                "excl set {}",
+                seventeen
+                    .iter()
+                    .map(|m| format!("{m:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+            .unwrap()[0]
+                .as_str(),
+            "ERR BAD_PARAM"
+        ));
+        assert_eq!(conn.safety().unwrap().excl, 16);
+        conn.excl_clear().unwrap();
+        assert!(conn.excl_get().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn the_failsafe_latch_is_a_typed_error() {
+    run_case("safety", "safety_failsafe_latch_rejects_on", |conn| {
+        conn.map_set(&safety_map_a()).unwrap();
+        conn.wdog(100).unwrap();
+        assert!(matches!(conn.write(0x1, 0x1), Err(SdkError::Failsafe)));
+        assert!(matches!(conn.write(0x2, 0x2), Err(SdkError::Failsafe)));
+        assert!(matches!(conn.write(0xf, 0xf), Err(SdkError::Failsafe)));
+        conn.pattern_add(&[step(0x1, 5), step(0x0, 10)]).unwrap();
+        assert!(matches!(conn.pattern_run_once(), Err(SdkError::Failsafe)));
+        assert!(matches!(conn.pattern_run_loop(3), Err(SdkError::Failsafe)));
+        assert!(matches!(
+            conn.map_set(&safety_map_a()),
+            Err(SdkError::Failsafe)
+        ));
+        assert!(matches!(conn.map_default(), Err(SdkError::Failsafe)));
+        assert_eq!(conn.pattern_status().unwrap().total, 2);
+        assert_eq!(conn.state().unwrap().outputs, 0);
+    });
+}
+
+#[test]
+fn rstinfo_and_pads_match_the_golden_transcripts() {
+    run_case("safety", "safety_rstinfo_initial", |conn| {
+        let info = conn.rstinfo().unwrap();
+        assert_eq!(
+            (info.cause, info.uptime_ms, info.boot),
+            (ResetCause::Por, 0, 1)
+        );
+        let info = conn.rstinfo().unwrap();
+        assert_eq!(info.uptime_ms, 1500);
+        assert_eq!(conn.raw("RSTINFO 1").unwrap(), ["ERR BAD_PARAM"]);
+    });
+    run_case("safety", "safety_pads_reports_out_and_pad", |conn| {
+        conn.map_set(
+            &PinMap::parse_get(
+                "v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 \
+                 opol=0x00000001 ipol=0x00000000 edge=0x0c7ffff0",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let pads = conn.pads().unwrap();
+        assert_eq!((pads.out, pads.pad), (0, 0));
+        conn.write(0x5, 0x5).unwrap();
+        let pads = conn.pads().unwrap();
+        assert_eq!((pads.out, pads.pad), (5, 5));
+        assert_eq!(conn.raw("PADS 1").unwrap(), ["ERR BAD_PARAM"]);
     });
 }
 

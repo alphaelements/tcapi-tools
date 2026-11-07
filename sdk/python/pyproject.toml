@@ -6,10 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "pochi-sdk"
 version = "0.1.0"
 description = "Python SDK for Pochi-DIO (RP2350 high-speed digital I/O unit)"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "pyserial>=3.5",
+    # TOML parsing for safety.toml; the standard library has it from 3.11.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

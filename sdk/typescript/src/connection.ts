@@ -3,7 +3,7 @@
  * Mirrors `sdk/rust/src/connection.rs`.
  *
  * Push events are delivered through `on("input-change" | "pattern-done" |
- * "pattern-timeout")` or `subscribeEvents()`. The SDK owns the device
+ * "pattern-timeout" | "failsafe")` or `subscribeEvents()`. The SDK owns the device
  * `subscribe` command (R-H4): the subscriber count of the connection going
  * 0 -> 1 sends `subscribe on`, 1 -> 0 sends `subscribe off`, and there is one
  * device subscription per connection fanned out to all subscribers. There is no
@@ -18,6 +18,7 @@ import {
   selectSoleDevice,
 } from "./discovery.js";
 import { SdkError } from "./errors.js";
+import { Heartbeat } from "./heartbeat.js";
 import * as protocol from "./protocol.js";
 import { Transport, type PortLike } from "./transport.js";
 import {
@@ -25,20 +26,30 @@ import {
   type DeviceInfo,
   type EdgeMode,
   type IoState,
+  type Pads,
   type PatternMode,
   type PatternStatus,
   type PatternStep,
   type PinMap,
   type PushEvent,
+  type ResetInfo,
+  type SafetyConfig,
+  type SafetyState,
   type TimestampResult,
   type TsStatus,
   type VersionInfo,
+  hex8,
 } from "./types.js";
 
 export interface ConnectionEvents {
   "input-change": [{ inputs: number; timestampUs: number }];
   "pattern-done": [{ loops: number }];
   "pattern-timeout": [{ loops: number }];
+  /**
+   * `! FAILSAFE cause=<wdog|usb>`: the failsafe latch was set (a device with
+   * `FEAT_WDOG`). The event can be missed; `safety()` is the source of truth.
+   */
+  failsafe: [{ cause: "wdog" | "usb" }];
   /**
    * A subscription change started by `on` / `off` of "input-change" failed.
    * With no listener Node throws, so the failure is never silent; use
@@ -52,6 +63,11 @@ export type Unsubscribe = () => Promise<void>;
 
 const U32_MAX = 0xffffffff;
 
+/** `0x` + 8 lower-case hex digits, the form of the device's masks. */
+function hex32(value: number): string {
+  return `0x${hex8(value)}`;
+}
+
 export class Connection {
   private readonly transport: Transport;
   private readonly portPath: string;
@@ -63,6 +79,8 @@ export class Connection {
   /** Tail of the queue that orders `subscribe on` / `subscribe off` commands. */
   private subscriptionQueue: Promise<void> = Promise.resolve();
   private firmware = "";
+  /** Heartbeats started on this connection; `close()` ends them. */
+  private readonly heartbeats = new Set<Heartbeat>();
 
   private constructor(transport: Transport, portPath: string) {
     this.transport = transport;
@@ -403,6 +421,145 @@ export class Connection {
     await this.transport.command("sync disarm");
   }
 
+  // --- safety functions ---
+
+  /**
+   * `wdog <ms>` — enable (100-10000) or disable (0) the watchdog. CDC only.
+   * The watchdog is off after every restart; whoever enables it must keep a
+   * heartbeat going (`startHeartbeat`).
+   */
+  async wdog(ms: number): Promise<void> {
+    await this.transport.command(protocol.wdogCommand(ms));
+  }
+
+  /**
+   * `safety` — the safety state (watchdog, failsafe latch, `usbsafe`, number
+   * of exclusive groups). The source of truth for `! FAILSAFE`.
+   */
+  async safety(): Promise<SafetyState> {
+    return protocol.parseSafety(await this.transport.command("safety"));
+  }
+
+  /**
+   * `failsafe clear` — release the failsafe latch (CDC only). The outputs stay
+   * where they are and the watchdog timer restarts.
+   */
+  async failsafeClear(): Promise<void> {
+    await this.transport.command("failsafe clear");
+  }
+
+  /**
+   * `outputs reset` — put every output at its `def` (the safe state) and stop
+   * a running pattern. Always succeeds on the device, also with the latch set.
+   */
+  async outputsReset(): Promise<void> {
+    await this.transport.command("outputs reset");
+  }
+
+  /**
+   * `excl set <mask>...` — replace all exclusive groups atomically (1-16 masks
+   * of at least 2 output pins; CDC only). A violated state is `Exclusive`; a
+   * mask with a non-output pin is `BadParam` (the device knows the map).
+   */
+  async exclSet(masks: readonly number[]): Promise<void> {
+    await this.transport.command(protocol.exclSetCommand(masks));
+  }
+
+  /** `excl clear` — remove all exclusive groups (CDC only). */
+  async exclClear(): Promise<void> {
+    await this.transport.command("excl clear");
+  }
+
+  /** `excl get` — the masks of the exclusive groups in the order they were set (counted response). */
+  async exclGet(): Promise<number[]> {
+    const [header, lines] = await this.transport.commandCounted("excl get");
+    return protocol.parseExclGet(header, lines);
+  }
+
+  /** `usbsafe on|off` — failsafe when the USB link is lost (CDC only). */
+  async usbsafe(on: boolean): Promise<void> {
+    await this.transport.command(protocol.usbsafeCommand(on));
+  }
+
+  /** `rstinfo` — cause and time of the last restart. */
+  async rstinfo(): Promise<ResetInfo> {
+    return protocol.parseRstinfo(await this.transport.command("rstinfo"));
+  }
+
+  /** `pads` — the recorded outputs and the level read back from the pads. */
+  async pads(): Promise<Pads> {
+    return protocol.parsePads(await this.transport.command("pads"));
+  }
+
+  /**
+   * Make the device equal to a `safety.toml` (config-files.md section 7, DD-16)
+   * and check the result.
+   *
+   * The commands go out in this order and nothing else: `excl set <masks>` when
+   * the configuration has groups, `excl clear` only when it has none,
+   * `usbsafe on|off`, `wdog <ms>` (last, so the watchdog cannot trip while the
+   * rest is being sent). `excl clear` is never sent before `excl set`: `excl
+   * set` replaces atomically, and a failed `excl set` after a clear would leave
+   * the device with less protection than before.
+   *
+   * A value the device would refuse is `InvalidArgument` and nothing is sent.
+   * The first error answered by the device stops the apply: later commands are
+   * not sent, no read-back is attempted, and the error keeps its code
+   * (`BadParam`, `Busy`, ...). Accepted commands stay in effect (no rollback);
+   * call `safety()` and `exclGet()` to see what is set. Applying needs the pins
+   * of the groups to be outputs already: apply `map.toml` first.
+   *
+   * After the last command, `safety` and `excl get` are read back and must equal
+   * the configuration (`wdog_ms`, `usbsafe`, number and masks of the groups); a
+   * difference is `SafetyMismatch`. Returns the `safety` state that was read,
+   * which also shows a failsafe latch that was set before (the latch is not part
+   * of the file).
+   *
+   * With a watchdog configured, start the heartbeat afterwards.
+   */
+  async applySafety(config: SafetyConfig): Promise<SafetyState> {
+    for (const command of protocol.safetyConfigCommands(config)) {
+      await this.transport.command(command);
+    }
+    const state = await this.safety();
+    const groups = await this.exclGet();
+    const diffs: string[] = [];
+    if (state.wdogMs !== config.watchdogMs) {
+      diffs.push(`wdog_ms is ${state.wdogMs}, expected ${config.watchdogMs}`);
+    }
+    if (state.usbsafe !== config.usbsafe) {
+      diffs.push(`usbsafe is ${state.usbsafe ? 1 : 0}, expected ${config.usbsafe ? 1 : 0}`);
+    }
+    if (state.excl !== config.groups.length) {
+      diffs.push(`excl is ${state.excl}, expected ${config.groups.length}`);
+    }
+    if (groups.length !== config.groups.length) {
+      diffs.push(`excl get returned ${groups.length} groups, expected ${config.groups.length}`);
+    }
+    groups.forEach((got, i) => {
+      const want = config.groups[i];
+      if (want !== undefined && got !== want) {
+        diffs.push(`group ${i} is ${hex32(got)}, expected ${hex32(want)}`);
+      }
+    });
+    if (diffs.length > 0) throw SdkError.safetyMismatch(diffs.join("; "));
+    return state;
+  }
+
+  /**
+   * Start the watchdog heartbeat: `ping` every `timeoutMs / 4` (at most 1 s) so
+   * the device keeps seeing `OK` answers. `timeoutMs` is the value given to
+   * `wdog()` (100-10000). See `Heartbeat` for the rules (serialised with every
+   * other command, one failure is reported and not retried, closing the
+   * connection or the heartbeat changes no output).
+   */
+  startHeartbeat(timeoutMs: number): Heartbeat {
+    const heartbeat = new Heartbeat(timeoutMs, (value) => this.ping(value));
+    this.heartbeats.add(heartbeat);
+    heartbeat.once("end", () => this.heartbeats.delete(heartbeat));
+    return heartbeat;
+  }
+
   // --- escape hatch ---
 
   /**
@@ -424,9 +581,16 @@ export class Connection {
     return this.transport.raw(command);
   }
 
-  /** Close the connection. */
+  /**
+   * Close the connection. Heartbeats started on it end silently first; closing
+   * sends no command and changes no output.
+   */
   async close(): Promise<void> {
+    // `stop()` ends each heartbeat at once; the transport then closes under any
+    // ping still in flight, whose failure is no longer reported.
+    const stopped = [...this.heartbeats].map((heartbeat) => heartbeat.stop());
     await this.transport.close();
+    await Promise.all(stopped);
   }
 
   // --- subscription refcount ---
@@ -478,6 +642,9 @@ export class Connection {
         break;
       case "pattern_timeout":
         this.emitter.emit("pattern-timeout", { loops: event.loops });
+        break;
+      case "failsafe":
+        this.emitter.emit("failsafe", { cause: event.cause });
         break;
     }
     for (const subscriber of [...this.subscribers]) subscriber(event);

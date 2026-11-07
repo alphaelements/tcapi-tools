@@ -10,20 +10,30 @@
 
 import { SdkError } from "./errors.js";
 import {
+  MAX_EXCLUSIVE_GROUPS,
   PROTO_VERSION,
+  WDOG_MAX_MS,
+  WDOG_MIN_MS,
   checkDioMask,
+  failsafeCauseFromName,
+  hex8,
   patternStepToText,
   pinMapToSetArgs,
+  resetCauseFromName,
   validatePinMap,
   type Capabilities,
   type EdgeMode,
   type IoState,
+  type Pads,
   type PatternMode,
   type PatternState,
   type PatternStatus,
   type PatternStep,
   type PinMap,
   type PushEvent,
+  type ResetInfo,
+  type SafetyConfig,
+  type SafetyState,
   type TimestampEvent,
   type TsStatus,
   type VersionInfo,
@@ -121,7 +131,7 @@ class Fields {
     return SdkError.parse(`${msg} in ${this.ctx}: ${this.data}`);
   }
 
-  private invalid(key: string): SdkError {
+  invalid(key: string): SdkError {
     return SdkError.parse(`invalid ${key}= value in ${this.ctx}: ${this.data}`);
   }
 
@@ -432,6 +442,134 @@ export function parseSyncCount(data: string): number {
   return new Fields("sync count", data, ["clocks"]).dec("clocks");
 }
 
+// --- safety functions ---
+
+/**
+ * `wdog <ms>`: `0` disables the watchdog, `100..=10000` enables it. Any other
+ * value is refused before sending (the device would answer `BAD_PARAM`).
+ */
+export function wdogCommand(ms: number): string {
+  if (!Number.isInteger(ms) || (ms !== 0 && (ms < WDOG_MIN_MS || ms > WDOG_MAX_MS))) {
+    throw SdkError.invalidArgument(
+      `watchdog timeout ${ms} ms must be 0 or between ${WDOG_MIN_MS} and ${WDOG_MAX_MS}`,
+    );
+  }
+  return `wdog ${ms}`;
+}
+
+/** `usbsafe on|off`. */
+export function usbsafeCommand(on: boolean): string {
+  return `usbsafe ${on ? "on" : "off"}`;
+}
+
+/**
+ * `excl set <mask>...`: 1 to 16 groups, each a subset of the DIO pins with at
+ * least 2 bits. That every pin is an *output* depends on the active map and is
+ * checked by the device.
+ */
+export function exclSetCommand(masks: readonly number[]): string {
+  if (masks.length === 0 || masks.length > MAX_EXCLUSIVE_GROUPS) {
+    throw SdkError.invalidArgument(
+      `excl set takes 1 to ${MAX_EXCLUSIVE_GROUPS} groups, got ${masks.length}`,
+    );
+  }
+  masks.forEach((mask, i) => {
+    checkDioMask(`exclusive group ${i} mask`, mask);
+    if (popcount(mask) < 2) {
+      throw SdkError.invalidArgument(
+        `exclusive group ${i} mask 0x${hex8(mask)} needs at least 2 pins`,
+      );
+    }
+  });
+  return `excl set ${masks.map((m) => `0x${m.toString(16)}`).join(" ")}`;
+}
+
+function popcount(value: number): number {
+  let n = 0;
+  for (let v = value >>> 0; v !== 0; v >>>= 1) n += v & 1;
+  return n;
+}
+
+/**
+ * The commands that make the device equal to `config`, in the DD-16 order
+ * (config-files.md section 7): `excl set <masks>` (or `excl clear` when there
+ * are no groups), `usbsafe on|off`, `wdog <ms>`.
+ *
+ * `excl set` replaces all groups atomically, so `excl clear` is sent only when
+ * there are no groups and never before an `excl set`. The watchdog goes last so
+ * it cannot trip while the rest is being sent. A value the device would refuse
+ * is `InvalidArgument` and nothing is produced.
+ */
+export function safetyConfigCommands(config: SafetyConfig): string[] {
+  const excl = config.groups.length === 0 ? "excl clear" : exclSetCommand(config.groups);
+  return [excl, usbsafeCommand(config.usbsafe), wdogCommand(config.watchdogMs)];
+}
+
+/**
+ * Parse the `safety` response
+ * `wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0`. The latch
+ * and its cause must agree: `failsafe=1` has a cause other than `none`,
+ * `failsafe=0` has cause `none`.
+ */
+export function parseSafety(data: string): SafetyState {
+  const f = new Fields("safety", data, [
+    "wdog_ms",
+    "remaining_ms",
+    "failsafe",
+    "cause",
+    "usbsafe",
+    "excl",
+  ]);
+  const cause = failsafeCauseFromName(f.raw("cause"));
+  if (cause === undefined) throw f.invalid("cause");
+  const failsafe = f.flag("failsafe");
+  if (failsafe === (cause === "none")) {
+    throw SdkError.parse(`failsafe latch and cause disagree in safety: ${data}`);
+  }
+  const excl = f.dec("excl", MAX_EXCLUSIVE_GROUPS);
+  return {
+    wdogMs: f.dec("wdog_ms", U32_MAX),
+    remainingMs: f.dec("remaining_ms", U32_MAX),
+    failsafe,
+    cause,
+    usbsafe: f.flag("usbsafe"),
+    excl,
+  };
+}
+
+/** Parse the `rstinfo` response `cause=por uptime_ms=0 boot=0x00000001`. */
+export function parseRstinfo(data: string): ResetInfo {
+  const f = new Fields("rstinfo", data, ["cause", "uptime_ms", "boot"]);
+  const cause = resetCauseFromName(f.raw("cause"));
+  if (cause === undefined) throw f.invalid("cause");
+  return { cause, uptimeMs: f.dec("uptime_ms"), boot: f.mask("boot") };
+}
+
+/** Parse the `pads` response `out=0x00000005 pad=0x00000005`. */
+export function parsePads(data: string): Pads {
+  const f = new Fields("pads", data, ["out", "pad"]);
+  return { out: f.mask("out"), pad: f.mask("pad") };
+}
+
+/**
+ * Parse the counted `excl get` response: the header `count=<n>` and `n` lines
+ * `  mask=0x%08x`, in the order the groups were set.
+ */
+export function parseExclGet(header: string, lines: readonly string[]): number[] {
+  const count = new Fields("excl get", header, ["count"]).dec("count");
+  if (count > MAX_EXCLUSIVE_GROUPS) {
+    throw SdkError.parse(
+      `excl get announced ${count} groups, the device holds at most ${MAX_EXCLUSIVE_GROUPS}`,
+    );
+  }
+  if (count !== lines.length) {
+    throw SdkError.parse(
+      `excl get header announced ${count} groups but ${lines.length} lines were read`,
+    );
+  }
+  return lines.map((line) => new Fields("excl get line", line.trim(), ["mask"]).mask("mask"));
+}
+
 // --- push events ---
 
 /** A push line of a name this SDK does not know. */
@@ -467,6 +605,13 @@ export function parsePushEvent(payload: string): PushEvent | UnknownPushEvent {
         type: "pattern_timeout",
         loops: new Fields("PATTERN_TIMEOUT event", rest, ["loops"]).dec("loops", U16_MAX),
       };
+    case "FAILSAFE": {
+      const f = new Fields("FAILSAFE event", rest, ["cause"]);
+      // A trip always has a cause; `none` is only the idle `safety` value.
+      const cause = failsafeCauseFromName(f.raw("cause"));
+      if (cause === undefined || cause === "none") throw f.invalid("cause");
+      return { type: "failsafe", cause };
+    }
     default:
       return { type: "unknown", raw: trimmed };
   }

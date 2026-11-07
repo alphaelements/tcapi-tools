@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 
 namespace Pochi.Sdk;
@@ -135,16 +136,35 @@ public static class Discovery
     /// to report <c>proto=2</c>, then query <c>info</c>. A device on another
     /// protocol fails with <see cref="ErrorCode.UnsupportedFirmware"/> and is
     /// reported among the failures, never listed as usable.</summary>
-    public static DeviceInfo Probe(string portPath)
+    public static DeviceInfo Probe(
+        string portPath,
+        ConnectionOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
-        using var transport = Transport.Open(portPath);
-        return Probe(transport, portPath);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var transport = Transport.Open(
+            portPath, (options ?? ConnectionOptions.Default).OmitPortPathFromErrors);
+        return Probe(transport, portPath, cancellationToken);
     }
 
-    internal static DeviceInfo Probe(Transport transport, string portPath)
+    /// <summary><see cref="Probe(string, ConnectionOptions?, CancellationToken)"/>
+    /// without throwing for an error of the port or the device: the
+    /// <see cref="SdkException"/> is returned instead. A cancellation still
+    /// throws <see cref="OperationCanceledException"/>.</summary>
+    public static bool TryProbe(
+        string portPath,
+        [NotNullWhen(true)] out DeviceInfo? device,
+        [NotNullWhen(false)] out SdkException? error,
+        ConnectionOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        SdkResult.TryInvoke(
+            () => Probe(portPath, options, cancellationToken), out device, out error);
+
+    internal static DeviceInfo Probe(
+        Transport transport, string portPath, CancellationToken cancellationToken = default)
     {
-        var firmware = Connection.RequireProto(transport);
-        var data = transport.Command("info");
+        var firmware = Connection.RequireProto(transport, cancellationToken);
+        var data = transport.Command("info", cancellationToken);
         try
         {
             var (uid, deviceNumber) = Protocol.ParseInfo(data);
@@ -161,15 +181,17 @@ public static class Discovery
 
     /// <summary>Enumerate and probe all connected Pochi-DIO devices,
     /// reporting probe failures alongside successes.</summary>
-    public static DiscoveryResult DiscoverDetailed()
+    public static DiscoveryResult DiscoverDetailed(
+        ConnectionOptions? options = null, CancellationToken cancellationToken = default)
     {
         var devices = new List<DeviceInfo>();
         var failures = new List<ProbeFailure>();
         foreach (var port in EnumeratePorts())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                devices.Add(Probe(port));
+                devices.Add(Probe(port, options, cancellationToken));
             }
             catch (SdkException error)
             {
@@ -182,7 +204,9 @@ public static class Discovery
 
     /// <summary>Enumerate and probe all connected Pochi-DIO devices.
     /// Convenience wrapper over <see cref="DiscoverDetailed"/> (devices only).</summary>
-    public static DeviceInfo[] Discover() => DiscoverDetailed().Devices.ToArray();
+    public static DeviceInfo[] Discover(
+        ConnectionOptions? options = null, CancellationToken cancellationToken = default) =>
+        DiscoverDetailed(options, cancellationToken).Devices.ToArray();
 
     /// <summary>Find the device with the given UID (case-insensitive).</summary>
     public static DeviceInfo FindByUid(IReadOnlyList<DeviceInfo> devices, string uid)
@@ -197,6 +221,15 @@ public static class Discovery
 
         throw new SdkException(ErrorCode.NoDevice, $"no Pochi-DIO device with UID {uid}");
     }
+
+    /// <summary><see cref="FindByUid"/> as a result: false and the
+    /// <see cref="ErrorCode.NoDevice"/> error when no device has the UID.</summary>
+    public static bool TryFindByUid(
+        IReadOnlyList<DeviceInfo> devices,
+        string uid,
+        [NotNullWhen(true)] out DeviceInfo? device,
+        [NotNullWhen(false)] out SdkException? error) =>
+        SdkResult.TryInvoke(() => FindByUid(devices, uid), out device, out error);
 
     /// <summary>Find the device with the given device number. Duplicate
     /// numbers are a user-configuration conflict (MultipleDevices).</summary>
@@ -218,6 +251,23 @@ public static class Discovery
 
         return matches[0];
     }
+
+    /// <summary><see cref="FindByDeviceNumber"/> as a result: false with
+    /// <see cref="ErrorCode.NoDevice"/> or <see cref="ErrorCode.MultipleDevices"/>.</summary>
+    public static bool TryFindByDeviceNumber(
+        IReadOnlyList<DeviceInfo> devices,
+        byte n,
+        [NotNullWhen(true)] out DeviceInfo? device,
+        [NotNullWhen(false)] out SdkException? error) =>
+        SdkResult.TryInvoke(() => FindByDeviceNumber(devices, n), out device, out error);
+
+    /// <summary><see cref="SelectSoleDevice"/> as a result: false with
+    /// <see cref="ErrorCode.NoDevice"/> or <see cref="ErrorCode.MultipleDevices"/>.</summary>
+    public static bool TrySelectSoleDevice(
+        IReadOnlyList<DeviceInfo> devices,
+        [NotNullWhen(true)] out DeviceInfo? device,
+        [NotNullWhen(false)] out SdkException? error) =>
+        SdkResult.TryInvoke(() => SelectSoleDevice(devices), out device, out error);
 
     /// <summary>Select the only device, erroring when there are zero or several.</summary>
     public static DeviceInfo SelectSoleDevice(IReadOnlyList<DeviceInfo> devices)

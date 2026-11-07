@@ -1,0 +1,55 @@
+# 17 groups exceed the limit of 16. Reported on the header of the 17th group.
+# expected_error: too many exclusive groups: 17 (at most 16)
+# expected_line: 54
+version = 2
+
+[[exclusive]]
+pins = ["GP0", "GP1"]
+
+[[exclusive]]
+pins = ["GP1", "GP2"]
+
+[[exclusive]]
+pins = ["GP2", "GP3"]
+
+[[exclusive]]
+pins = ["GP3", "GP4"]
+
+[[exclusive]]
+pins = ["GP4", "GP5"]
+
+[[exclusive]]
+pins = ["GP5", "GP6"]
+
+[[exclusive]]
+pins = ["GP6", "GP7"]
+
+[[exclusive]]
+pins = ["GP7", "GP8"]
+
+[[exclusive]]
+pins = ["GP8", "GP9"]
+
+[[exclusive]]
+pins = ["GP9", "GP10"]
+
+[[exclusive]]
+pins = ["GP10", "GP11"]
+
+[[exclusive]]
+pins = ["GP11", "GP12"]
+
+[[exclusive]]
+pins = ["GP12", "GP13"]
+
+[[exclusive]]
+pins = ["GP13", "GP14"]
+
+[[exclusive]]
+pins = ["GP14", "GP15"]
+
+[[exclusive]]
+pins = ["GP15", "GP16"]
+
+[[exclusive]]
+pins = ["GP16", "GP17"]

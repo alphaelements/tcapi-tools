@@ -100,6 +100,48 @@ FEAT_SYNC = 0x01
 #: ``bootsel``). Set by FW v0.1.3+.
 FEAT_RESET = 0x02
 
+#: ``caps.features`` bit 2: ``wdog``, ``safety``, ``failsafe clear``,
+#: ``! FAILSAFE``.
+FEAT_WDOG = 0x04
+
+#: ``caps.features`` bit 3: ``excl`` (exclusive output groups).
+FEAT_EXCL = 0x08
+
+#: ``caps.features`` bit 4: ``outputs reset``.
+FEAT_OUTRESET = 0x10
+
+#: ``caps.features`` bit 5: ``rstinfo``.
+FEAT_RSTINFO = 0x20
+
+#: ``caps.features`` bit 6: ``usbsafe``.
+FEAT_USBSAFE = 0x40
+
+#: ``caps.features`` bit 7: ``pads``.
+FEAT_PADS = 0x80
+
+#: The mask of all defined feature bits (bits 0-7).
+FEATURE_MASK = 0xFF
+
+
+class Feature(Enum):
+    """One feature bit of ``caps feat=`` (protocol-reference.md section 4,
+    ``caps``). A host sends a command only when its bit is set. Iterating
+    the enum yields the features in bit order (bit 0 first)."""
+
+    SYNC = FEAT_SYNC
+    RESET = FEAT_RESET
+    WDOG = FEAT_WDOG
+    EXCL = FEAT_EXCL
+    OUTRESET = FEAT_OUTRESET
+    RSTINFO = FEAT_RSTINFO
+    USBSAFE = FEAT_USBSAFE
+    PADS = FEAT_PADS
+
+    @property
+    def bit(self) -> int:
+        """The ``caps.features`` bit of this feature."""
+        return self.value
+
 
 @dataclass
 class Capabilities:
@@ -122,20 +164,100 @@ class Capabilities:
     #: Feature bit mask (``FEAT_*``, wire key ``feat``).
     features: int
 
+    def has(self, feature: Feature) -> bool:
+        """True if the feature bit is set in ``features``."""
+        return (self.features & feature.bit) != 0
+
+    def feature_list(self) -> list[Feature]:
+        """The defined features whose bit is set, in bit order."""
+        return [f for f in Feature if self.has(f)]
+
     def has_sync(self) -> bool:
         """True if bit 0 of ``features`` (sync capability) is set."""
-        return (self.features & FEAT_SYNC) != 0
+        return self.has(Feature.SYNC)
 
     def has_reset(self) -> bool:
         """True if the device supports ``pattern reset`` / ``reset`` /
         ``bootsel`` (FW v0.1.3+)."""
-        return (self.features & FEAT_RESET) != 0
+        return self.has(Feature.RESET)
 
     def to_json_dict(self) -> dict[str, Any]:
         """The cross-language JSON form: ``in_`` is spelled ``in``."""
         data = asdict(self)
         data["in"] = data.pop("in_")
         return data
+
+
+#: Smallest enabled watchdog timeout in milliseconds (``wdog <ms>``).
+WDOG_MIN_MS = 100
+
+#: Largest watchdog timeout in milliseconds.
+WDOG_MAX_MS = 10_000
+
+#: Most exclusive groups the device holds (``excl set``).
+MAX_EXCLUSIVE_GROUPS = 16
+
+
+class FailsafeCause(str, Enum):
+    """Why the failsafe latch is set (``safety cause=``,
+    ``! FAILSAFE cause=``). The value is the wire spelling."""
+
+    NONE = "none"
+    WDOG = "wdog"
+    USB = "usb"
+
+
+class ResetCause(str, Enum):
+    """Cause of the last restart (``rstinfo cause=``). The value is the
+    wire spelling."""
+
+    POR = "por"
+    WDT = "wdt"
+    SOFT = "soft"
+    BOR = "bor"
+    OTHER = "other"
+
+
+@dataclass
+class SafetyState:
+    """``safety`` response: the volatile safety state of the device."""
+
+    #: Configured watchdog timeout in milliseconds, ``0`` = disabled.
+    wdog_ms: int
+    #: Time left, rounded up, read before this command restarted the timer;
+    #: ``0`` when disabled or latched.
+    remaining_ms: int
+    #: The failsafe latch.
+    failsafe: bool
+    #: The cause of the latch (the first cause is kept); ``NONE`` exactly
+    #: when ``failsafe`` is false.
+    cause: FailsafeCause
+    #: The ``usbsafe`` setting.
+    usbsafe: bool
+    #: Number of exclusive groups (0-16).
+    excl: int
+
+
+@dataclass
+class ResetInfo:
+    """``rstinfo`` response: the cause and time of the last restart."""
+
+    cause: ResetCause
+    #: Milliseconds since the restart.
+    uptime_ms: int
+    #: A value that differs at every restart; a changed value tells the host
+    #: the device restarted and its safety settings must be re-applied.
+    boot: int
+
+
+@dataclass
+class Pads:
+    """``pads`` response: the recorded outputs and the level read back from
+    the pads of the output pins, both logical. A difference means something
+    outside the device drives the pin."""
+
+    out: int
+    pad: int
 
 
 @dataclass
@@ -406,4 +528,13 @@ class PatternTimeoutEvent:
     loops: int
 
 
-PushEvent = InputChangeEvent | PatternDoneEvent | PatternTimeoutEvent
+@dataclass
+class FailsafeEvent:
+    """``! FAILSAFE cause=<wdog|usb>``: the failsafe latch was set (a device
+    with ``FEAT_WDOG``). Events can be missed; ``safety`` is the source of
+    truth. ``cause`` is never ``FailsafeCause.NONE``."""
+
+    cause: FailsafeCause
+
+
+PushEvent = InputChangeEvent | PatternDoneEvent | PatternTimeoutEvent | FailsafeEvent

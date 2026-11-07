@@ -1,0 +1,8 @@
+# Unknown key in an [[exclusive]] group.
+# expected_error: unknown key "name" in exclusive group 1
+# expected_line: 8
+version = 2
+
+[[exclusive]]
+pins = ["GP2", "GP3"]
+name = "relay"

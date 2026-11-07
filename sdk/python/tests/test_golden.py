@@ -10,10 +10,17 @@ from collections import Counter
 import pytest
 
 from pochi import protocol
-from pochi.errors import InvalidArgumentError
+from pochi.errors import (
+    ExclusiveError,
+    InvalidArgumentError,
+    ParseError,
+    UnknownDeviceError,
+)
 from pochi.protocol import parse_response
 from pochi.transport import Transport
 from pochi.types import (
+    FEATURE_MASK,
+    FailsafeCause,
     PatternState,
     PatternStep,
     PinMap,
@@ -38,7 +45,7 @@ def form_of(request: str) -> str:
     if not words:
         return ""
     first = words[0].lower()
-    if first in ("map", "pattern", "ts", "sync", "subscribe"):
+    if first in ("map", "pattern", "ts", "sync", "subscribe", "excl"):
         return " ".join(w.lower() for w in words[:2])
     return first
 
@@ -55,7 +62,9 @@ def check_ok(form: str, data: str, lines: list[str], seen: set[str]) -> None:
             256,
             256,
         )
-        assert c.features == 3 and c.has_sync() and c.has_reset()
+        # The transcripts describe the firmware of their revision: pin neither the
+        # value nor its history, only that it stays within the defined bits (0..=7).
+        assert c.features & ~FEATURE_MASK == 0 and c.has_sync() and c.has_reset()
         assert c.out + c.in_ == c.dio
     elif form == "info":
         assert protocol.parse_info(data)[0] == "0000000000000000"
@@ -88,11 +97,22 @@ def check_ok(form: str, data: str, lines: list[str], seen: set[str]) -> None:
         protocol.parse_sync_count(data)
     elif form == "help":
         assert len(lines) == protocol.parse_count_field(data)
+    elif form == "safety":
+        st = protocol.parse_safety(data)
+        assert st.failsafe == (st.cause is not FailsafeCause.NONE), data
+    elif form == "excl get":
+        for mask in protocol.parse_excl_get(data, lines):
+            assert mask.bit_count() >= 2, data
+    elif form == "rstinfo":
+        protocol.parse_rstinfo(data)
+    elif form == "pads":
+        protocol.parse_pads(data)
     elif form in {
         "devnum", "map set", "map save", "map default", "write", "pattern run",
         "pattern stop", "pattern reset", "ts arm", "ts disarm", "subscribe on",
         "subscribe off", "sync arm", "sync master", "sync start", "sync stop",
-        "sync disarm", "reset", "bootsel",
+        "sync disarm", "reset", "bootsel", "wdog", "failsafe", "outputs", "excl set",
+        "excl clear", "usbsafe",
     }:  # fmt: skip
         assert data == "", f"bare OK expected for {form!r}"
     else:
@@ -116,24 +136,42 @@ def test_every_golden_response_parses():
             header = parse_response(step.response[0])
             if header.kind == "err":
                 err = protocol.from_error_code(header.data)
-                assert type(err).__name__ != "UnknownDeviceError", (
-                    f"{case.file}.txt:{step.line_no}: {header.data} has no typed error"
+                where = f"{case.file}.txt:{step.line_no}"
+                assert not isinstance(err, (UnknownDeviceError, ParseError)), (
+                    f"{where}: {header.data} has no typed error ({err})"
                 )
-                seen_errors[header.data] += 1
+                # `ERR EXCLUSIVE group=<i> mask=0x%08x` hands both values to the caller.
+                if isinstance(err, ExclusiveError):
+                    assert header.data == (
+                        f"EXCLUSIVE group={err.group} mask=0x{err.mask:08x}"
+                    ), where
+                seen_errors[header.data.split()[0]] += 1
             else:
-                check_ok(form_of(step.text), header.data, step.response[1:], seen_forms)
+                try:
+                    check_ok(
+                        form_of(step.text), header.data, step.response[1:], seen_forms
+                    )
+                except AssertionError as e:
+                    # Name the case: a failure must say which case of the
+                    # transcript the SDK disagrees with.
+                    raise AssertionError(
+                        f"{case.file}.txt:{step.line_no} [{case.title}]: {e}"
+                    ) from e
                 ok_lines += 1
     assert ok_lines > 500
     assert {"version", "caps", "info", "ping", "read", "state", "map get", "map set",
             "pattern add", "pattern status", "ts get", "ts status", "sync count", "help",
-            "devnum", "write"} <= seen_forms  # fmt: skip
+            "devnum", "write", "wdog", "safety", "failsafe", "outputs", "excl set",
+            "excl clear", "excl get", "usbsafe", "rstinfo", "pads"} <= seen_forms  # fmt: skip
     assert seen_events == {
         "InputChangeEvent",
         "PatternDoneEvent",
         "PatternTimeoutEvent",
+        "FailsafeEvent",
     }
     for code in ("BAD_PARAM", "BAD_MAP", "BUSY", "FLASH", "TOO_LONG", "NOT_ARMED",
-                 "SYNC_STATE", "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG"):  # fmt: skip
+                 "SYNC_STATE", "NO_RESOURCE", "NOT_RUNNING", "UNKNOWN_CMD", "LINE_TOO_LONG",
+                 "FAILSAFE", "EXCLUSIVE"):  # fmt: skip
         assert seen_errors[code] > 0, f"golden never exercised {code}"
 
 
@@ -182,6 +220,13 @@ def to_pin_map(request: str) -> PinMap | None:
 def test_validate_agrees_with_every_golden_map_set():
     accepted = rejected = 0
     for case, req in map_set_requests():
+        # With exclusive groups configured the device also checks the map
+        # against them (BAD_MAP / EXCLUSIVE); a BAD_MAP there may come from the
+        # groups, not from the validity rules of the map itself. Only that
+        # step is skipped, the other expectations of the case still count.
+        configures_groups = any(
+            r.text.lower().startswith("excl set") for r in case.requests
+        )
         status = parse_response(req.response[0])
         pin_map = to_pin_map(req.text)
         where = f"{case.file}.txt:{req.line_no} {req.text}"
@@ -190,7 +235,7 @@ def test_validate_agrees_with_every_golden_map_set():
             pin_map.validate()  # must not raise
             assert canon(protocol.map_set_command(pin_map)) == canon(req.text), where
             accepted += 1
-        elif status.data == "BAD_MAP":
+        elif status.data == "BAD_MAP" and not configures_groups:
             assert pin_map is not None, where
             with pytest.raises(InvalidArgumentError):
                 pin_map.validate()
@@ -277,24 +322,31 @@ def replayable(case: Case) -> bool:
 def test_transport_replays_every_text_case(name):
     cases = [c for c in parse_file(name) if replayable(c)]
     assert cases, name
+    failures = []
     for case in cases:
-        replay_through_transport(case)
+        try:
+            replay_through_transport(case)
+        except Exception as e:  # noqa: BLE001 - every failing case is reported by name
+            failures.append(f"{case.file}.txt [{case.title}]: {type(e).__name__}: {e}")
+    assert not failures, f"{len(failures)} of {len(cases)} cases failed:\n" + "\n".join(
+        failures
+    )
 
 
 def test_only_binary_framing_cases_are_skipped():
     skipped = [c for c in CASES if not replayable(c)]
     # R-T5 binary / partial-line cases cannot be written as text lines.
-    assert all(c.file == "boundary" for c in skipped)
-    assert len(skipped) <= 14
+    assert all(c.file in {"boundary", "safety"} for c in skipped)
+    assert len(skipped) <= 15
     assert len(CASES) - len(skipped) > 250
 
 
-def test_help_and_ts_get_are_the_only_counted_responses():
+def test_help_ts_get_and_excl_get_are_the_only_counted_responses():
     counted = {
         req.text.split()[0].lower()
-        + (" get" if req.text.lower().startswith("ts") else "")
+        + (" get" if req.text.lower().startswith(("ts", "excl")) else "")
         for case in CASES
         for req in case.requests
         if req.response and "count=" in req.response[0]
     }
-    assert counted == {"ts get", "help"}
+    assert counted == {"ts get", "help", "excl get"}

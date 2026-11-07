@@ -1,6 +1,6 @@
 # proto=2
 # generated_by=hand
-# fw_commit=f376234f2f93
+# fw_commit=b3b07c8
 
 # --- version ---
 > version
@@ -15,19 +15,19 @@
 # --- caps (example, values are device-dependent) ---
 # R-T3: feat is a bit mask, printed as 0x%08x
 > caps
-< OK dio=25 out=0 in=25 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003
+< OK dio=25 out=0 in=25 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x000000ff
 
 # --- caps follows the direction mask: GP0-GP1 outputs ---
 > map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
 < OK
 > caps
-< OK dio=25 out=2 in=23 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003
+< OK dio=25 out=2 in=23 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x000000ff
 
 # --- caps with every DIO pin an output ---
 > map set flags=0x00 dir=0x0c7fffff pu=0x00000000 pd=0x00000000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x00000000
 < OK
 > caps
-< OK dio=25 out=25 in=0 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003
+< OK dio=25 out=25 in=0 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x000000ff
 
 # --- info: factory state has no device number (255 = unassigned) ---
 > info
@@ -109,3 +109,36 @@
 < ERR BAD_PARAM
 > ping 1 2
 < ERR BAD_PARAM
+
+# --- caps_feat_bits_match_implemented_features ---
+# feat=0x000000ff: bit0 sync, bit1 reset, bit2 wdog (wdog, safety, failsafe clear), bit3 excl, bit4 outputs reset,
+# bit5 rstinfo, bit6 usbsafe, bit7 pads. Every advertised command group answers; none is ERR UNKNOWN_CMD.
+> caps
+< OK dio=25 out=0 in=25 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x000000ff
+> sync disarm
+< OK
+> pattern reset
+< OK
+> wdog 0
+< OK
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+> failsafe clear
+< OK
+> excl clear
+< OK
+> excl get
+< OK count=0
+> outputs reset
+< OK
+> rstinfo
+< OK cause=por uptime_ms=0 boot=0x00000001
+> usbsafe off
+< OK
+> pads
+< OK out=0x00000000 pad=0x00000000
+
+# --- version_proto_is_2 ---
+# New features are added to proto=2 and announced by feat bits; proto changes only with an incompatible change.
+> version
+< OK fw=0.1.3 proto=2

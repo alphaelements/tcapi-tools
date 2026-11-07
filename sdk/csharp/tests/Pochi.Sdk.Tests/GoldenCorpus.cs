@@ -35,6 +35,12 @@ internal sealed record GoldenCase(
         s.Kind == GoldenStepKind.Directive
         && s.Text.StartsWith("send_hex", StringComparison.Ordinal));
 
+    /// <summary>The case sets exclusive groups (<c>excl set</c>), which makes the
+    /// device check later maps against them.</summary>
+    public bool ConfiguresExclusiveGroups => Steps.Any(s =>
+        s.Kind == GoldenStepKind.Request
+        && s.Text.StartsWith("excl set", StringComparison.OrdinalIgnoreCase));
+
     public override string ToString() => $"{File}.txt:{FirstLine} {Title}";
 }
 
@@ -43,7 +49,7 @@ internal static class GoldenCorpus
     public static readonly string[] Files =
     [
         "version-info", "map", "io", "pattern", "timestamp", "sync", "reset", "errors",
-        "boundary", "events",
+        "boundary", "events", "safety",
     ];
 
     private static readonly Lazy<IReadOnlyList<GoldenCase>> AllCases = new(LoadAll);

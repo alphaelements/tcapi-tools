@@ -1,0 +1,6 @@
+# Malformed TOML. Only the "toml syntax: " prefix and the line are fixed.
+# expected_error_prefix: toml syntax: 
+# expected_line: 5
+version = 2
+[watchdog
+timeout_ms = 800

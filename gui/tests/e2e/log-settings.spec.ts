@@ -7,7 +7,7 @@ test("REPL sends raw commands and logs the response", async ({ page }) => {
   await repl.fill("caps");
   await repl.press("Enter");
   await expect(
-    page.getByText("OK dio=25 out=12 in=13 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003").last(),
+    page.getByText("OK dio=25 out=12 in=13 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x000000ff").last(),
   ).toBeVisible();
   // History recall with ArrowUp.
   await repl.press("ArrowUp");

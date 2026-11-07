@@ -1,0 +1,1171 @@
+# proto=2
+# generated_by=hand
+# fw_commit=b3b07c8
+
+# Safety functions: watchdog and failsafe latch, exclusive output groups,
+# outputs reset, usbsafe, reset information, pad read-back.
+# Specification: docs/30-usb-protocol.md section 12 (pochi-dio) and
+# docs/protocol-reference.md section "Safety" (pochi-tools).
+# Each case heading `# --- <name> ---` is the test name. The name is exactly
+# the heading text, unique in this file, and is the unit in which a replayer
+# reports a failure (golden::<name>). The line(s) after a heading describe the case.
+# Conventions of this file:
+# * MAP A: GP0-GP3 outputs, default 0. MAP B: like A with def=0x8 (GP3 ON by
+#   default). MAP C: like A with opol=0x1. MAP D: GP0-GP15 outputs (for the
+#   16-group cases).
+# * Every `OK` response restarts the watchdog timer at the instant the response
+#   is returned (docs/30-usb-protocol.md 12.3). `~ expect_pins` and the other
+#   directives do not. A case that observes "still ON just before the deadline"
+#   therefore uses `~ expect_pins`, never a request.
+# * The watchdog trips at the first poll where now - last_ok >= timeout. The
+#   simulator polls at the end of every `~ advance`, before the next request.
+# * The USB model starts Configured and DTR starts asserted (see README).
+
+# === watchdog: configuration ===
+
+# --- safety_initial_state ---
+# Power-up: watchdog off, no latch, usbsafe off, no exclusive group.
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+> SAFETY
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_wdog_set_range ---
+# 0 or 100..=10000 ms. Anything else is ERR BAD_PARAM and keeps the previous setting.
+> wdog 99
+< ERR BAD_PARAM
+> wdog 10001
+< ERR BAD_PARAM
+> wdog 4294967296
+< ERR BAD_PARAM
+> wdog -1
+< ERR BAD_PARAM
+> wdog abc
+< ERR BAD_PARAM
+> wdog
+< ERR BAD_PARAM
+> wdog 100 200
+< ERR BAD_PARAM
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+> wdog 100
+< OK
+> safety
+< OK wdog_ms=100 remaining_ms=100 failsafe=0 cause=none usbsafe=0 excl=0
+> wdog 10000
+< OK
+> safety
+< OK wdog_ms=10000 remaining_ms=10000 failsafe=0 cause=none usbsafe=0 excl=0
+> WDOG 0x64
+< OK
+> safety
+< OK wdog_ms=100 remaining_ms=100 failsafe=0 cause=none usbsafe=0 excl=0
+> wdog 99
+< ERR BAD_PARAM
+> safety
+< OK wdog_ms=100 remaining_ms=100 failsafe=0 cause=none usbsafe=0 excl=0
+> wdog 0
+< OK
+> wdog 0
+< OK
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_wdog_disabled_by_default_never_trips ---
+# The watchdog is off until wdog <ms> enables it (a device that is never configured keeps working).
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x1 0x1
+< OK
+~ advance us=60000000
+~ expect_pins out=0x00000001
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_wdog_remaining_counts_down ---
+# remaining_ms is the time left, rounded up to whole ms; it is read before this request restarts the timer.
+> wdog 500
+< OK
+~ advance us=123456
+> safety
+< OK wdog_ms=500 remaining_ms=377 failsafe=0 cause=none usbsafe=0 excl=0
+> safety
+< OK wdog_ms=500 remaining_ms=500 failsafe=0 cause=none usbsafe=0 excl=0
+~ advance us=499999
+> safety
+< OK wdog_ms=500 remaining_ms=1 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_wdog_disable_after_enable_stops_trip ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x1 0x1
+< OK
+> wdog 100
+< OK
+~ advance us=50000
+> wdog 0
+< OK
+~ advance us=60000000
+~ expect_pins out=0x00000001
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# === watchdog: trip ===
+
+# --- safety_wdog_trip_after_timeout ---
+# ON stays ON until the deadline; at the deadline all outputs go to def (0) and the latch is set.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 500
+< OK
+> write 0x1 0x1
+< OK
+~ advance us=499000
+~ expect_pins out=0x00000001
+~ advance us=1000
+< ! FAILSAFE cause=wdog
+~ expect_pins out=0x00000000
+> state
+< OK in=0x00000000 out=0x00000000
+> safety
+< OK wdog_ms=500 remaining_ms=0 failsafe=1 cause=wdog usbsafe=0 excl=0
+
+# --- safety_wdog_trip_boundary_is_inclusive ---
+# 1 us before the deadline nothing happens; at now - last_ok == timeout the watchdog trips.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x3 0x3
+< OK
+> wdog 100
+< OK
+~ advance us=99999
+~ expect_pins out=0x00000003
+~ advance us=1
+< ! FAILSAFE cause=wdog
+~ expect_pins out=0x00000000
+
+# --- safety_wdog_ok_commands_rearm ---
+# Every command that answers OK restarts the timer, whatever it does. Ten OK commands 60 ms apart
+# keep a 100 ms watchdog quiet for 600 ms.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x1 0x1
+< OK
+> wdog 100
+< OK
+~ advance us=60000
+> ping 1
+< OK pong=1
+~ advance us=60000
+> state
+< OK in=0x00000000 out=0x00000001
+~ advance us=60000
+> read
+< OK in=0x00000000
+~ advance us=60000
+> safety
+< OK wdog_ms=100 remaining_ms=40 failsafe=0 cause=none usbsafe=0 excl=0
+~ advance us=60000
+> write 0x1 0x1
+< OK
+~ advance us=60000
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+~ advance us=60000
+> ts status
+< OK armed=0 pending=0 overflow=0
+~ advance us=60000
+> info
+< OK uid=0000000000000000 devnum=255
+~ advance us=60000
+> version
+< OK fw=0.1.3 proto=2
+~ advance us=60000
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+~ advance us=99999
+~ expect_pins out=0x00000001
+~ advance us=1
+< ! FAILSAFE cause=wdog
+~ expect_pins out=0x00000000
+
+# --- safety_wdog_err_and_malformed_do_not_rearm ---
+# ERR responses, unknown commands and malformed lines never restart the timer: 60 ms after the last OK
+# only 40 ms remain, however many such lines arrive.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x1 0x1
+< OK
+> wdog 100
+< OK
+~ advance us=60000
+> ping abc
+< ERR BAD_PARAM
+> foo
+< ERR UNKNOWN_CMD
+> write 0x10 0x10
+< ERR BAD_PARAM
+> pattern stop
+< ERR NOT_RUNNING
+> wdog 99
+< ERR BAD_PARAM
+~ send_hex 03 0d
+< ERR UNKNOWN_CMD
+> excl set 0x1
+< ERR BAD_PARAM
+~ advance us=39999
+~ expect_pins out=0x00000001
+~ advance us=1
+< ! FAILSAFE cause=wdog
+~ expect_pins out=0x00000000
+
+# --- safety_wdog_trip_stops_running_pattern ---
+# A trip during a pattern run stops it: outputs go to def, no PATTERN_DONE / PATTERN_TIMEOUT, the steps stay loaded.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> pattern add 0x3:1000 0x1:1000
+< OK total=2
+> pattern run loop 1000
+< OK
+> wdog 100
+< OK
+~ advance us=99000
+~ expect_pins out=0x00000003
+~ advance us=1000
+< ! FAILSAFE cause=wdog
+~ expect_pins out=0x00000000
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+~ advance us=1000000
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- safety_wdog_event_requires_dtr ---
+# The event is pushed only while DTR is asserted; the latch is set either way and safety shows it.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ dtr 0
+~ advance us=100000
+> safety
+< OK wdog_ms=100 remaining_ms=0 failsafe=1 cause=wdog usbsafe=0 excl=0
+
+# --- safety_wdog_latch_trips_once ---
+# While latched the watchdog does not trip again and sends no second event.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+~ advance us=10000000
+> safety
+< OK wdog_ms=100 remaining_ms=0 failsafe=1 cause=wdog usbsafe=0 excl=0
+
+# === failsafe latch ===
+
+# --- safety_failsafe_latch_rejects_on ---
+# After a trip an output instruction that leaves def is ERR FAILSAFE; loading a pattern is allowed, running it is not.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> write 0x1 0x1
+< ERR FAILSAFE
+> write 0x2 0x2
+< ERR FAILSAFE
+> write 0xf 0xf
+< ERR FAILSAFE
+> pattern add 0x1:5 0x0:10
+< OK total=2
+> pattern run once
+< ERR FAILSAFE
+> pattern run loop 3
+< ERR FAILSAFE
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< ERR FAILSAFE
+> map default
+< ERR FAILSAFE
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+> state
+< OK in=0x00000000 out=0x00000000
+~ expect_pins out=0x00000000
+
+# --- safety_failsafe_clear_allows_on ---
+# failsafe clear releases the latch and restarts the timer; the watchdog setting is kept, so silence trips it again.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> failsafe clear
+< OK
+> safety
+< OK wdog_ms=100 remaining_ms=100 failsafe=0 cause=none usbsafe=0 excl=0
+> write 0x1 0x1
+< OK
+> FAILSAFE CLEAR
+< OK
+~ advance us=99999
+~ expect_pins out=0x00000001
+~ advance us=1
+< ! FAILSAFE cause=wdog
+~ expect_pins out=0x00000000
+
+# --- safety_failsafe_clear_when_not_latched ---
+# Clearing a latch that is not set is OK and changes nothing.
+> failsafe clear
+< OK
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_failsafe_rejects_values_other_than_def ---
+# MAP B: GP3 is ON by default. After the trip only writes that keep the target pins at def are accepted.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> write 0x0 0x8
+< ERR FAILSAFE
+> write 0x1 0x1
+< ERR FAILSAFE
+> write 0x9 0x9
+< ERR FAILSAFE
+> write 0x1 0x9
+< ERR FAILSAFE
+> write 0xf 0xf
+< ERR FAILSAFE
+> state
+< OK in=0x00000000 out=0x00000008
+~ expect_pins out=0x00000008
+
+# --- safety_failsafe_accepts_value_equal_to_def ---
+# Writing def itself is always accepted, also an empty mask and the whole word. A mask outside the
+# outputs is still ERR BAD_PARAM (argument checks come before the failsafe check).
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> write 0x8 0x8
+< OK
+> write 0x0 0x1
+< OK
+> write 0x8 0xf
+< OK
+> write 0x0 0x0
+< OK
+> write 0xf7 0xf7
+< ERR BAD_PARAM
+> state
+< OK in=0x00000000 out=0x00000008
+> safety
+< OK wdog_ms=100 remaining_ms=0 failsafe=1 cause=wdog usbsafe=0 excl=0
+
+# --- safety_failsafe_allows_configuration ---
+# Safety settings and the clear command are not output instructions: they are accepted while latched.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> excl set 0xc
+< OK
+> usbsafe on
+< OK
+> wdog 200
+< OK
+> wdog 0
+< OK
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=1 cause=wdog usbsafe=1 excl=1
+
+# --- safety_trip_applies_def_not_zero ---
+# MAP B: the safe state is def (GP3 ON), not 0. Input pins are left alone.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x3 0x3
+< OK
+> state
+< OK in=0x00000000 out=0x0000000b
+~ in=0x00000010
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> state
+< OK in=0x00000010 out=0x00000008
+~ expect_pins out=0x00000008
+
+# --- safety_trip_converts_def_with_opol ---
+# def is a logical level: the pad level is def ^ opol. MAP: def=0x8, opol=0x9 (GP0 and GP3 inverted).
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000009 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+~ expect_pins out=0x00000001
+> write 0x3 0x3
+< OK
+~ expect_pins out=0x00000002
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> state
+< OK in=0x00000000 out=0x00000008
+~ expect_pins out=0x00000001
+
+# === outputs reset ===
+
+# --- safety_outputs_reset_in_every_state ---
+# Always OK: no output pins configured, normal, with exclusive groups. Back to def (0), inputs untouched.
+> outputs reset
+< OK
+> state
+< OK in=0x00000000 out=0x00000000
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0x5
+< OK
+~ expect_pins out=0x00000005
+> outputs reset
+< OK
+> state
+< OK in=0x00000000 out=0x00000000
+~ expect_pins out=0x00000000
+> excl set 0xc
+< OK
+> write 0x4 0x4
+< OK
+> OUTPUTS RESET
+< OK
+> state
+< OK in=0x00000000 out=0x00000000
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=1
+
+# --- safety_outputs_reset_arguments ---
+# The command takes no argument; the subcommand must be `reset`. `alloff` (earlier draft name) does not exist.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0x5
+< OK
+> outputs reset now
+< ERR BAD_PARAM
+> outputs foo
+< ERR UNKNOWN_CMD
+> outputs
+< ERR UNKNOWN_CMD
+> alloff
+< ERR UNKNOWN_CMD
+> state
+< OK in=0x00000000 out=0x00000005
+
+# --- safety_outputs_reset_stops_running_pattern ---
+# A running pattern is stopped (like pattern stop: steps stay loaded, no PATTERN_DONE) and the outputs go to def.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> pattern add 0x3:1000 0x1:1000
+< OK total=2
+> pattern run loop 5
+< OK
+~ advance us=100
+~ expect_pins out=0x00000003
+> outputs reset
+< OK
+~ expect_pins out=0x00000000
+> pattern status
+< OK state=loaded step=0 loops=0 total=2
+~ advance us=10000
+> state
+< OK in=0x00000000 out=0x00000000
+> pattern run once
+< OK
+~ advance ns=400266
+< ! PATTERN_DONE loops=1
+
+# --- safety_outputs_reset_keeps_failsafe_latch ---
+# outputs reset works while latched and does not release the latch.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> outputs reset
+< OK
+> safety
+< OK wdog_ms=100 remaining_ms=0 failsafe=1 cause=wdog usbsafe=0 excl=0
+> write 0x1 0x1
+< ERR FAILSAFE
+
+# --- safety_outputs_reset_applies_def_not_zero ---
+# MAP B: outputs reset returns to def (GP3 ON), not to 0; input pins keep their level.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x3 0x3
+< OK
+~ in=0x00000010
+> outputs reset
+< OK
+> state
+< OK in=0x00000010 out=0x00000008
+~ expect_pins out=0x00000008
+
+# --- safety_outputs_reset_converts_def_with_opol ---
+# MAP C (opol=0x1): the pad level of GP0 at def=0 is high.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000001 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+~ expect_pins out=0x00000001
+> write 0x1 0x1
+< OK
+~ expect_pins out=0x00000000
+> outputs reset
+< OK
+~ expect_pins out=0x00000001
+> state
+< OK in=0x00000000 out=0x00000000
+
+# === exclusive output groups ===
+
+# --- safety_excl_set_get_roundtrip ---
+# excl set replaces all groups at once; excl get returns them in order. 8 and 16 groups are accepted, 17 is not.
+> map set flags=0x00 dir=0x0000ffff pu=0x00000000 pd=0x0c7f0000 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7f0000
+< OK
+> excl get
+< OK count=0
+> excl set 0xc
+< OK
+> excl get
+< OK count=1
+<   mask=0x0000000c
+> excl set 0x3 0xc
+< OK
+> excl get
+< OK count=2
+<   mask=0x00000003
+<   mask=0x0000000c
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=2
+> excl clear
+< OK
+> excl get
+< OK count=0
+> EXCL SET 0x3 0xc 0x30 0xc0 0x300 0xc00 0x3000 0xc000
+< OK
+> excl get
+< OK count=8
+<   mask=0x00000003
+<   mask=0x0000000c
+<   mask=0x00000030
+<   mask=0x000000c0
+<   mask=0x00000300
+<   mask=0x00000c00
+<   mask=0x00003000
+<   mask=0x0000c000
+> excl set 0x3 0xc 0x30 0xc0 0x300 0xc00 0x3000 0xc000 0x5 0xa 0x50 0xa0 0x500 0xa00 0x5000 0xa000
+< OK
+> excl get
+< OK count=16
+<   mask=0x00000003
+<   mask=0x0000000c
+<   mask=0x00000030
+<   mask=0x000000c0
+<   mask=0x00000300
+<   mask=0x00000c00
+<   mask=0x00003000
+<   mask=0x0000c000
+<   mask=0x00000005
+<   mask=0x0000000a
+<   mask=0x00000050
+<   mask=0x000000a0
+<   mask=0x00000500
+<   mask=0x00000a00
+<   mask=0x00005000
+<   mask=0x0000a000
+> excl set 0x3 0xc 0x30 0xc0 0x300 0xc00 0x3000 0xc000 0x5 0xa 0x50 0xa0 0x500 0xa00 0x5000 0xa000 0x9
+< ERR BAD_PARAM
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=16
+> excl clear
+< OK
+> excl get
+< OK count=0
+
+# --- safety_excl_violation_rejected_whole ---
+# A violating instruction is rejected as a whole: nothing changes. The error names the first violating group (0-based) and its mask.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> write 0x4 0x4
+< OK
+> write 0x8 0x8
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> state
+< OK in=0x00000000 out=0x00000004
+> write 0xc 0xc
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> write 0xf 0xf
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> state
+< OK in=0x00000000 out=0x00000004
+~ expect_pins out=0x00000004
+> excl set 0x3 0xc
+< OK
+> write 0x4 0xf
+< OK
+> write 0x7 0x7
+< ERR EXCLUSIVE group=0 mask=0x00000003
+> write 0x8 0x8
+< ERR EXCLUSIVE group=1 mask=0x0000000c
+> write 0x1 0x3
+< OK
+> state
+< OK in=0x00000000 out=0x00000005
+
+# --- safety_excl_swap_in_one_write_allowed ---
+# The check applies to the state after the instruction: switching GP2 OFF and GP3 ON in one write is fine.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> write 0x4 0xc
+< OK
+> write 0x8 0xc
+< OK
+> state
+< OK in=0x00000000 out=0x00000008
+> write 0x4 0xc
+< OK
+> write 0x0 0xc
+< OK
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- safety_excl_single_on_while_other_on_rejected ---
+# Pins outside every group are unaffected; with a 3-pin group a second ON pin is refused.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0x7
+< OK
+> write 0x1 0x1
+< OK
+> write 0x8 0x8
+< OK
+> write 0x2 0x2
+< ERR EXCLUSIVE group=0 mask=0x00000007
+> write 0x4 0x4
+< ERR EXCLUSIVE group=0 mask=0x00000007
+> state
+< OK in=0x00000000 out=0x00000009
+
+# --- safety_excl_invalid_set_keeps_previous ---
+# Invalid masks are ERR BAD_PARAM and the previous groups stay: a single bit, empty, not outputs, partly outputs,
+# a bad mask after a good one, no mask, not a number.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> excl set 0x1
+< ERR BAD_PARAM
+> excl set 0x0
+< ERR BAD_PARAM
+> excl set 0x30
+< ERR BAD_PARAM
+> excl set 0x14
+< ERR BAD_PARAM
+> excl set 0x3 0x1
+< ERR BAD_PARAM
+> excl set
+< ERR BAD_PARAM
+> excl set 0x3 abc
+< ERR BAD_PARAM
+> excl set 0x80000003
+< ERR BAD_PARAM
+> excl get
+< OK count=1
+<   mask=0x0000000c
+
+# --- safety_excl_pattern_add_violation_adds_no_step ---
+# pattern add checks every step's out_bits; one violating step rejects the whole call and nothing is added.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> pattern add 0x1:5 0x4:5 0xc:5
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+> pattern add 0x1:5 0x4:5 0x8:5
+< OK total=3
+
+# --- safety_excl_pattern_added_before_excl_set_rejected ---
+# Steps that were loaded before the group existed are checked by excl set: a violating buffer refuses the group.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> pattern add 0x1:5 0xc:5
+< OK total=2
+> excl set 0xc
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> excl get
+< OK count=0
+> pattern reset
+< OK
+> pattern add 0x1:5 0x4:5
+< OK total=2
+> excl set 0xc
+< OK
+
+# --- safety_excl_set_while_pattern_running_is_busy ---
+# excl set (and excl clear) while a pattern runs is ERR BUSY and changes nothing; excl get still works.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> pattern add 0x1:1000 0x2:1000
+< OK total=2
+> pattern run loop 1000
+< OK
+> excl set 0x3
+< ERR BUSY
+> excl clear
+< ERR BUSY
+> excl get
+< OK count=1
+<   mask=0x0000000c
+
+# --- safety_excl_pattern_run_rechecks_all_steps ---
+# pattern run re-verifies every step (defence in depth). A violating buffer cannot reach it from the wire
+# (pattern add and excl set both refuse it), so here a clean buffer runs to completion with a group set.
+# The rejection itself is a unit test (safety::excl_pattern_run_rejects_violating_buffer).
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> pattern add 0x1:5 0x4:5 0x8:5
+< OK total=3
+> pattern run once
+< OK
+~ advance ns=3399
+< ! PATTERN_DONE loops=1
+
+# --- safety_excl_map_default_with_groups_is_bad_map ---
+# The default map has no outputs, so it cannot hold a group: ERR BAD_MAP, the map is unchanged. excl clear first.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> map default
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+> excl clear
+< OK
+> map default
+< OK
+
+# --- safety_excl_map_set_dir_without_group_pins_is_bad_map ---
+# A new dir that does not contain every group pin is ERR BAD_MAP (groups are not dropped silently).
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
+< ERR BAD_MAP
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000004 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> state
+< OK in=0x00000000 out=0x00000004
+
+# --- safety_excl_map_set_with_violating_def_rejected ---
+# def is the safe state, which is applied without a check, so a def that turns two group pins ON is refused at map set.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x0000000c opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> map get
+< OK v=2 flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+
+# --- safety_excl_set_with_violating_def_rejected ---
+# The same rule from the other side: a map whose def violates the new group refuses excl set.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x0000000c opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> excl set 0x3 0x30
+< ERR BAD_PARAM
+> excl set 0x3 0xc
+< ERR EXCLUSIVE group=1 mask=0x0000000c
+> excl get
+< OK count=0
+
+# --- safety_excl_set_with_violating_output_state_rejected ---
+# The current output state is checked too; nothing is set and the outputs do not change.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0xc 0xc
+< OK
+> excl set 0xc
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> excl get
+< OK count=0
+> state
+< OK in=0x00000000 out=0x0000000c
+
+# --- safety_excl_arguments ---
+# excl clear and excl get take no argument; an unknown or missing subcommand is ERR UNKNOWN_CMD.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl clear 1
+< ERR BAD_PARAM
+> excl get 1
+< ERR BAD_PARAM
+> excl foo
+< ERR UNKNOWN_CMD
+> excl
+< ERR UNKNOWN_CMD
+
+# --- safety_outputs_reset_ignores_exclusive_groups ---
+# outputs reset and the trip never check groups (def was validated when it was defined): with a group set and
+# def=0x4 (GP2 ON) they succeed and give def.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000004 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> excl set 0xc
+< OK
+> write 0x8 0xc
+< OK
+> outputs reset
+< OK
+> state
+< OK in=0x00000000 out=0x00000004
+> write 0x8 0xc
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> state
+< OK in=0x00000000 out=0x00000004
+
+# === DTR and port handling ===
+
+# --- safety_dtr_toggle_keeps_outputs ---
+# DTR changes (opening/closing the port) never change the outputs; requests are still answered with DTR low.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+~ dtr 0
+~ expect_pins out=0x00000005
+> state
+< OK in=0x00000000 out=0x00000005
+~ dtr 1
+~ dtr 0
+~ dtr 1
+~ expect_pins out=0x00000005
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_port_reopen_keeps_outputs ---
+# Closing and reopening the port neither changes the outputs nor restarts the watchdog timer.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 200
+< OK
+> write 0x5 0xf
+< OK
+~ dtr 0
+~ advance us=100000
+~ dtr 1
+~ expect_pins out=0x00000005
+> ping 1
+< OK pong=1
+~ advance us=199999
+~ expect_pins out=0x00000005
+~ advance us=1
+< ! FAILSAFE cause=wdog
+~ expect_pins out=0x00000000
+
+# === usbsafe ===
+
+# --- safety_usbsafe_arguments ---
+> usbsafe maybe
+< ERR BAD_PARAM
+> usbsafe
+< ERR BAD_PARAM
+> usbsafe on off
+< ERR BAD_PARAM
+> usbsafe on
+< OK
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=1 excl=0
+> USBSAFE OFF
+< OK
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_usbsafe_off_suspend_keeps_outputs ---
+# usbsafe is off by default: suspend and bus reset change nothing.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+~ usb suspend
+~ expect_pins out=0x00000005
+~ usb configured
+~ usb reset
+~ expect_pins out=0x00000005
+~ usb configured
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+
+# --- safety_usbsafe_on_suspend_trips ---
+# Leaving Configured by suspend trips with cause=usb. The link is down, so no event is sent.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+> usbsafe on
+< OK
+~ usb suspend
+~ expect_pins out=0x00000000
+~ usb configured
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=1 cause=usb usbsafe=1 excl=0
+> state
+< OK in=0x00000000 out=0x00000000
+
+# --- safety_usbsafe_on_bus_reset_trips ---
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+> usbsafe on
+< OK
+~ usb reset
+~ expect_pins out=0x00000000
+~ usb configured
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=1 cause=usb usbsafe=1 excl=0
+
+# --- safety_usbsafe_before_first_configured_does_not_trip ---
+# Before the first Configured nothing trips (first enumeration); after it, suspend does.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> write 0x5 0xf
+< OK
+~ usb unenumerated
+> usbsafe on
+< OK
+~ usb suspend
+~ usb reset
+~ expect_pins out=0x00000005
+~ usb configured
+~ expect_pins out=0x00000005
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=1 excl=0
+~ usb suspend
+~ expect_pins out=0x00000000
+~ usb configured
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=1 cause=usb usbsafe=1 excl=0
+
+# --- safety_usbsafe_latch_survives_reenumeration ---
+# After re-enumeration the latch is still set; failsafe clear releases it and usbsafe trips again on the next loss.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> usbsafe on
+< OK
+~ usb suspend
+~ usb configured
+> write 0x1 0x1
+< ERR FAILSAFE
+> failsafe clear
+< OK
+> write 0x1 0x1
+< OK
+~ usb reset
+~ usb configured
+> state
+< OK in=0x00000000 out=0x00000000
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=1 cause=usb usbsafe=1 excl=0
+
+# --- safety_first_cause_is_kept ---
+# While latched, a second cause does not overwrite the first.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> wdog 100
+< OK
+> usbsafe on
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+~ usb suspend
+~ usb configured
+> safety
+< OK wdog_ms=100 remaining_ms=0 failsafe=1 cause=wdog usbsafe=1 excl=0
+
+# === reset information, restart ===
+
+# --- safety_rstinfo_initial ---
+# First boot of a case: power-on reset, uptime counts from boot, boot id 1.
+> rstinfo
+< OK cause=por uptime_ms=0 boot=0x00000001
+~ advance us=1500999
+> rstinfo
+< OK cause=por uptime_ms=1500 boot=0x00000001
+> RSTINFO 1
+< ERR BAD_PARAM
+
+# --- safety_rstinfo_after_reset_changes_boot_and_uptime ---
+# The reset command restarts the device: cause=soft, a new boot id, uptime counted from the restart.
+~ advance us=5000000
+> rstinfo
+< OK cause=por uptime_ms=5000 boot=0x00000001
+> reset
+< OK
+> rstinfo
+< OK cause=soft uptime_ms=0 boot=0x00000002
+~ advance us=250000
+> rstinfo
+< OK cause=soft uptime_ms=250 boot=0x00000002
+
+# --- safety_rstinfo_reboot_causes ---
+# ~ reboot cause=<c> restarts the device with that cause (hardware watchdog, brown-out, ...); every restart has a new boot id.
+~ reboot cause=wdt
+> rstinfo
+< OK cause=wdt uptime_ms=0 boot=0x00000002
+~ reboot cause=bor
+> rstinfo
+< OK cause=bor uptime_ms=0 boot=0x00000003
+~ reboot cause=other
+> rstinfo
+< OK cause=other uptime_ms=0 boot=0x00000004
+~ reboot cause=soft
+> rstinfo
+< OK cause=soft uptime_ms=0 boot=0x00000005
+~ reboot cause=por
+> rstinfo
+< OK cause=por uptime_ms=0 boot=0x00000006
+
+# --- safety_reset_clears_volatile_state ---
+# reset: latch, watchdog, exclusive groups, usbsafe, pattern and timestamp arming are gone; the saved map and device number stay.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> devnum 9
+< OK
+> excl set 0x3
+< OK
+> usbsafe on
+< OK
+> pattern add 0x8:1000
+< OK total=1
+> ts arm 0x10 both
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+> reset
+< OK
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+> excl get
+< OK count=0
+> pattern status
+< OK state=idle step=0 loops=0 total=0
+> ts status
+< OK armed=0 pending=0 overflow=0
+> info
+< OK uid=0000000000000000 devnum=9
+> state
+< OK in=0x00000000 out=0x00000008
+~ advance us=60000000
+~ expect_pins out=0x00000008
+
+# --- safety_reboot_clears_volatile_state ---
+# Every kind of restart behaves like reset: no safety state survives, the saved map gives the initial state.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> write 0x1 0x1
+< OK
+> excl set 0x3
+< OK
+> usbsafe on
+< OK
+> wdog 100
+< OK
+~ advance us=100000
+< ! FAILSAFE cause=wdog
+~ reboot cause=wdt
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+> excl get
+< OK count=0
+> state
+< OK in=0x00000000 out=0x00000008
+~ expect_pins out=0x00000008
+> write 0x7 0x7
+< OK
+
+# --- safety_reboot_converts_def_with_opol ---
+# The initial state after a restart is def converted with opol (DD-20): MAP def=0x8, opol=0x9 (GP0 and GP3 inverted)
+# gives logical out=0x8 and pad level 0x1 (GP0 high, GP3 low), the same as the trip.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000009 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> write 0x3 0x3
+< OK
+~ expect_pins out=0x00000002
+~ reboot cause=wdt
+> state
+< OK in=0x00000000 out=0x00000008
+~ expect_pins out=0x00000001
+> pads
+< OK out=0x00000008 pad=0x00000008
+
+# --- safety_reboot_without_saved_map_drives_no_output ---
+# Without a saved map every pin is an input after a restart.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+~ reboot cause=por
+> map get
+< OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
+> state
+< OK in=0x00000000 out=0x00000000
+~ expect_pins out=0x00000000
+
+# === pad read-back ===
+
+# --- safety_pads_reports_out_and_pad ---
+# pads: out is the recorded logical output state, pad the logical level read back from the pads of the output pins
+# (inputs excluded). In the simulator the pads follow the outputs.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000000 opol=0x00000001 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> pads
+< OK out=0x00000000 pad=0x00000000
+> write 0x5 0x5
+< OK
+~ in=0x00000010
+> pads
+< OK out=0x00000005 pad=0x00000005
+> PADS 1
+< ERR BAD_PARAM

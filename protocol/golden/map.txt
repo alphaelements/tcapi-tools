@@ -1,6 +1,6 @@
 # proto=2
 # generated_by=hand
-# fw_commit=f376234f2f93
+# fw_commit=b3b07c8
 
 # --- map get: default map ---
 # R-T3: masks are 0x%08x, flags is 0x%02x

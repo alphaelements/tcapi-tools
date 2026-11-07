@@ -27,9 +27,12 @@ import {
   GOLDEN_UID,
   MockDeviceCore,
   UnsupportedCommand,
+  type UsbState,
 } from "./mock-device-core";
+import { FEATURES_ALL } from "./features";
 import { PIN_MAP_DEFAULT, type WirePinMap } from "./pinmap";
 import { VALID_DIO_MASK } from "./pins";
+import { heartbeatIntervalMs, type SafetyConfig } from "./safety";
 
 /// Largest `ts get` the protocol answers in one response.
 const TS_GET_MAX = 85;
@@ -94,6 +97,18 @@ const DEVICES = [
   },
 ];
 
+/// `caps feat=` of the units that are not fully featured, by port. The
+/// second healthy unit runs firmware from before the safety features (sync
+/// and reset only), so the GUI must hide every safety control for it.
+const LEGACY_FEATURES: Record<string, number> = { "/dev/mock2": 0x03 };
+
+/// What the canned `safety.toml` of the file dialog evaluates to.
+const SAMPLE_SAFETY: SafetyConfig = {
+  watchdog_ms: 1000,
+  usbsafe: true,
+  groups: [0x00000003, 0x0000000c],
+};
+
 const ERROR_TEXT: Record<string, string> = {
   BAD_CMD: "unknown command",
   UNKNOWN_CMD: "unknown command",
@@ -107,7 +122,19 @@ const ERROR_TEXT: Record<string, string> = {
   SYNC_STATE: "invalid sync state transition",
   NO_RESOURCE: "required resource not configured",
   NOT_RUNNING: "pattern not running",
+  FAILSAFE: "failsafe latch is set",
 };
+
+/// The message the SDK gives a device error (`SdkError` display): the name
+/// and a text, and for `ERR EXCLUSIVE group=<i> mask=0x...` the group and mask.
+function deviceErrorText(header: string): string {
+  const [code, ...data] = header.slice(4).trim().split(/\s+/);
+  if (code === "EXCLUSIVE") {
+    const kv = fields("EXCLUSIVE " + data.join(" "));
+    return `device error: EXCLUSIVE (exclusive group ${kv.group} would be violated, mask ${kv.mask})`;
+  }
+  return `device error: ${code} (${ERROR_TEXT[code] ?? code})`;
+}
 
 export interface MockHandle {
   /// Force the next ts_get to report a device-side ring overflow.
@@ -122,6 +149,15 @@ export interface MockHandle {
   /// `sync arm`-ed as a slave — a test's stand-in for a master elsewhere
   /// on the bus producing the edge (the mock does not model the bus itself).
   syncEdge: () => void;
+  /// Make the next `safety_load_toml` fail with this message (the SDK's
+  /// `file:line: message` shape), once.
+  safetyTomlError: string | null;
+  /// The host heartbeat dies with this message, as when a ping fails: the
+  /// backend reports `pochi://heartbeat-failed` and the watchdog, left unfed,
+  /// trips on the virtual clock.
+  failHeartbeat: (message: string) => void;
+  /// The USB state the device sees (`usbsafe` trips when it leaves configured).
+  usb: (state: UsbState) => void;
   /// Raw device state, for assertions (wire words: bit = GP).
   state: {
     connected: boolean;
@@ -130,6 +166,8 @@ export interface MockHandle {
     inputs: number;
     tsArmed: boolean;
     deviceNumber: number;
+    /// Watchdog timeout the heartbeat is feeding (0 = no heartbeat).
+    heartbeatMs: number;
   };
 }
 
@@ -157,6 +195,17 @@ function num(fieldsOf: Record<string, string>, key: string): number {
   const v = Number(fieldsOf[key]);
   if (!Number.isFinite(v)) throw `mock device: missing or bad field ${key}`;
   return v >>> 0;
+}
+
+function parseSafety(f: Record<string, string>) {
+  return {
+    wdog_ms: num(f, "wdog_ms"),
+    remaining_ms: num(f, "remaining_ms"),
+    failsafe: f.failsafe === "1",
+    cause: f.cause,
+    usbsafe: f.usbsafe === "1",
+    excl: num(f, "excl"),
+  };
 }
 
 function parseMap(header: string): WirePinMap {
@@ -242,6 +291,20 @@ export function installMockDevice(): void {
       inputs: 0,
       tsArmed: false,
       deviceNumber: core.deviceNumber,
+      heartbeatMs: 0,
+    },
+    safetyTomlError: null,
+    failHeartbeat: (message: string) => {
+      requireConnected();
+      stopHeartbeat();
+      void emit("pochi://heartbeat-failed", { message });
+    },
+    usb: (state: UsbState) => {
+      requireConnected();
+      tick();
+      core.setUsbState(state);
+      flushEvents();
+      syncHandle();
     },
   };
   window.__POCHI_MOCK__ = handle;
@@ -254,7 +317,34 @@ export function installMockDevice(): void {
       inputs: core.inputs,
       tsArmed: core.isTsArmed,
       deviceNumber: core.deviceNumber,
+      heartbeatMs,
     };
+  }
+
+  // --- watchdog heartbeat ---
+  // The backend keeps an enabled watchdog fed with `ping` every timeout/4
+  // (at most 1 s). The mock does the same on the wall clock; the pings are
+  // not echoed to the command log (they would bury every other line).
+  let heartbeatMs = 0;
+  let heartbeatTimer: number | null = null;
+
+  function stopHeartbeat() {
+    if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    heartbeatMs = 0;
+  }
+
+  /// Follow the watchdog the device ended up with: restart the heartbeat for
+  /// `ms`, or stop it for `0`.
+  function followWatchdog(ms: number) {
+    stopHeartbeat();
+    if (ms === 0) return;
+    heartbeatMs = ms;
+    heartbeatTimer = window.setInterval(() => {
+      if (!connected) return;
+      tick();
+      core.execute("ping 0");
+    }, heartbeatIntervalMs(ms));
   }
 
   function log(direction: "sent" | "received" | "event", line: string) {
@@ -269,6 +359,7 @@ export function installMockDevice(): void {
       if (!forwarding) continue;
       const input = /^! INPUT in=(0x[0-9a-f]+) t=(\d+)$/.exec(line);
       const done = /^! PATTERN_DONE loops=(\d+)$/.exec(line);
+      const failsafe = /^! FAILSAFE cause=(wdog|usb)$/.exec(line);
       if (input) {
         void emit("pochi://input", {
           inputs: Number(input[1]) >>> 0,
@@ -276,6 +367,8 @@ export function installMockDevice(): void {
         });
       } else if (done) {
         void emit("pochi://pattern-done", { loops: Number(done[1]) });
+      } else if (failsafe) {
+        void emit("pochi://failsafe", { cause: failsafe[1] });
       } else {
         void emit("pochi://unknown-event", { raw: line });
       }
@@ -306,8 +399,7 @@ export function installMockDevice(): void {
     syncHandle();
     const header = lines[0] ?? "";
     if (header.startsWith("ERR ")) {
-      const code = header.slice(4).trim();
-      throw `device error: ${code} (${ERROR_TEXT[code] ?? code})`;
+      throw deviceErrorText(header);
     }
     return lines;
   }
@@ -390,8 +482,10 @@ export function installMockDevice(): void {
           flashMap: sameUnit ? core.savedMap ?? RIG_MAP : RIG_MAP,
           devnum: sameUnit ? core.deviceNumber : (dev.device_number ?? DEVNUM_UNASSIGNED),
           loopback: true,
+          features: LEGACY_FEATURES[dev.port] ?? FEATURES_ALL,
         });
         connectedPort = args.port;
+        stopHeartbeat();
         clockOriginMs = performance.now();
         connected = true;
         forwarding = false;
@@ -404,6 +498,7 @@ export function installMockDevice(): void {
       case "disconnect":
         connected = false;
         forwarding = false;
+        stopHeartbeat();
         syncHandle();
         return null;
       case "get_version": {
@@ -488,12 +583,14 @@ export function installMockDevice(): void {
         run("reset");
         connected = false;
         forwarding = false;
+        stopHeartbeat();
         syncHandle();
         return null;
       case "bootsel_reset":
         run("bootsel");
         connected = false;
         forwarding = false;
+        stopHeartbeat();
         syncHandle();
         return null;
       case "pattern_status": {
@@ -516,6 +613,56 @@ export function installMockDevice(): void {
       case "ts_get":
       case "ts_get_reconciled":
         return tsGet(args.maxEvents, cmd === "ts_get_reconciled");
+
+      // --- safety ---
+      case "wdog":
+        run(`wdog ${args.ms}`);
+        followWatchdog(args.ms);
+        return null;
+      case "get_safety":
+        return parseSafety(runFields("safety"));
+      case "failsafe_clear":
+        run("failsafe clear");
+        return null;
+      case "outputs_reset":
+        run("outputs reset");
+        return null;
+      case "excl_set":
+        run(`excl set ${(args.masks as number[]).map(hex).join(" ")}`);
+        return null;
+      case "excl_clear":
+        run("excl clear");
+        return null;
+      case "excl_get":
+        return run("excl get")
+          .slice(1)
+          .map((l) => num(fields("OK " + l.trim()), "mask"));
+      case "usbsafe":
+        run(`usbsafe ${args.on ? "on" : "off"}`);
+        return null;
+      case "safety_load_toml": {
+        // Evaluating a file does not touch the device; the dialog always
+        // yields /mock/sample.toml. A test can make the evaluation fail.
+        const error = handle.safetyTomlError;
+        if (error !== null) {
+          handle.safetyTomlError = null;
+          throw error;
+        }
+        return { ...SAMPLE_SAFETY, groups: [...SAMPLE_SAFETY.groups] };
+      }
+      case "apply_safety": {
+        const config = args.config as SafetyConfig;
+        // The commands the SDK sends, in its order (excl, usbsafe, wdog).
+        run(
+          config.groups.length === 0
+            ? "excl clear"
+            : `excl set ${config.groups.map(hex).join(" ")}`,
+        );
+        run(`usbsafe ${config.usbsafe ? "on" : "off"}`);
+        run(`wdog ${config.watchdog_ms}`);
+        followWatchdog(config.watchdog_ms);
+        return parseSafety(runFields("safety"));
+      }
 
       // --- sync (no GUI tab yet; reachable from the raw command console) ---
       case "sync_arm":

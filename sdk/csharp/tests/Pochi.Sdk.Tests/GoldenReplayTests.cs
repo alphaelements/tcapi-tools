@@ -108,7 +108,15 @@ public class GoldenReplayTests
             var stats = new ReplayStats();
             foreach (var goldenCase in GoldenCorpus.Cases.Where(c => c.File == key.File))
             {
-                GoldenReplay.Run(goldenCase, key.Mode, stats);
+                try
+                {
+                    GoldenReplay.Run(goldenCase, key.Mode, stats);
+                }
+                catch (Exception e)
+                {
+                    // Name the case: a failure says which case of the transcript the SDK disagrees with.
+                    throw new InvalidOperationException($"{goldenCase} ({key.Mode}): {e.Message}", e);
+                }
             }
 
             return stats;
@@ -154,6 +162,33 @@ public class GoldenReplayTests
     {
         var stats = ReplayFile(file, ReplayMode.Typed);
         Assert.True(stats.Requests > 0);
+    }
+
+    [Fact]
+    public void TheTypedApiCarriesTheSafetyTranscripts()
+    {
+        // The safety transcript is mostly safety commands, all with typed methods.
+        var safety = ReplayFile("safety", ReplayMode.Typed);
+        Assert.True(
+            safety.Typed > safety.Requests / 2,
+            $"the typed API replayed {safety.Typed} of {safety.Requests} safety requests");
+        Assert.True(safety.LocalRejects > 5, "host-side validation never refused a safety command");
+    }
+
+    [Fact]
+    public void EveryGoldenErrExclusiveRoundTripsThroughTheTypedError()
+    {
+        var lines = GoldenCorpus.Cases
+            .SelectMany(c => c.Steps)
+            .SelectMany(step => step.Response)
+            .Where(l => l.StartsWith("ERR EXCLUSIVE", StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(lines);
+        foreach (var line in lines)
+        {
+            var ex = Assert.IsType<ExclusiveException>(SdkException.FromDeviceError(line[4..]));
+            Assert.Equal($"EXCLUSIVE group={ex.Group} mask=0x{ex.Mask:x8}", line[4..]);
+        }
     }
 
     [Fact]

@@ -143,31 +143,36 @@ public static class Protocol
 
     /// <summary>Parse a number given as decimal or <c>0x</c> hex. Digits
     /// only: no sign, no whitespace, no empty digit string.</summary>
-    internal static uint ParseU32(string s)
+    internal static uint ParseU32(string s) =>
+        TryParseU32(s) is { } value
+            ? value
+            : throw new SdkException(
+                ErrorCode.Parse,
+                s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                    ? $"invalid hex number: {s}"
+                    : $"invalid number: {s}");
+
+    /// <summary>Like <see cref="ParseU32"/>, but null for text that is not a
+    /// number in range.</summary>
+    internal static uint? TryParseU32(string s)
     {
         if (s.StartsWith("0x", StringComparison.Ordinal)
             || s.StartsWith("0X", StringComparison.Ordinal))
         {
             var hex = s[2..];
-            if (IsHexDigits(hex)
+            return IsHexDigits(hex)
                 && ulong.TryParse(hex.TrimStart('0').PadLeft(1, '0'), NumberStyles.HexNumber,
                     CultureInfo.InvariantCulture, out var fromHex)
-                && fromHex <= uint.MaxValue)
-            {
-                return (uint)fromHex;
-            }
-
-            throw new SdkException(ErrorCode.Parse, $"invalid hex number: {s}");
+                && fromHex <= uint.MaxValue
+                    ? (uint)fromHex
+                    : null;
         }
 
-        if (IsAsciiDigits(s)
+        return IsAsciiDigits(s)
             && ulong.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out var fromDec)
-            && fromDec <= uint.MaxValue)
-        {
-            return (uint)fromDec;
-        }
-
-        throw new SdkException(ErrorCode.Parse, $"invalid number: {s}");
+            && fromDec <= uint.MaxValue
+                ? (uint)fromDec
+                : null;
     }
 
     /// <summary>The <c>key=value</c> fields of one response, checked against
@@ -219,7 +224,7 @@ public static class Protocol
 
         public string Raw(string key) => _pairs[key];
 
-        private SdkException Invalid(string key) =>
+        public SdkException InvalidValue(string key) =>
             new(ErrorCode.Parse, $"invalid {key}= value in {_ctx}: {_data}");
 
         private ulong Dec(string key, ulong max)
@@ -229,7 +234,7 @@ public static class Protocol
                 || !ulong.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var v)
                 || v > max)
             {
-                throw Invalid(key);
+                throw InvalidValue(key);
             }
 
             return v;
@@ -252,14 +257,14 @@ public static class Protocol
             }
             catch (SdkException)
             {
-                throw Invalid(key);
+                throw InvalidValue(key);
             }
         }
 
         public byte Mask8(string key)
         {
             var value = Mask(key);
-            return value <= byte.MaxValue ? (byte)value : throw Invalid(key);
+            return value <= byte.MaxValue ? (byte)value : throw InvalidValue(key);
         }
 
         /// <summary><c>0</c> or <c>1</c>.</summary>
@@ -267,7 +272,7 @@ public static class Protocol
         {
             "0" => false,
             "1" => true,
-            _ => throw Invalid(key),
+            _ => throw InvalidValue(key),
         };
     }
 
@@ -594,12 +599,147 @@ public static class Protocol
     public static ulong ParseSyncCount(string data) =>
         new FieldSet("sync count", data, "clocks").Dec64("clocks");
 
+    // --- safety functions ---
+
+    /// <summary>Build the <c>wdog &lt;ms&gt;</c> command: 0 disables the
+    /// watchdog, 100-10000 enables it. Any other value is refused before
+    /// sending (the device would answer <c>BAD_PARAM</c>).</summary>
+    public static string WdogCommand(uint ms)
+    {
+        if (ms != 0 && ms is < SafetyLimits.WdogMinMs or > SafetyLimits.WdogMaxMs)
+        {
+            throw new SdkException(
+                ErrorCode.InvalidArgument,
+                $"watchdog timeout {ms} ms must be 0 or between {SafetyLimits.WdogMinMs} "
+                    + $"and {SafetyLimits.WdogMaxMs}");
+        }
+
+        return string.Create(CultureInfo.InvariantCulture, $"wdog {ms}");
+    }
+
+    /// <summary>Build the <c>usbsafe on|off</c> command.</summary>
+    public static string UsbsafeCommand(bool on) => on ? "usbsafe on" : "usbsafe off";
+
+    /// <summary>Build the <c>excl set &lt;mask&gt;...</c> command: 1 to 16 groups,
+    /// each a subset of the DIO pins with at least 2 bits. That every pin is an
+    /// <i>output</i> depends on the active map and is checked by the device.</summary>
+    public static string ExclSetCommand(IReadOnlyList<uint> masks)
+    {
+        if (masks.Count is 0 or > SafetyLimits.MaxExclusiveGroups)
+        {
+            throw new SdkException(
+                ErrorCode.InvalidArgument,
+                $"excl set takes 1 to {SafetyLimits.MaxExclusiveGroups} groups, got {masks.Count}");
+        }
+
+        var line = new StringBuilder("excl set");
+        for (var i = 0; i < masks.Count; i++)
+        {
+            var mask = masks[i];
+            Pins.CheckDioMask($"exclusive group {i} mask", mask);
+            if (uint.PopCount(mask) < 2)
+            {
+                throw new SdkException(
+                    ErrorCode.InvalidArgument,
+                    $"exclusive group {i} mask 0x{mask:x8} needs at least 2 pins");
+            }
+
+            line.Append(" 0x").Append(mask.ToString("x", CultureInfo.InvariantCulture));
+        }
+
+        return line.ToString();
+    }
+
+    /// <summary>Parse the <c>safety</c> response
+    /// <c>wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0</c>.
+    /// The latch and its cause must agree: <c>failsafe=1</c> has a cause other
+    /// than <c>none</c>, <c>failsafe=0</c> has cause <c>none</c>.</summary>
+    public static SafetyState ParseSafety(string data)
+    {
+        var f = new FieldSet(
+            "safety", data, "wdog_ms", "remaining_ms", "failsafe", "cause", "usbsafe", "excl");
+        var cause = f.Raw("cause") switch
+        {
+            "none" => FailsafeCause.None,
+            "wdog" => FailsafeCause.Wdog,
+            "usb" => FailsafeCause.Usb,
+            _ => throw f.InvalidValue("cause"),
+        };
+        var failsafe = f.Flag("failsafe");
+        if (failsafe == (cause == FailsafeCause.None))
+        {
+            throw new SdkException(
+                ErrorCode.Parse, $"failsafe latch and cause disagree in safety: {data}");
+        }
+
+        var excl = f.Dec8("excl");
+        return excl <= SafetyLimits.MaxExclusiveGroups
+            ? new SafetyState(
+                WdogMs: f.Dec32("wdog_ms"),
+                RemainingMs: f.Dec32("remaining_ms"),
+                Failsafe: failsafe,
+                Cause: cause,
+                UsbSafe: f.Flag("usbsafe"),
+                Excl: excl)
+            : throw f.InvalidValue("excl");
+    }
+
+    /// <summary>Parse the <c>rstinfo</c> response
+    /// <c>cause=por uptime_ms=0 boot=0x00000001</c>.</summary>
+    public static ResetInfo ParseRstinfo(string data)
+    {
+        var f = new FieldSet("rstinfo", data, "cause", "uptime_ms", "boot");
+        var cause = f.Raw("cause") switch
+        {
+            "por" => ResetCause.Por,
+            "wdt" => ResetCause.Wdt,
+            "soft" => ResetCause.Soft,
+            "bor" => ResetCause.Bor,
+            "other" => ResetCause.Other,
+            _ => throw f.InvalidValue("cause"),
+        };
+        return new ResetInfo(cause, f.Dec64("uptime_ms"), f.Mask("boot"));
+    }
+
+    /// <summary>Parse the <c>pads</c> response <c>out=0x00000005 pad=0x00000005</c>.</summary>
+    public static Pads ParsePads(string data)
+    {
+        var f = new FieldSet("pads", data, "out", "pad");
+        return new Pads(f.Mask("out"), f.Mask("pad"));
+    }
+
+    /// <summary>Parse the counted <c>excl get</c> response: the header
+    /// <c>count=&lt;n&gt;</c> and <c>n</c> lines <c>  mask=0x%08x</c>, in the order
+    /// the groups were set.</summary>
+    public static IReadOnlyList<uint> ParseExclGet(string header, IReadOnlyList<string> lines)
+    {
+        var count = new FieldSet("excl get", header, "count").Dec64("count");
+        if (count > SafetyLimits.MaxExclusiveGroups)
+        {
+            throw new SdkException(
+                ErrorCode.Parse,
+                $"excl get announced {count} groups, the device holds at most "
+                    + $"{SafetyLimits.MaxExclusiveGroups}");
+        }
+
+        if (count != (ulong)lines.Count)
+        {
+            throw new SdkException(
+                ErrorCode.Parse,
+                $"excl get header announced {count} groups but {lines.Count} lines were read");
+        }
+
+        return lines
+            .Select(line => new FieldSet("excl get line", line.Trim(), "mask").Mask("mask"))
+            .ToArray();
+    }
+
     // --- push events ---
 
     /// <summary>Parse the payload of a push line (after <c>! </c>). A
     /// recognised event with malformed fields, and an unknown event name, are
     /// both <see cref="ErrorCode.Parse"/> errors: the device sends exactly
-    /// three events, anything else is logged and dropped by the transport.</summary>
+    /// four events, anything else is logged and dropped by the transport.</summary>
     public static PushEvent ParsePushEvent(string payload)
     {
         var trimmed = payload.Trim();
@@ -622,6 +762,19 @@ public static class Protocol
             case "PATTERN_TIMEOUT":
                 return new PatternTimeoutEvent(
                     new FieldSet("PATTERN_TIMEOUT event", rest, "loops").Dec16("loops"));
+
+            case "FAILSAFE":
+                {
+                    var f = new FieldSet("FAILSAFE event", rest, "cause");
+
+                    // A trip always has a cause; `none` is only the idle `safety` value.
+                    return f.Raw("cause") switch
+                    {
+                        "wdog" => new FailsafeEvent(FailsafeCause.Wdog),
+                        "usb" => new FailsafeEvent(FailsafeCause.Usb),
+                        _ => throw f.InvalidValue("cause"),
+                    };
+                }
 
             default:
                 throw new SdkException(ErrorCode.Parse, $"unknown event: {trimmed}");

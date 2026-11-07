@@ -1,0 +1,6 @@
+# `usb` must be a table.
+# expected_error: usb must be a table
+# expected_line: 6
+version = 2
+
+usb = true

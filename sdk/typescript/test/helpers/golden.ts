@@ -22,6 +22,7 @@ export const GOLDEN_FILES = [
   "errors",
   "boundary",
   "events",
+  "safety",
 ] as const;
 
 export type GoldenFile = (typeof GOLDEN_FILES)[number];

@@ -1,0 +1,7 @@
+# The same pin twice in one group.
+# expected_error: exclusive group 1: duplicate pin "GP2" in pins
+# expected_line: 7
+version = 2
+
+[[exclusive]]
+pins = ["GP2", "GP3", "GP2"]

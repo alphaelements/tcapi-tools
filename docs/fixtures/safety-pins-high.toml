@@ -1,0 +1,12 @@
+# Highest valid pins (GP22, GP26, GP27); group order is file order.
+# expected: watchdog_ms=0 usbsafe=0 groups=0x0c400000,0x00400001
+# expected_command: excl set 0xc400000 0x400001
+# expected_command: usbsafe off
+# expected_command: wdog 0
+version = 2
+
+[[exclusive]]
+pins = ["GP22", "GP26", "GP27"]
+
+[[exclusive]]
+pins = ["GP0", "GP22"]

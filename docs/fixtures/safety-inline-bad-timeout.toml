@@ -1,0 +1,5 @@
+# Inline-table spelling: the error is reported on the line of the inline table.
+# expected_error: watchdog.timeout_ms must be 0 or between 100 and 10000
+# expected_line: 5
+version = 2
+watchdog = { timeout_ms = 50 }

@@ -1,5 +1,5 @@
-//! Parsers for the host-side TOML files `map.toml` and `pattern.toml`
-//! (schema v2, `docs/config-files.md`, R-TOML1/R-TOML2).
+//! Parsers for the host-side TOML files `map.toml`, `pattern.toml` and
+//! `safety.toml` (schema v2, `docs/config-files.md`, R-TOML1/R-TOML2).
 //!
 //! There is no lenient mode: a `version` other than 2, an unknown key or a
 //! contradictory setting is an error, and every error names the file and the
@@ -18,7 +18,10 @@ use std::path::Path;
 use toml::{Table, Value};
 
 use crate::error::SdkError;
-use crate::types::{PatternStep, PinMap, PATTERN_TICK_NS, PROTO_VERSION, VALID_DIO_MASK};
+use crate::types::{
+    PatternStep, PinMap, SafetyConfig, MAX_EXCLUSIVE_GROUPS, PATTERN_TICK_NS, PROTO_VERSION,
+    VALID_DIO_MASK, WDOG_MAX_MS, WDOG_MIN_MS,
+};
 
 /// Nanoseconds in a microsecond (`unit = "us"`).
 const NS_PER_US: i64 = 1000;
@@ -61,6 +64,14 @@ pub fn parse_pattern(src: &str, file: &str) -> Result<Vec<PatternStep>, ConfigEr
     eval_pattern(src).map_err(|f| f.in_file(file))
 }
 
+/// Parse the text of a `safety.toml` into the settings it declares: the
+/// watchdog timeout, `usbsafe` and one pin mask per exclusive group. `file`
+/// only labels errors. Applying the result is
+/// [`crate::Connection::apply_safety`].
+pub fn parse_safety(src: &str, file: &str) -> Result<SafetyConfig, ConfigError> {
+    eval_safety(src).map_err(|f| f.in_file(file))
+}
+
 /// Read and parse a `map.toml`. Errors carry the path of the file.
 pub fn load_map(path: &Path) -> Result<PinMap, SdkError> {
     let src = std::fs::read_to_string(path)?;
@@ -71,6 +82,12 @@ pub fn load_map(path: &Path) -> Result<PinMap, SdkError> {
 pub fn load_pattern(path: &Path) -> Result<Vec<PatternStep>, SdkError> {
     let src = std::fs::read_to_string(path)?;
     Ok(parse_pattern(&src, &path.display().to_string())?)
+}
+
+/// Read and parse a `safety.toml`. Errors carry the path of the file.
+pub fn load_safety(path: &Path) -> Result<SafetyConfig, SdkError> {
+    let src = std::fs::read_to_string(path)?;
+    Ok(parse_safety(&src, &path.display().to_string())?)
 }
 
 // ------------------------------------------------------------------ errors
@@ -86,6 +103,14 @@ enum Loc<'a> {
     Step(usize),
     /// Key `name` inside step `n`; the step header if the key is absent.
     StepKey(usize, &'a str),
+    /// Key `key` of the `[table]` section (or of the inline table
+    /// `table = {...}`); the section header if the key is absent.
+    Field(&'a str, &'a str),
+    /// The header of exclusive group `n` (1-based `[[exclusive]]`).
+    Group(usize),
+    /// Key `name` inside exclusive group `n`; the group header if the key is
+    /// absent.
+    GroupKey(usize, &'a str),
 }
 
 /// An error before the file name is attached.
@@ -147,14 +172,34 @@ impl<'a> Src<'a> {
         })
     }
 
-    /// Line index of the header of the `n`-th (1-based) `[[step]]`.
-    fn step_header(&self, n: usize) -> Option<usize> {
+    /// Line index of the `n`-th (1-based) line that is exactly `header`.
+    fn nth_header(&self, header: &str, n: usize) -> Option<usize> {
         self.lines
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.trim() == "[[step]]")
+            .filter(|(_, l)| l.trim() == header)
             .nth(n - 1)
             .map(|(i, _)| i)
+    }
+
+    /// Line index of the header of the `n`-th (1-based) `[[step]]`.
+    fn step_header(&self, n: usize) -> Option<usize> {
+        self.nth_header("[[step]]", n)
+    }
+
+    /// Line index of key `k` in the section whose header is at index `h`;
+    /// `h` itself if the key is absent.
+    fn key_in_section(&self, h: usize, k: &str) -> usize {
+        self.lines[h + 1..]
+            .iter()
+            .take_while(|l| !l.trim_start().starts_with('['))
+            .position(|l| {
+                Self::is_code(l)
+                    && l.trim_start()
+                        .strip_prefix(k)
+                        .is_some_and(|r| r.starts_with([' ', '\t', '=']))
+            })
+            .map_or(h, |p| h + 1 + p)
     }
 
     fn line(&self, loc: Loc) -> usize {
@@ -162,18 +207,18 @@ impl<'a> Src<'a> {
             Loc::File => None,
             Loc::Key(k) => self.key_line(k),
             Loc::Step(n) => self.step_header(n),
-            Loc::StepKey(n, k) => self.step_header(n).map(|h| {
-                self.lines[h + 1..]
-                    .iter()
-                    .take_while(|l| !l.trim_start().starts_with('['))
-                    .position(|l| {
-                        Self::is_code(l)
-                            && l.trim_start()
-                                .strip_prefix(k)
-                                .is_some_and(|r| r.starts_with([' ', '\t', '=']))
-                    })
-                    .map_or(h, |p| h + 1 + p)
-            }),
+            Loc::StepKey(n, k) => self.step_header(n).map(|h| self.key_in_section(h, k)),
+            Loc::Field(t, k) => self
+                .nth_header(&format!("[{t}]"), 1)
+                .map(|h| self.key_in_section(h, k))
+                .or_else(|| self.key_line(t)),
+            Loc::Group(n) => self
+                .nth_header("[[exclusive]]", n)
+                .or_else(|| self.key_line("exclusive")),
+            Loc::GroupKey(n, k) => self
+                .nth_header("[[exclusive]]", n)
+                .map(|h| self.key_in_section(h, k))
+                .or_else(|| self.key_line("exclusive")),
         };
         // Whole-file errors, and elements that cannot be located, are line 1.
         idx.map_or(1, |i| i + 1)
@@ -353,6 +398,156 @@ fn eval_map(src: &str) -> Result<PinMap, Fail> {
     map.pull_down |= unlisted;
     map.edge |= unlisted;
     Ok(map)
+}
+
+// ------------------------------------------------------------------ safety
+
+/// Unknown-key check for the `[table]` section `name` of `safety.toml`.
+fn check_table_keys(s: &Src, t: &Table, allowed: &[&str], name: &str) -> Result<(), Fail> {
+    for k in t.keys() {
+        if !allowed.contains(&k.as_str()) {
+            return s.fail(
+                Loc::Field(name, k),
+                format!("unknown key \"{k}\" in {name}"),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn eval_watchdog(s: &Src, t: &Table) -> Result<u32, Fail> {
+    let Some(w) = t.get("watchdog") else {
+        return Ok(0);
+    };
+    let Value::Table(w) = w else {
+        return s.fail(Loc::Key("watchdog"), "watchdog must be a table");
+    };
+    check_table_keys(s, w, &["timeout_ms"], "watchdog")?;
+    let loc = Loc::Field("watchdog", "timeout_ms");
+    match w.get("timeout_ms") {
+        None => Ok(0),
+        Some(Value::Integer(ms)) => match u32::try_from(*ms) {
+            Ok(ms) if ms == 0 || (WDOG_MIN_MS..=WDOG_MAX_MS).contains(&ms) => Ok(ms),
+            _ => s.fail(
+                loc,
+                format!("watchdog.timeout_ms must be 0 or between {WDOG_MIN_MS} and {WDOG_MAX_MS}"),
+            ),
+        },
+        Some(_) => s.fail(loc, "watchdog.timeout_ms must be an integer"),
+    }
+}
+
+fn eval_usb(s: &Src, t: &Table) -> Result<bool, Fail> {
+    let Some(u) = t.get("usb") else {
+        return Ok(false);
+    };
+    let Value::Table(u) = u else {
+        return s.fail(Loc::Key("usb"), "usb must be a table");
+    };
+    check_table_keys(s, u, &["safe"], "usb")?;
+    match u.get("safe") {
+        None => Ok(false),
+        Some(Value::Boolean(b)) => Ok(*b),
+        Some(_) => s.fail(Loc::Field("usb", "safe"), "usb.safe must be a boolean"),
+    }
+}
+
+/// The pin mask of exclusive group `n` (1-based).
+fn eval_group(s: &Src, n: usize, g: &Value) -> Result<u32, Fail> {
+    let Value::Table(g) = g else {
+        return s.fail(
+            Loc::Group(n),
+            format!("exclusive group {n}: must be a table"),
+        );
+    };
+    for k in g.keys() {
+        if k != "pins" {
+            return s.fail(
+                Loc::GroupKey(n, k),
+                format!("unknown key \"{k}\" in exclusive group {n}"),
+            );
+        }
+    }
+    let Some(pins) = g.get("pins") else {
+        return s.fail(
+            Loc::Group(n),
+            format!("exclusive group {n}: pins is required"),
+        );
+    };
+    let loc = Loc::GroupKey(n, "pins");
+    let not_names = || format!("exclusive group {n}: pins must be an array of pin names");
+    let Value::Array(pins) = pins else {
+        return s.fail(loc, not_names());
+    };
+    let mut mask = 0u32;
+    for pin in pins {
+        let Value::String(name) = pin else {
+            return s.fail(loc, not_names());
+        };
+        let Some(bit) = pin_number(name) else {
+            return s.fail(
+                loc,
+                format!("exclusive group {n}: invalid pin \"{name}\" in pins"),
+            );
+        };
+        if mask & (1 << bit) != 0 {
+            return s.fail(
+                loc,
+                format!("exclusive group {n}: duplicate pin \"{name}\" in pins"),
+            );
+        }
+        mask |= 1 << bit;
+    }
+    if mask.count_ones() < 2 {
+        return s.fail(
+            loc,
+            format!("exclusive group {n}: a group needs at least 2 pins"),
+        );
+    }
+    Ok(mask)
+}
+
+fn eval_safety(src: &str) -> Result<SafetyConfig, Fail> {
+    let s = Src::new(src);
+    let t = s.parse(src)?;
+    check_version(&s, &t)?;
+    check_keys(
+        &s,
+        &t,
+        &["version", "watchdog", "usb", "exclusive"],
+        None,
+        "",
+    )?;
+    let watchdog_ms = eval_watchdog(&s, &t)?;
+    let usbsafe = eval_usb(&s, &t)?;
+    let mut groups = Vec::new();
+    if let Some(ex) = t.get("exclusive") {
+        let Value::Array(entries) = ex else {
+            return s.fail(
+                Loc::Key("exclusive"),
+                "exclusive must be an array of tables",
+            );
+        };
+        // Checked before any group, so 17 groups are always reported as too
+        // many even if one of them is also faulty.
+        if entries.len() > MAX_EXCLUSIVE_GROUPS {
+            return s.fail(
+                Loc::Group(MAX_EXCLUSIVE_GROUPS + 1),
+                format!(
+                    "too many exclusive groups: {} (at most {MAX_EXCLUSIVE_GROUPS})",
+                    entries.len()
+                ),
+            );
+        }
+        for (i, g) in entries.iter().enumerate() {
+            groups.push(eval_group(&s, i + 1, g)?);
+        }
+    }
+    Ok(SafetyConfig {
+        watchdog_ms,
+        usbsafe,
+        groups,
+    })
 }
 
 // ----------------------------------------------------------------- pattern

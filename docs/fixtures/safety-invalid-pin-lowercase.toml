@@ -1,0 +1,10 @@
+# Pin names are case-sensitive; the second group is reported.
+# expected_error: exclusive group 2: invalid pin "gp3" in pins
+# expected_line: 10
+version = 2
+
+[[exclusive]]
+pins = ["GP2", "GP4"]
+
+[[exclusive]]
+pins = ["GP2", "gp3"]

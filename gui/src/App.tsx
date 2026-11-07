@@ -11,6 +11,7 @@ import { DevicePanel } from "./components/panels-device";
 import { GpioMonitor } from "./components/panels-gpio";
 import { OutputControl, PinMapEditor } from "./components/panels-output-map";
 import { PatternEditor, TimestampViewer } from "./components/panels-pattern-ts";
+import { SafetyBanners, SafetyPanel } from "./components/panels-safety";
 import { SettingsPanel, useTweaks } from "./components/settings";
 import { WaveformViewer } from "./components/waveform";
 import { NUM_PINS, PochiStore, useStore } from "./store/store";
@@ -99,14 +100,20 @@ function Logo() {
 
 // ---------- right sidebar tabs ----------
 function RightDock() {
-  useStore(["conn", "pattern"]);
+  useStore(["conn", "pattern", "safety"]);
   const [tab, setTab] = useState("output");
+  const S = PochiStore.get();
   const tabs: [string, string, () => React.JSX.Element][] = [
     ["output", "Output", OutputControl],
     ["map", "Pin Map", PinMapEditor],
     ["pattern", "Pattern", PatternEditor],
     ["ts", "Timestamp", TimestampViewer],
   ];
+  // Firmware without the safety feature bits has no safety tab at all.
+  if (S.connStatus === "connected" && PochiStore.safetyFeatures().any) {
+    tabs.push(["safety", "Safety", SafetyPanel]);
+  }
+  const latched = S.safety.state?.failsafe === true;
   const entry = tabs.find((t) => t[0] === tab) ?? tabs[0];
   const Active = entry[2];
   return (
@@ -118,7 +125,10 @@ function RightDock() {
             border: 0, borderBottom: "2px solid " + (tab === id ? "var(--accent)" : "transparent"),
             color: tab === id ? "var(--text)" : "var(--text-secondary)", fontSize: 11, fontWeight: 600, cursor: "pointer",
             fontFamily: "var(--font-sans)", letterSpacing: ".01em",
-          }}>{label}</button>
+          }}>
+            {label}
+            {id === "safety" && latched && <span className="dot-led err" aria-label="failsafe latched" style={{ marginLeft: 5, width: 7, height: 7 }}></span>}
+          </button>
         ))}
       </div>
       <div className="scroll-y" style={{ flex: 1, padding: 12, minHeight: 0 }}>
@@ -130,15 +140,23 @@ function RightDock() {
 
 // ---------- status bar ----------
 function StatusBar({ fps }: { fps: number }) {
-  useStore(["conn", "pins", "sim", "map"]);
+  useStore(["conn", "pins", "sim", "map", "safety"]);
   const S = PochiStore.get();
   const connected = S.connStatus === "connected";
   const outCount = PochiStore.outputChannels().length;
+  const safety = connected && PochiStore.safetyFeatures().watchdog ? S.safety.state : null;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 0, height: 24, flex: "none", background: "var(--surface)", borderTop: "1px solid var(--border)", fontSize: 10.5, color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>
       <SbItem accent>{connected ? "● " + (S.version ? "fw " + S.version.fw : "") : "○ offline"}</SbItem>
       <SbItem>map {outCount}o/{NUM_PINS - outCount}i</SbItem>
       <SbItem>sub {S.subscribed ? "ON" : "off"}</SbItem>
+      {safety && (
+        <SbItem>
+          <span data-testid="status-safety" style={{ color: safety.failsafe ? "var(--warn)" : "inherit" }}>
+            {safety.failsafe ? "FAILSAFE " + safety.cause : safety.wdog_ms > 0 ? "wdog " + safety.wdog_ms + "ms" : "wdog off"}
+          </span>
+        </SbItem>
+      )}
       <SbItem>t {(S.streamT / 1000).toFixed(1)}ms</SbItem>
       <SbItem>scope {S.monitored.size}ch</SbItem>
       <div style={{ flex: 1 }} />
@@ -193,6 +211,7 @@ function App() {
   return (
     <div style={rootStyle}>
       <MenuBar onOpenSettings={() => setSettingsOpen(true)} />
+      <SafetyBanners />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         {/* left */}
         <div style={{ width: leftW, flex: "none", background: "var(--surface)", borderRight: "0", minWidth: 0 }}>

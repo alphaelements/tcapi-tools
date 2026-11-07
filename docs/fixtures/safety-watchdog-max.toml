@@ -1,0 +1,12 @@
+# Largest timeout.
+# expected: watchdog_ms=10000 usbsafe=1 groups=none
+# expected_command: excl clear
+# expected_command: usbsafe on
+# expected_command: wdog 10000
+version = 2
+
+[watchdog]
+timeout_ms = 10000
+
+[usb]
+safe = true

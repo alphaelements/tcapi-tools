@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { parseGolden, type GoldenCase } from "./golden";
-import { MockDeviceCore } from "./mock-device-core";
+import { MockDeviceCore, type ResetCause, type UsbState } from "./mock-device-core";
 
 const files = import.meta.glob<string>("../../../protocol/golden/*.txt", {
   query: "?raw",
@@ -19,7 +19,15 @@ const files = import.meta.glob<string>("../../../protocol/golden/*.txt", {
 });
 
 /// Directives the replay can drive.
-const SUPPORTED_DIRECTIVES = new Set(["in", "advance", "expect_pins", "sync_edge"]);
+const SUPPORTED_DIRECTIVES = new Set([
+  "in",
+  "advance",
+  "expect_pins",
+  "sync_edge",
+  "dtr",
+  "usb",
+  "reboot",
+]);
 const UNSUPPORTED_REASON: Record<string, string> = {
   send_hex: "binary framing",
   fault: "fault injection",
@@ -41,6 +49,19 @@ function parseAdvance(args: string): number {
   return Number(m[2]) * (m[1] === "us" ? 1000 : 1);
 }
 
+function parseUsbState(args: string): UsbState {
+  if (args === "suspend" || args === "reset" || args === "configured" || args === "unenumerated") {
+    return args;
+  }
+  throw new Error(`bad usb directive: ${args}`);
+}
+
+function parseResetCause(args: string): ResetCause {
+  const m = /^cause=(por|wdt|soft|bor|other)$/.exec(args);
+  if (!m) throw new Error(`bad reboot directive: ${args}`);
+  return m[1] as ResetCause;
+}
+
 /// Replay one case; returns the first mismatch or null.
 function replay(c: GoldenCase): string | null {
   const dev = new MockDeviceCore();
@@ -56,6 +77,15 @@ function replay(c: GoldenCase): string | null {
       actual = dev.takeEvents();
     } else if (item.name === "sync_edge") {
       dev.syncEdge();
+      actual = dev.takeEvents();
+    } else if (item.name === "dtr") {
+      dev.setDtr(item.args === "1");
+      actual = dev.takeEvents();
+    } else if (item.name === "usb") {
+      dev.setUsbState(parseUsbState(item.args));
+      actual = dev.takeEvents();
+    } else if (item.name === "reboot") {
+      dev.reboot(parseResetCause(item.args));
       actual = dev.takeEvents();
     } else {
       // expect_pins out=0x...
@@ -88,6 +118,7 @@ describe("golden corpus is available", () => {
       "map.txt",
       "pattern.txt",
       "reset.txt",
+      "safety.txt",
       "sync.txt",
       "timestamp.txt",
       "version-info.txt",
@@ -130,10 +161,15 @@ describe("replay coverage", () => {
     "io.txt": 15,
     "pattern.txt": 25,
     "timestamp.txt": 25,
-    "events.txt": 10,
-    "errors.txt": 10,
+    "events.txt": 21,
+    "errors.txt": 21,
     "reset.txt": 10,
     "sync.txt": 15,
+    // Only send_hex (binary framing), flash faults and the pio_stall fault
+    // are left out of the corpus: every other case replays.
+    "boundary.txt": 14,
+    // 58 of 59: the one case that needs send_hex is excluded.
+    "safety.txt": 58,
   };
   for (const [name, floor] of Object.entries(FLOORS)) {
     it(`replays at least ${floor} cases of ${name}`, () => {
@@ -141,9 +177,9 @@ describe("replay coverage", () => {
     });
   }
 
-  it("replays at least 250 cases overall", () => {
+  it("replays at least 315 cases overall", () => {
     const replayed = [...counts.values()].reduce((sum, c) => sum + c.replayed, 0);
-    expect(replayed).toBeGreaterThanOrEqual(250);
+    expect(replayed).toBeGreaterThanOrEqual(315);
   });
 
   it("every excluded case has a stated reason", () => {

@@ -20,9 +20,12 @@ from .discovery import discover, find_by_device_number, find_by_uid, select_sole
 from .errors import (
     InvalidArgumentError,
     ParseError,
+    SafetyMismatchError,
     SdkError,
     UnsupportedFirmwareError,
 )
+from .heartbeat import FailureCallback, Heartbeat, heartbeat_period
+from .safety import SafetyConfig
 from .transport import PortLike, Transport
 from .types import (
     PROTO_VERSION,
@@ -30,11 +33,14 @@ from .types import (
     DeviceInfo,
     EdgeMode,
     IoState,
+    Pads,
     PatternMode,
     PatternStatus,
     PatternStep,
     PinMap,
     PushEvent,
+    ResetInfo,
+    SafetyState,
     TimestampResult,
     TsStatus,
     VersionInfo,
@@ -98,6 +104,9 @@ class Connection:
         # command's response is delivered by that same reader thread).
         self._list_lock = threading.Lock()
         self._closed = False
+        # Running heartbeats, so `close` can tell them to end.
+        self._heartbeats: list[Heartbeat] = []
+        self._heartbeat_lock = threading.Lock()
         self._transport.set_event_callback(self._fan_out)
         try:
             self._version = self._handshake()
@@ -175,15 +184,26 @@ class Connection:
         """Set the command response timeout in seconds (default 2.0)."""
         self._transport.timeout = timeout
 
+    @property
+    def closed(self) -> bool:
+        """True once :meth:`close` was called."""
+        return self._closed
+
     def close(self) -> None:
         """Close the connection. Subscribers are detached without sending
         ``subscribe off`` (closing the port drops DTR, which turns the
-        device subscription off)."""
+        device subscription off). Running heartbeats end silently. Closing
+        sends no command and changes no output."""
         with self._subscription_lock, self._list_lock:
             self._closed = True
             for sub in self._subscribers:
                 sub._closed = True
             self._subscribers.clear()
+        with self._heartbeat_lock:
+            heartbeats = list(self._heartbeats)
+            self._heartbeats.clear()
+        for heartbeat in heartbeats:
+            heartbeat._signal_stop()
         self._transport.close()
 
     def __enter__(self) -> Connection:
@@ -419,6 +439,124 @@ class Connection:
     def sync_disarm(self) -> None:
         """``sync disarm`` — release sync state (safe in any state)."""
         self._transport.command("sync disarm")
+
+    # --- safety functions ---
+
+    def wdog(self, ms: int) -> None:
+        """``wdog <ms>`` — enable (``100..=10000``) or disable (``0``) the
+        watchdog. CDC only. The watchdog is off after every restart; whoever
+        enables it must keep a heartbeat going (:meth:`start_heartbeat`)."""
+        self._transport.command(protocol.wdog_command(ms))
+
+    def safety(self) -> SafetyState:
+        """``safety`` — the safety state (watchdog, failsafe latch,
+        ``usbsafe``, number of exclusive groups). The source of truth for
+        ``! FAILSAFE``."""
+        return protocol.parse_safety(self._transport.command("safety"))
+
+    def failsafe_clear(self) -> None:
+        """``failsafe clear`` — release the failsafe latch (CDC only). The
+        outputs stay where they are and the watchdog timer restarts."""
+        self._transport.command("failsafe clear")
+
+    def outputs_reset(self) -> None:
+        """``outputs reset`` — put every output at its ``def`` (the safe
+        state) and stop a running pattern. Always succeeds on the device,
+        also with the latch set."""
+        self._transport.command("outputs reset")
+
+    def excl_set(self, masks: list[int]) -> None:
+        """``excl set <mask>...`` — replace all exclusive groups atomically
+        (1-16 masks of at least 2 output pins; CDC only). A violated state is
+        :class:`~pochi.errors.ExclusiveError`; a mask with a non-output pin
+        is ``BadParamError`` (the device knows the map)."""
+        self._transport.command(protocol.excl_set_command(masks))
+
+    def excl_clear(self) -> None:
+        """``excl clear`` — remove all exclusive groups (CDC only)."""
+        self._transport.command("excl clear")
+
+    def excl_get(self) -> list[int]:
+        """``excl get`` — the masks of the exclusive groups in the order they
+        were set (counted response)."""
+        header, lines = self._transport.command_counted("excl get")
+        return protocol.parse_excl_get(header, lines)
+
+    def usbsafe(self, on: bool) -> None:
+        """``usbsafe on|off`` — failsafe when the USB link is lost (CDC
+        only)."""
+        self._transport.command(protocol.usbsafe_command(on))
+
+    def rstinfo(self) -> ResetInfo:
+        """``rstinfo`` — cause and time of the last restart."""
+        return protocol.parse_rstinfo(self._transport.command("rstinfo"))
+
+    def pads(self) -> Pads:
+        """``pads`` — the recorded outputs and the level read back from the
+        pads."""
+        return protocol.parse_pads(self._transport.command("pads"))
+
+    def apply_safety(self, config: SafetyConfig) -> SafetyState:
+        """Make the device equal to a ``safety.toml`` (config-files.md
+        section 7, DD-16) and check the result.
+
+        The commands go out in this order and nothing else: ``excl set
+        <masks>`` when the configuration has groups, ``excl clear`` only
+        when it has none, ``usbsafe on|off``, ``wdog <ms>`` (last, so the
+        watchdog cannot trip while the rest is being sent). ``excl clear`` is
+        never sent before ``excl set``: ``excl set`` replaces atomically, and
+        a failed ``excl set`` after a clear would leave the device with less
+        protection than before.
+
+        A value the device would refuse is an
+        :class:`~pochi.errors.InvalidArgumentError` and nothing is sent. The
+        first error answered by the device stops the apply: later commands
+        are not sent and the error keeps its code (``BadParamError``,
+        ``BusyError``, ...). Accepted commands stay in effect (no rollback);
+        call :meth:`safety` and :meth:`excl_get` to see what is set. The pins
+        of the groups must already be outputs: apply ``map.toml`` first.
+
+        After the last command, ``safety`` and ``excl get`` are read back and
+        must equal the configuration (``wdog_ms``, ``usbsafe``, number and
+        masks of the groups); a difference is
+        :class:`~pochi.errors.SafetyMismatchError`. Returns the ``safety``
+        state that was read, which also shows a failsafe latch that was set
+        before (the latch is not part of the file).
+
+        With a watchdog configured, start the heartbeat afterwards."""
+        for command in config.commands():
+            self._transport.command(command)
+        state = self.safety()
+        groups = self.excl_get()
+        diffs = config.differences(state, groups)
+        if diffs:
+            raise SafetyMismatchError("; ".join(diffs))
+        return state
+
+    def start_heartbeat(
+        self, timeout_ms: int, on_failure: FailureCallback | None = None
+    ) -> Heartbeat:
+        """Start the watchdog heartbeat: a dedicated thread sends ``ping``
+        every ``timeout_ms / 4`` (at most 1 s) so the device keeps seeing
+        ``OK`` answers. ``timeout_ms`` is the value given to :meth:`wdog`
+        (``100..=10000``). See :mod:`pochi.heartbeat` for the rules
+        (serialised with every other command, one failure is reported and not
+        retried, closing the connection or stopping the heartbeat changes no
+        output). ``on_failure`` is called on the heartbeat thread with the
+        failure."""
+        heartbeat_period(timeout_ms)  # refuse a bad timeout before anything else
+        heartbeat = Heartbeat(self, timeout_ms, on_failure)
+        with self._heartbeat_lock:
+            if self._closed:
+                raise InvalidArgumentError("connection is closed")
+            self._heartbeats.append(heartbeat)
+        heartbeat._start()
+        return heartbeat
+
+    def _forget_heartbeat(self, heartbeat: Heartbeat) -> None:
+        with self._heartbeat_lock:
+            if heartbeat in self._heartbeats:
+                self._heartbeats.remove(heartbeat)
 
     # --- escape hatch ---
 

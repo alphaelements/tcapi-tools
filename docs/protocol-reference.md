@@ -70,6 +70,55 @@ transfer). Any baud rate value will work. The host must:
 
 On DTR falling the device switches `subscribe` off and returns to text mode.
 
+Opening or closing the port, changing DTR or RTS and changing the baud rate
+**never change the outputs**. Closing the port is not a safety event: an
+application that disappears is detected by the watchdog (section 4,
+"Safety"), not by the state of the port.
+
+### Data Integrity
+
+Text lines carry **no checksum**. The integrity of the link relies on the CRC
+and retransmission of USB data packets. A damaged or truncated line is answered
+with an error and changes nothing; the next line is parsed normally:
+
+- a missing argument is `ERR BAD_PARAM`;
+- a byte outside printable ASCII (and TAB) inside a line is not skipped: in a
+  number it is `ERR BAD_PARAM`, in the command name or as invalid UTF-8 it is
+  `ERR UNKNOWN_CMD`;
+- a line longer than 256 bytes is `ERR LINE_TOO_LONG`.
+
+A truncation that is itself a valid command (for example a number that lost its
+last digit) cannot be detected. A host that needs certainty reads the result back
+(`state`).
+
+**Why there is no line checksum.**
+
+- The device is connected by USB to one host. USB data packets are protected by a
+  CRC and are retransmitted by the hardware, so a bit error on the cable never
+  reaches the text layer.
+- What damages a line in practice is the host side: a write cut short, two
+  writers sharing one port, a wrong encoding. A checksum computed by the same
+  faulty host over the faulty content would not catch any of these.
+- A checksum would make the protocol harder to type in a terminal.
+
+**When this has to be reconsidered.** If a transport other than USB (for example a
+TCP relay for a remote device, or a serial line without hardware retransmission) is
+ever supported, the link no longer has the integrity described above. The transport
+must then provide it (an authenticated, checksummed stream) or the protocol gets a
+line checksum under a new feature bit. Until then none is defined, and a host must
+not assume that the text protocol is safe on such a transport.
+
+**The behaviour is fixed by golden transcripts** (`protocol/golden/boundary.txt`), not
+only by this text:
+
+| Case in `boundary.txt` | What it fixes |
+|---|---|
+| `line length 257 bytes is refused with one ERR LINE_TOO_LONG, the stream recovers at the next line` | An over-long line gives exactly one error, and the next line (`ping`, `pattern status`) is answered normally |
+| `line length 300 bytes ending in reset: one error, the tail is discarded, the device does NOT reset` | The discarded tail is never executed, so a line cut and joined with `reset` does not reset |
+| `a valid line right after an overlong one is not affected` and `two overlong lines in a row give one error each` | Re-synchronisation happens at the next terminator |
+| `boundary_truncated_line_does_not_change_outputs` | A truncated line (missing argument) is `ERR BAD_PARAM`; outputs, map and state are unchanged |
+| `boundary_invalid_chars_rejected` | A non-printable or non-ASCII byte makes the token invalid (`ERR BAD_PARAM` in a number, `ERR UNKNOWN_CMD` in a name) and nothing is executed |
+
 ### Line Ending and Length
 
 All requests and responses use CR/LF. The device accepts `\r`, `\n` or `\r\n`
@@ -126,7 +175,7 @@ Only the keys listed in this document are ever sent.
 |---|---|---|
 | Masks and bit values | `0x` + 8 lower-case hex digits | `0x0c7fffff` |
 | `map` flags | `0x` + 2 lower-case hex digits | `0x00` |
-| Feature bits | `0x` + 8 lower-case hex digits | `0x00000003` |
+| Feature bits | `0x` + 8 lower-case hex digits | `0x000000ff` |
 | Counts, quantities, times | unitless decimal; the unit is part of the key name (`ts_res_ns`, `tick_ns`, `t=` in microseconds) | `total=2` |
 
 ### Counted multi-line responses
@@ -136,7 +185,7 @@ continuation lines, each starting with two spaces. `count=` is reserved for
 this form: no single-line response uses it. A multi-line response without a
 `count=` header does not exist. With `count=0`, no continuation line follows.
 
-Two commands answer in this form: `ts get` and `help`.
+Three commands answer in this form: `ts get`, `excl get` and `help`.
 
 ```
 > ts arm 0x1 both
@@ -156,7 +205,11 @@ Two commands answer in this form: `ts get` and `help`.
 ERR <NAME>
 ```
 
-The error names are listed in section 6.
+The error names are listed in section 6. One error, `EXCLUSIVE`, carries
+data after its name as `key=value` tokens: `ERR EXCLUSIVE group=<i>
+mask=0x%08x`. A host takes the first token after `ERR` as the name and must
+accept (and may read) further `key=value` tokens; it never fails to parse
+such a line.
 
 ### Push Events
 
@@ -195,7 +248,7 @@ Response fields:
 
 ```
 > caps
-< OK dio=25 out=0 in=25 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003
+< OK dio=25 out=0 in=25 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x000000ff
 ```
 
 Response fields:
@@ -209,6 +262,17 @@ Response fields:
 - `feat=0x<hex>` -- feature bits:
   - bit 0 (`FEAT_SYNC = 0x1`) -- multi-device clock sync
   - bit 1 (`FEAT_RESET = 0x2`) -- reset commands
+  - bit 2 (`FEAT_WDOG = 0x4`) -- `wdog`, `safety`, `failsafe clear`, `! FAILSAFE`
+  - bit 3 (`FEAT_EXCL = 0x8`) -- `excl`
+  - bit 4 (`FEAT_OUTRESET = 0x10`) -- `outputs reset`
+  - bit 5 (`FEAT_RSTINFO = 0x20`) -- `rstinfo`
+  - bit 6 (`FEAT_USBSAFE = 0x40`) -- `usbsafe`
+  - bit 7 (`FEAT_PADS = 0x80`) -- `pads`
+
+A bit is set only when its feature is in the firmware. A host sends a command
+only when its bit is set (an older firmware answers `ERR UNKNOWN_CMD`). New
+features are added to `proto=2` and announced by a feature bit; `proto` changes
+only when the meaning of an existing command changes.
 
 `out` and `in` follow the direction mask:
 
@@ -216,7 +280,7 @@ Response fields:
 > map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc
 < OK
 > caps
-< OK dio=25 out=2 in=23 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x00000003
+< OK dio=25 out=2 in=23 ts_res_ns=40 tick_ns=200 pattern=256 ring=256 feat=0x000000ff
 ```
 
 #### `info`
@@ -571,8 +635,11 @@ duration plus 100 ms) is forced to a safe state and reported with
 
 Reboot the device. It returns `OK`, then USB **re-enumerates**: the host must
 close the port and rediscover the device. RAM state returns to defaults (default
-map, idle pattern engine, timestamp disarmed, sync idle, `subscribe` off);
-flash state (saved map, device number) survives.
+map, idle pattern engine, timestamp disarmed, sync idle, `subscribe` off, and
+all safety state: watchdog off, failsafe cleared, no exclusive group,
+`usbsafe` off); flash state (saved map, device number) survives. The outputs
+are set to their defaults before `OK` is sent, and the device restarts with the
+initial state of the saved map (section 10, "Initial state after a restart").
 
 ```
 > reset
@@ -746,13 +813,314 @@ line, not a counted response.
 
 `reset` drops the sync state.
 
+### Safety
+
+Pochi-DIO is a general DIO device. For uses where an output must not misbehave
+(for example switching relays) it has these safety functions. All of them are
+**volatile**: they return to their defaults at every restart (section 10,
+"Persistence").
+
+**The safe state** is every output pin at its initial value `def` of the
+current map (a logical level, converted with `opol`; input pins are not
+changed). It is the same definition as the state the device starts in after a
+restart, and it is what a watchdog trip, a USB loss (with `usbsafe`) and
+`outputs reset` produce. There is no separate "off polarity": a pin that must be
+OFF in the safe state has its `def` on the OFF side. A pin whose `def` is ON
+is ON in the safe state.
+
+The transcripts of this section are in `protocol/golden/safety.txt`.
+
+#### `wdog <ms>`
+
+Enable or disable the watchdog. `0` disables it, `100`..`10000` enables it.
+**The watchdog is disabled by default**; it runs only after the host enables it.
+CDC only.
+
+```
+> wdog 99
+< ERR BAD_PARAM
+> wdog 500
+< OK
+> wdog 0
+< OK
+```
+
+Errors: `ERR BAD_PARAM` (out of range, not a number, missing or extra
+argument; the previous setting is kept).
+
+The timer is restarted by **every command that is answered `OK`** on CDC, at the
+instant the `OK` is returned. These do not restart it: `ERR` responses, unknown
+commands and malformed lines (`ERR UNKNOWN_CMD`, `ERR LINE_TOO_LONG`), binary frames
+with a wrong CRC, an `OK` on HID, and DTR or USB state changes. When
+`now - last_ok >= timeout` the watchdog **trips** (a deadline hit exactly trips;
+1 microsecond earlier does not), before any command that arrives later is
+processed. A trip puts the outputs in the safe state, sets the failsafe latch
+(below) and sends `! FAILSAFE cause=wdog`. A running pattern is stopped (no
+`! PATTERN_DONE`, the steps stay loaded). The firmware aims to finish the trip
+within 50 ms of the deadline; this is measured on hardware, not by the
+transcripts.
+
+The application that enables the watchdog is responsible for the heartbeat:
+send `ping` periodically (a period of timeout/4 or less, from a dedicated
+thread). Choose a timeout larger than the longest
+time the device needs to answer: `map save` and `devnum` write flash and take
+longer than other commands. The lower bound, and why no number is given yet, is
+under "Persistent and volatile settings" below.
+
+A command-line tool that connects, runs one command and exits has no heartbeat:
+the device trips `timeout` after the tool exits.
+
+#### `safety`
+
+Read the safety state. HID: allowed.
+
+```
+> safety
+< OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0
+> wdog 500
+< OK
+> safety
+< OK wdog_ms=500 remaining_ms=500 failsafe=0 cause=none usbsafe=0 excl=0
+```
+
+Response fields:
+- `wdog_ms=<n>` -- configured timeout, `0` = disabled
+- `remaining_ms=<n>` -- time left, rounded up to whole milliseconds, read
+  before this command restarts the timer; `0` when disabled or latched
+- `failsafe=<0|1>` -- the failsafe latch
+- `cause=<none|wdog|usb>` -- the cause of the latch; the first cause is kept
+- `usbsafe=<0|1>` -- the `usbsafe` setting
+- `excl=<n>` -- number of exclusive groups
+
+#### Failsafe latch and `failsafe clear`
+
+A trip sets the **latch** (`failsafe=1`). It stays set until `failsafe clear`;
+the device never clears it by itself. The watchdog setting is kept.
+
+While the latch is set the device answers `ERR FAILSAFE` to: a `write` that puts
+any target pin at a value other than its `def`, `pattern run`, `map set` and
+`map default`. It accepts everything else, in particular a `write` that only
+writes `def` values, `outputs reset`, `pattern add`, `state`, `safety`, `ping`
+and `failsafe clear`.
+
+```
+> wdog 100
+< OK
+(100 ms without an OK)
+< ! FAILSAFE cause=wdog
+> write 0x1 0x1
+< ERR FAILSAFE
+> write 0x0 0x1
+< OK
+> failsafe clear
+< OK
+```
+
+`failsafe clear` (CDC only) releases the latch (`failsafe=0`, `cause=none`)
+and restarts the watchdog timer; the outputs stay where they are. It is `OK`
+also when no latch is set. If the host sends no heartbeat afterwards, the device
+trips again.
+
+#### `! FAILSAFE`
+
+```
+< ! FAILSAFE cause=wdog
+```
+
+Sent once when the latch is set (not repeated while it is set). It is sent only
+while DTR is asserted and the USB link is configured, like every event, so it may
+be missed: `safety` is the source of truth. A trip caused by losing the USB link
+(`cause=usb`) cannot be sent, because the link is gone.
+
+#### `outputs reset`
+
+Put every output pin at its initial value `def` (the safe state). Stops a
+running pattern (the steps stay loaded, no `! PATTERN_DONE`). Input pins are
+not changed and the latch is not changed. **It always succeeds**: it is never
+refused with `BUSY`, `NO_RESOURCE` (no outputs configured: `OK`, nothing to do),
+`FAILSAFE` or `EXCLUSIVE`. Allowed on HID.
+
+```
+> outputs reset
+< OK
+```
+
+(An earlier draft called this `alloff`; that command does not exist.)
+
+#### `excl set <mask>...` / `excl clear` / `excl get`
+
+Exclusive groups: of the pins of a group, at most one may be ON.
+
+```
+> excl set 0xc
+< OK
+> excl get
+< OK count=1
+<   mask=0x0000000c
+> write 0x4 0x4
+< OK
+> write 0x8 0x8
+< ERR EXCLUSIVE group=0 mask=0x0000000c
+> write 0x8 0xc
+< OK
+```
+
+`excl set` takes 1 to 16 masks and replaces all groups at once (atomically). Each
+mask is a subset of the output pins with at least 2 bits; groups may overlap.
+`excl clear` removes all groups. `excl set` and `excl clear` are CDC only. `excl
+get` answers in the counted form, groups in the order they were set.
+
+Errors:
+- `ERR BAD_PARAM` -- no mask, more than 16, a mask with fewer than 2 bits or with
+  a pin that is not an output, not a number; the previous groups are kept
+- `ERR BUSY` -- a pattern is running (`excl set` and `excl clear`)
+- `ERR EXCLUSIVE group=<i> mask=0x%08x` -- the group would be violated by the
+  current output state, by a step already loaded with `pattern add`, or by the
+  `def` of the current map. Nothing is set. `<i>` is the 0-based index of the
+  first violating group
+
+An instruction that changes the outputs is checked **against the state after it**:
+if two or more pins of a group would be ON, the whole instruction is refused,
+with `ERR EXCLUSIVE group=<i> mask=0x%08x` (the first violating group), and
+nothing changes. Switching one pin OFF and another ON in a single `write` is
+therefore allowed. This applies to `write`, to every step of `pattern add` (one
+violating step adds none), and to `map set` (its `def`). A map whose `def`
+would put two pins of a group ON is refused at definition time, because the safe
+state and `outputs reset` are applied without a check.
+
+`map default` is `ERR BAD_MAP` while groups exist (the default map has no output
+pins); `map set` is `ERR BAD_MAP` if a group has a pin that is not an output in
+the new `dir`. Send `excl clear` first.
+
+#### `usbsafe on|off`
+
+Off by default. With `usbsafe on`, when the USB device leaves the configured
+state after having been configured once (bus suspend, bus reset, disconnect),
+the device trips with `cause=usb`: outputs to the safe state, latch set. The
+latch stays set after the host re-enumerates the device; check `safety`, then
+`failsafe clear`. Nothing trips during the first enumeration after power-up.
+CDC only. Errors: `ERR BAD_PARAM`.
+
+```
+> usbsafe on
+< OK
+```
+
+`usbsafe` is meaningful only if the board is powered from a second source
+(VSYS): a bus-powered board stops when the cable is pulled. A host operating
+system that suspends an idle device (Linux `power/control=auto`, Windows
+selective suspend) can trigger it; keep the port powered.
+
+#### `rstinfo`
+
+The cause and time of the last restart. HID: allowed.
+
+```
+> rstinfo
+< OK cause=por uptime_ms=0 boot=0x00000001
+```
+
+Response fields:
+- `cause=<por|wdt|soft|bor|other>` -- power-on, hardware watchdog, software reset
+  (including the `reset` command), brown-out, other
+- `uptime_ms=<n>` -- milliseconds since the restart (64-bit)
+- `boot=0x%08x` -- a value that is different at every restart (the value has no
+  other meaning; the transcripts use a counter starting at 1). A host that sees
+  a different `boot` knows the device restarted and re-applies its safety
+  settings.
+
+#### `pads`
+
+The recorded outputs and the level read back from the pads of the output pins,
+both as logical values. HID: allowed.
+
+```
+> pads
+< OK out=0x00000005 pad=0x00000005
+```
+
+`out` is the logical output latch (as in `state`). `pad` is the pad level of each
+output pin converted to a logical level with `opol`; input pins read 0. A
+difference means something outside the device drives the pin.
+
+#### Persistent and volatile settings
+
+One table for what survives a restart, what writes flash, and what the device
+sends on its own. "Unsolicited line" means a `! ...` event (section 7) that the
+device sends without a request. Nothing else is ever sent unasked.
+
+| Setting | Set by | Stored in flash | After every restart | Unsolicited line |
+|---|---|---|---|---|
+| Pin map (`dir` `pu` `pd` `def` `opol` `ipol` `edge`) | `map set` changes RAM only; **`map save` writes flash**; `map default` resets RAM only | Only what `map save` stored | The saved map, or the default map (all inputs, pull-down) if none or if it is invalid | None |
+| Device number | **`devnum <n>` writes flash at once** | Yes | The saved number, or 255 (unassigned) | None |
+| Output levels (`write`, pattern, `outputs reset`) | `write`, `pattern ...` | No | Every output pin at its `def` of the saved map | `! PATTERN_DONE` or `! PATTERN_TIMEOUT` when a pattern run ends (always, `subscribe` is not needed) |
+| `subscribe` | `subscribe on\|off` | No | Off | `! INPUT` while on, for input pins in `edge` only; nothing for output pins |
+| Pattern | `pattern add\|run\|stop\|reset` | No | Idle, no steps | See output levels |
+| Timestamp | `ts arm\|disarm` | No | Disarmed, ring empty | None (read with `ts get`) |
+| Multi-device sync | `sync ...` | No | Idle | None |
+| Watchdog | `wdog <ms>` | No | Disabled | `! FAILSAFE cause=wdog` when it trips |
+| Failsafe latch and `cause` | A trip; `failsafe clear` | No | Released | `! FAILSAFE` once per trip |
+| Exclusive groups | `excl set\|clear` | No | None | None (`ERR EXCLUSIVE` answers the offending command) |
+| `usbsafe` | `usbsafe on\|off` | No | Off | `cause=usb` is latched when the link is lost, so the event cannot be delivered; read `safety` after reconnecting |
+
+**Commands that write flash.** Exactly two: `map save` and `devnum <n>`. Every other
+command, including `map set`, `map default`, `write`, `reset`, `bootsel` and the
+safety commands, leaves flash alone. Each write erases and programs one flash sector
+while the device processes no commands, and flash endurance is finite: do not call
+them periodically. **Bench measurement (2026-11-07, one device, 100 writes each): `map save` 34.5-37.8 ms, `devnum` 34.2-39.0 ms, median 35.5 ms.** That is the time the device is busy; it is a typical value, not a guaranteed maximum (erase time varies with the flash part, temperature and wear).
+
+**What a restart does not carry over.** After power-on, `reset`, a hardware
+watchdog reset or a panic the device is in the state the saved map defines for each
+pin (section 10, "Initial state after a restart"). The failsafe latch, exclusive
+groups, watchdog, `usbsafe`, pattern, timestamp and `subscribe` are not carried over.
+A pin that must be OFF after a restart (and in the safe state: a trip, USB loss with
+`usbsafe`, `outputs reset`) has its `def` on the OFF side. These states use the same
+value `def`: there is no separate "off polarity" setting.
+
+**A session that only drives outputs sees no unsolicited line.** With no
+subscription, pattern or failsafe trip nothing is sent, also across DTR changes and
+`outputs reset` (golden case `events_output_only_session_is_silent` in
+`protocol/golden/events.txt`).
+
+**Choosing the watchdog timeout.** The timer restarts when a command is answered
+`OK`. A flash-writing command (`map save`, `devnum`) is answered only after the
+write, so the time between two `OK`s can be as long as the heartbeat period plus the
+write. The lower bound for `wdog` is therefore
+
+    timeout > (longest flash write) + (heartbeat period)
+
+with the protocol minimum of 100 ms. With the SDK heartbeat (period `timeout / 4`, at most 1 s) and the measured
+39 ms, the longest gap between two `OK` answers around a write is about `timeout / 4 + 39 ms`, which is
+below the timeout for every allowed value (100 ms: about 64 ms). Because 39 ms is a bench value and not a
+guaranteed maximum, the safe procedure stays the same: do not send `map save` or `devnum` while the watchdog is
+enabled; send `wdog 0`, save, then enable the watchdog again.
+
+After a restart the host re-applies, in this order: `excl set`, `usbsafe`,
+`wdog` (the watchdog last; never send `excl clear` first because `excl set`
+replaces atomically).
+
+#### Transports
+
+`wdog`, `excl set`, `excl clear`, `usbsafe` and `failsafe clear` can weaken the
+safety and are **CDC only** (a HID request is refused with
+`TRANSPORT_NOT_SUPPORTED`). `safety`, `outputs reset`, `excl get`, `rstinfo` and
+`pads` also work over HID. Only an `OK` on CDC restarts the watchdog timer. A text
+host never sees `TRANSPORT_NOT_SUPPORTED`.
+
+#### Order of the checks
+
+When several errors apply, the first of this list is reported: (1) parsing
+(`BAD_PARAM`, `UNKNOWN_CMD`, `LINE_TOO_LONG`); (2) command arguments and map
+validation (`BAD_PARAM`, `BAD_MAP`); (3) state (`NO_RESOURCE`, `BUSY`, `NOT_RUNNING`);
+(4) `FAILSAFE`; (5) `EXCLUSIVE`. `outputs reset` is checked only against (1).
+
 ### `help`
 
 Counted multi-line response, one line per command family. Text mode only.
 
 ```
 > help
-< OK count=16
+< OK count=24
 <   version                                  Get firmware version
 <   caps                                     Get device capabilities
 <   info                                     Get device UID and number
@@ -766,6 +1134,14 @@ Counted multi-line response, one line per command family. Text mode only.
 <   ts arm|disarm|get|status                 Timestamp operations
 <   subscribe on|off                         Input change events
 <   sync arm|master|start|stop|disarm|count  Multi-device clock sync
+<   wdog <ms>                                Set the watchdog timeout (0=off, 100-10000)
+<   safety                                   Get the safety state
+<   failsafe clear                           Release the failsafe latch
+<   outputs reset                            Return all outputs to their defaults
+<   excl set|clear|get                       Exclusive output groups
+<   usbsafe on|off                           Failsafe when the USB link is lost
+<   rstinfo                                  Get the reset cause and uptime
+<   pads                                     Read the output pad levels
 <   reset                                    Reboot the device
 <   bootsel                                  Reboot into the USB bootloader
 <   help                                     Show this help
@@ -797,6 +1173,15 @@ Counted multi-line response, one line per command family. Text mode only.
 | `subscribe on\|off` | -- | `OK` |
 | `sync arm\|master\|start\|stop\|disarm` | -- | `OK` |
 | `sync count` | -- | `OK clocks=<u64>` |
+| `wdog <ms>` | 0 or 100-10000 (CDC only) | `OK` |
+| `safety` | -- | `OK wdog_ms=<n> remaining_ms=<n> failsafe=<0\|1> cause=<none\|wdog\|usb> usbsafe=<0\|1> excl=<n>` |
+| `failsafe clear` | -- (CDC only) | `OK` |
+| `outputs reset` | -- | `OK` |
+| `excl set <mask>...` / `excl clear` | 1-16 masks / -- (CDC only) | `OK` |
+| `excl get` | -- | `OK count=<N>` + N lines `  mask=0x%08x` |
+| `usbsafe on\|off` | -- (CDC only) | `OK` |
+| `rstinfo` | -- | `OK cause=<por\|wdt\|soft\|bor\|other> uptime_ms=<u64> boot=0x%08x` |
+| `pads` | -- | `OK out=0x%08x pad=0x%08x` |
 | `reset` | -- | `OK`, then USB re-enumerates |
 | `bootsel` | -- | `OK`, then USB re-enumerates as BOOTSEL |
 | `help` | -- | `OK count=<N>` + N lines |
@@ -828,6 +1213,8 @@ takes only `key=value` pairs; a hex blob is refused:
 | `SYNC_STATE` | Sync command invalid in the current sync state |
 | `NO_RESOURCE` | The pin group the command needs is not configured (no outputs / no inputs) |
 | `NOT_RUNNING` | `pattern stop` while no pattern is running |
+| `FAILSAFE` | The failsafe latch is set and the command would move an output away from its `def` (`write`, `pattern run`, `map set`, `map default`) |
+| `EXCLUSIVE` | An exclusive group would be violated. Written `ERR EXCLUSIVE group=<i> mask=0x%08x`: the first violating group (0-based) and its mask |
 | `UNKNOWN_CMD` | Unrecognised command or subcommand |
 | `LINE_TOO_LONG` | Line longer than 256 bytes |
 
@@ -841,7 +1228,8 @@ takes only `key=value` pairs; a hex blob is refused:
 A text host never sees these two. Status code 0x09 is reserved (no error is
 defined for it). Binary status codes of the text errors: `BAD_PARAM` 0x02,
 `BAD_MAP` 0x03, `BUSY` 0x04, `FLASH` 0x05, `TOO_LONG` 0x06, `NOT_ARMED` 0x07,
-`SYNC_STATE` 0x08, `NO_RESOURCE` 0x0A, `NOT_RUNNING` 0x0C.
+`SYNC_STATE` 0x08, `NO_RESOURCE` 0x0A, `NOT_RUNNING` 0x0C, `FAILSAFE` 0x0D,
+`EXCLUSIVE` 0x0E (the only status with a response payload: `group:u8, mask:u32`).
 
 An unrecognised `ERR <NAME>` is itself an error for the host (nothing is
 mapped silently to a default).
@@ -858,7 +1246,7 @@ normally:
 
 ## 7. Push Events
 
-Push events are asynchronous lines prefixed with `! `. There are exactly three.
+Push events are asynchronous lines prefixed with `! `. There are exactly four.
 
 ### `! INPUT`
 
@@ -901,6 +1289,18 @@ latch keeps the last step's logical value.
 ```
 
 `loops=<n>` -- passes completed before the timeout.
+
+### `! FAILSAFE`
+
+Sent once when the failsafe latch is set (section 4, "Safety").
+
+```
+< ! FAILSAFE cause=wdog
+```
+
+`cause=<wdog|usb>` -- the reason of the trip. Not repeated while the latch is
+set; sent again after `failsafe clear` and a new trip. Like every event it is
+dropped when it cannot be delivered, so `safety` is the source of truth.
 
 ### Event delivery
 
@@ -1066,7 +1466,7 @@ only these (never their own bit arithmetic):
 |---|---|
 | `dir` | 1 = output, 0 = input |
 | `pu` / `pd` | pull-up / pull-down on an input pin (never both) |
-| `def` | initial logical output level |
+| `def` | initial logical output level. It is also the **safe state** of the pin (section 4, "Safety") |
 | `opol` | output polarity: the pin is driven with `logical ^ opol` |
 | `ipol` | input polarity: the host sees `physical ^ ipol` |
 | `edge` | inputs that raise `! INPUT` events (section 7) |
@@ -1081,6 +1481,66 @@ DIO pin is an input with pull-down and edge enabled, no polarity inversion:
 > map get
 < OK v=2 flags=0x00 dir=0x00000000 pu=0x00000000 pd=0x0c7fffff def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7fffff
 ```
+
+### Initial state after a restart
+
+After every restart (power-on, `reset`, hardware watchdog, panic) the device
+starts in the state the saved map defines for **each pin separately**, or the
+default map if none is saved: an output pin is at its logical level `def`
+(converted to the electrical level with `opol`), an input pin has the pull-up,
+pull-down or no pull (high impedance) that `pu` / `pd` define. The failsafe
+latch, exclusive groups, watchdog, `usbsafe`, pattern, timestamp and `subscribe`
+are not carried over. Before the firmware starts (boot ROM, BOOTSEL) the pins
+have the chip's own default state, which the firmware cannot control.
+
+**Declaring the initial state of each pin.** There is no separate setting: the
+initial state is the saved map. Use `map set`, check it with `map get`, and
+store it with `map save`. Example: GP0 is an active-high relay, GP1 is an
+active-low relay, GP2 is an input with pull-up, GP3 is an input without pull,
+all other inputs have the default pull-down:
+
+```
+> map set flags=0x00 dir=0x00000003 pu=0x00000004 pd=0x0c7ffff0 def=0x00000000 opol=0x00000002 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> map save
+< OK
+```
+
+After every restart the pins are: GP0 low (relay OFF), GP1 high (relay OFF:
+logical 0 with `opol=1` is the high level), GP2 pulled up, GP3 floating, the
+other inputs pulled down. The reply of `map get` can be pasted back into
+`map set` unchanged. A `map set` that was not followed by `map save` is lost at
+the next restart, and the device returns to the default map (all pins inputs
+with pull-down). A saved map that fails validation (for example a damaged flash
+block) is ignored in the same way: the device starts with the default map and
+drives no output.
+
+The same map as `map.toml` (see [`config-files.md`](config-files.md)):
+
+```toml
+version = 2
+
+[pins]
+GP0 = { dir = "out", default = 0 }
+GP1 = { dir = "out", default = 0, invert = true }
+GP2 = { dir = "in", pull = "up" }
+GP3 = { dir = "in", pull = "none" }
+```
+
+**Keep `def` on the OFF side.** `def` is always the logical level (ON = 1); the
+conversion to the electrical level is done by `opol`. A pin whose `def` is 1
+starts ON after every restart, whatever its `opol`. To keep a relay from
+switching on at a restart, leave its `def` at 0 and set `opol` (`invert = true`)
+for an active-low board. `def` is also the pin's safe state (section 4), so
+the same value is applied on a failsafe trip.
+
+| Stage | Pin state |
+|---|---|
+| Power-on, boot ROM, BOOTSEL | The chip's default. The firmware is not running and cannot control the pins. **Not yet measured**; if the board needs a defined level here, add an external pull resistor. |
+| Firmware start, until the pin state is applied (clock, pad setup, PIO setup) | Output drivers are not enabled; pulls are the chip's default. **Not yet measured.** |
+| Initial state applied | Per pin as declared in the saved map (default map if none). The output value is written before the output driver is enabled, so no glitch of an old value appears at the moment the driver turns on. |
+| USB enumeration and later | The state above is kept; USB start-up does not change any pin. |
+| Panic / HardFault | Pins are released to inputs (high impedance) and the chip resets; afterwards the row "Initial state applied" holds. |
 
 ### Persistence
 

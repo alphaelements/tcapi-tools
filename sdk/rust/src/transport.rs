@@ -38,7 +38,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -431,6 +431,84 @@ impl Transport {
             Err(RecvTimeoutError::Timeout) => Err(SdkError::Timeout),
             Err(RecvTimeoutError::Disconnected) => Err(SdkError::Disconnected),
         }
+    }
+}
+
+/// A [`Transport`] that can be used from several threads, one command
+/// exchange at a time.
+///
+/// Every method locks the transport for the **whole** exchange (the request
+/// line, the response and, for a counted response, all its lines), so a
+/// command from another thread (the watchdog heartbeat) can never be written
+/// between a request and its response, and never interleaves with a counted
+/// read. This is the serialisation rule of the heartbeat
+/// (docs/sdk-api-design.md, "Heartbeat").
+#[derive(Clone)]
+pub(crate) struct SharedTransport(Arc<Mutex<Transport>>);
+
+/// A non-owning handle: it does not keep the connection open.
+pub(crate) struct WeakTransport(Weak<Mutex<Transport>>);
+
+impl WeakTransport {
+    /// The transport, or `None` once the connection has been dropped.
+    pub(crate) fn upgrade(&self) -> Option<SharedTransport> {
+        self.0.upgrade().map(SharedTransport)
+    }
+}
+
+impl SharedTransport {
+    pub(crate) fn new(transport: Transport) -> Self {
+        Self(Arc::new(Mutex::new(transport)))
+    }
+
+    pub(crate) fn downgrade(&self) -> WeakTransport {
+        WeakTransport(Arc::downgrade(&self.0))
+    }
+
+    /// A poisoned lock means another thread panicked in the middle of an
+    /// exchange, so the stream position is unknown: the connection is
+    /// unusable, which is what `Disconnected` says.
+    fn lock(&self) -> Result<MutexGuard<'_, Transport>> {
+        self.0.lock().map_err(|_| SdkError::Disconnected)
+    }
+
+    pub(crate) fn command(&self, cmd: &str) -> Result<String> {
+        self.lock()?.command(cmd)
+    }
+
+    pub(crate) fn command_counted(&self, cmd: &str) -> Result<(String, Vec<String>)> {
+        self.lock()?.command_counted(cmd)
+    }
+
+    pub(crate) fn raw(&self, cmd: &str) -> Result<Vec<String>> {
+        self.lock()?.raw(cmd)
+    }
+
+    pub(crate) fn subscribe_events(&self) -> Result<Receiver<PushEvent>> {
+        self.lock()?.subscribe_events()
+    }
+
+    pub(crate) fn set_timeout(&self, timeout: Duration) -> Result<()> {
+        self.lock()?.set_timeout(timeout);
+        Ok(())
+    }
+
+    pub(crate) fn set_traffic_hook(&self, hook: Option<TrafficHook>) -> Result<()> {
+        self.lock()?.set_traffic_hook(hook);
+        Ok(())
+    }
+
+    /// `ping <value>`: returns the echoed value, `Parse` when the device
+    /// answers a different one.
+    pub(crate) fn ping(&self, value: u32) -> Result<u32> {
+        let data = self.command(&format!("ping {value}"))?;
+        let echoed = protocol::parse_pong(&data)?;
+        if echoed != value {
+            return Err(SdkError::Parse(format!(
+                "ping {value} was answered with pong={echoed}"
+            )));
+        }
+        Ok(echoed)
     }
 }
 

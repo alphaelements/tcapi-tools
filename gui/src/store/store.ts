@@ -35,8 +35,18 @@ import {
   type WirePatternStep,
 } from "../lib/pattern";
 import { DIO_CHANNELS, checkDioMask, chBit, chMask } from "../lib/pins";
+import { safetyFeatures } from "../lib/features";
+import {
+  isFailsafeError,
+  parseExclusiveError,
+  type ExclusiveViolation,
+  type FailsafeCause,
+  type SafetyConfig,
+  type SafetyState,
+} from "../lib/safety";
 
 export type { PatternStepUi } from "../lib/pattern";
+export type { ExclusiveViolation, SafetyConfig, SafetyState } from "../lib/safety";
 
 /// Number of DIO channels shown by the UI (ch0-ch24).
 export const NUM_PINS = DIO_CHANNELS;
@@ -138,7 +148,40 @@ export type VersionKey =
   | "ts"
   | "map"
   | "sim"
-  | "ui";
+  | "ui"
+  | "safety";
+
+/// State of the host heartbeat that keeps an enabled watchdog fed.
+export type HeartbeatStatus = "off" | "running" | "failed";
+
+export interface SafetyUiState {
+  /// Last `safety` read (or the one `apply_safety` returned); null until read
+  /// or when the device has no safety features.
+  state: SafetyState | null;
+  /// Exclusive groups of the device (wire masks, in the order they were set).
+  groups: number[];
+  heartbeat: HeartbeatStatus;
+  /// Why the heartbeat stopped (`pochi://heartbeat-failed`).
+  heartbeatError: string | null;
+  /// The last `ERR EXCLUSIVE`, shown by pin name until dismissed.
+  violation: ExclusiveViolation | null;
+  /// Error of the last safety.toml apply: `file:line: message`.
+  fileError: string | null;
+  /// What the last successful safety.toml apply configured.
+  applied: SafetyConfig | null;
+}
+
+function freshSafety(): SafetyUiState {
+  return {
+    state: null,
+    groups: [],
+    heartbeat: "off",
+    heartbeatError: null,
+    violation: null,
+    fileError: null,
+    applied: null,
+  };
+}
 
 interface StoreState {
   // connection
@@ -158,8 +201,13 @@ interface StoreState {
     tsResNs: number;
     sync: boolean;
     reset: boolean;
+    /// `caps feat=` word; gates the safety UI (lib/features.ts).
+    features: number;
   } | null;
   subscribed: boolean;
+
+  // safety
+  safety: SafetyUiState;
 
   // pins (`inputs` / `outputs` are wire words: bit = GP)
   map: WirePinMap;
@@ -222,6 +270,7 @@ function createStore() {
     map: 0,
     sim: 0,
     ui: 0,
+    safety: 0,
   };
   const subs = new Set<() => void>();
   function bump(...keys: VersionKey[]) {
@@ -249,6 +298,7 @@ function createStore() {
     version: null,
     capabilities: null,
     subscribed: true,
+    safety: freshSafety(),
 
     map: { ...PIN_MAP_DEFAULT },
     pinMeta,
@@ -304,8 +354,23 @@ function createStore() {
     bump("log");
   }
 
-  function logError(context: string, e: unknown) {
-    log("error", `${context}: ${e instanceof Error ? e.message : String(e)}`);
+  function errorMessage(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
+
+  /// Log a failed command. Two device errors also reach the safety UI: an
+  /// exclusive-group violation is kept (and shown by pin name), and a refused
+  /// write because of the failsafe latch re-reads the latch, in case the push
+  /// event never arrived.
+  function logError(context: string, e: unknown): void {
+    const message = errorMessage(e);
+    log("error", `${context}: ${message}`);
+    const violation = parseExclusiveError(message);
+    if (violation) {
+      S.safety.violation = violation;
+      bump("safety");
+    }
+    if (isFailsafeError(message)) void actions.refreshSafety();
   }
 
   function nowStreamT(): number {
@@ -370,8 +435,45 @@ function createStore() {
       bump("pattern");
     });
 
+    // The device latched the failsafe: it already put the outputs at their
+    // defaults and stopped a running pattern without any pattern event.
+    void listen<{ cause: FailsafeCause }>("pochi://failsafe", (p) => {
+      onFailsafe(p.cause);
+    });
+
+    // The host heartbeat stopped on a failure: the watchdog, if enabled,
+    // will trip unless the link recovers.
+    void listen<{ message: string }>("pochi://heartbeat-failed", (p) => {
+      S.safety.heartbeat = "failed";
+      S.safety.heartbeatError = p.message;
+      log("error", `heartbeat: ${p.message}`);
+      bump("safety");
+    });
+
     // sync has no GUI yet (not in the mock); surfaced via pochi://log.
     void listen<{ raw: string }>("pochi://unknown-event", () => {});
+  }
+
+  /// Apply a `! FAILSAFE` push: show the latch at once, then read the real
+  /// state and the outputs (now at their defaults) from the device.
+  function onFailsafe(cause: FailsafeCause) {
+    const prev = S.safety.state;
+    S.safety.state = {
+      wdog_ms: prev?.wdog_ms ?? 0,
+      remaining_ms: 0,
+      failsafe: true,
+      cause,
+      usbsafe: prev?.usbsafe ?? false,
+      excl: prev?.excl ?? 0,
+    };
+    if (S.pattern.playState === "running") {
+      S.pattern.playState = "idle";
+      stopPatternPoll();
+      bump("pattern");
+    }
+    bump("safety");
+    void actions.refreshSafety();
+    void actions.readState();
   }
 
   // ---- pattern status polling while running ----
@@ -423,6 +525,7 @@ function createStore() {
     S.ts.result = null;
     S.ts.bufferEst = 0;
     S._tsOffset = null;
+    S.safety = freshSafety();
     stopPatternPoll();
     for (const m of S.pinMeta) {
       m.value = 0;
@@ -575,6 +678,7 @@ function createStore() {
           tsResNs: caps.ts_res_ns,
           sync: (caps.features & 0x1) !== 0,
           reset: (caps.features & 0x2) !== 0,
+          features: caps.features,
         };
         applyWireMap(map);
         S.connStatus = "connected";
@@ -597,6 +701,9 @@ function createStore() {
         // default monitor first 8 inputs
         S.monitored = new Set<number>(inputChannels(S.map).slice(0, 8));
         bump("conn", "pins", "map");
+        // A device that kept a watchdog or a latch (the port was reopened
+        // without a restart) shows it right away.
+        await actions.refreshSafety();
       } catch (e) {
         logError("connect", e);
         S.connStatus = "error";
@@ -954,6 +1061,115 @@ function createStore() {
       } catch (e) {
         logError("ts get", e);
       }
+    },
+
+    // safety
+    /// Which safety controls the connected device offers (`caps feat=`).
+    safetyFeatures: () => safetyFeatures(S.capabilities?.features ?? null),
+
+    /// Read the safety state and the exclusive groups from the device.
+    async refreshSafety() {
+      if (S.connStatus !== "connected") return;
+      const feat = safetyFeatures(S.capabilities?.features ?? null);
+      try {
+        if (feat.watchdog) {
+          const st = await invoke<SafetyState>("get_safety");
+          S.safety.state = st;
+          // A failed heartbeat stays failed until the watchdog is set again;
+          // otherwise the heartbeat follows the device's watchdog.
+          if (st.wdog_ms === 0) S.safety.heartbeat = "off";
+          else if (S.safety.heartbeat === "off") S.safety.heartbeat = "running";
+        }
+        if (feat.exclusive) {
+          S.safety.groups = await invoke<number[]>("excl_get");
+        }
+      } catch (e) {
+        logError("safety", e);
+      }
+      bump("safety");
+    },
+    /// `wdog <ms>`: `0` disables; an enabled watchdog starts the heartbeat
+    /// in the backend.
+    async setWatchdog(ms: number) {
+      try {
+        await invoke("wdog", { ms });
+        S.safety.heartbeat = ms > 0 ? "running" : "off";
+        S.safety.heartbeatError = null;
+      } catch (e) {
+        logError("wdog", e);
+      }
+      await actions.refreshSafety();
+    },
+    async setUsbsafe(on: boolean) {
+      try {
+        await invoke("usbsafe", { on });
+      } catch (e) {
+        logError("usbsafe", e);
+      }
+      await actions.refreshSafety();
+    },
+    /// `failsafe clear`: release the latch. The outputs stay at their
+    /// defaults; the caller confirms with the user first.
+    async clearFailsafe() {
+      try {
+        await invoke("failsafe_clear");
+      } catch (e) {
+        logError("failsafe clear", e);
+      }
+      await actions.refreshSafety();
+    },
+    /// `outputs reset`: every output to its default; stops a running pattern.
+    /// Always accepted by the device, also while latched.
+    async resetOutputs() {
+      try {
+        await invoke("outputs_reset");
+      } catch (e) {
+        logError("outputs reset", e);
+        return;
+      }
+      if (S.pattern.playState === "running") {
+        S.pattern.playState = "idle";
+        stopPatternPoll();
+        bump("pattern");
+      }
+      await actions.readState();
+    },
+    /// `excl set`: replace all groups; `[]` clears them.
+    async setExclusiveGroups(masks: number[]) {
+      try {
+        if (masks.length === 0) await invoke("excl_clear");
+        else await invoke("excl_set", { masks });
+      } catch (e) {
+        logError("excl", e);
+      }
+      await actions.refreshSafety();
+    },
+    /// Evaluate a safety.toml in the backend and make the device equal to it.
+    /// A parse error reads `file:line: message` and is shown as is.
+    async applySafetyFile(path: string) {
+      S.safety.fileError = null;
+      bump("safety");
+      try {
+        const config = await invoke<SafetyConfig>("safety_load_toml", { path });
+        const applied = await invoke<SafetyState>("apply_safety", { config });
+        S.safety.state = applied;
+        S.safety.applied = config;
+        S.safety.heartbeat = applied.wdog_ms > 0 ? "running" : "off";
+        S.safety.heartbeatError = null;
+        log("received", `safety.toml applied: ${path}`);
+      } catch (e) {
+        S.safety.fileError = errorMessage(e);
+        logError("safety.toml", e);
+      }
+      await actions.refreshSafety();
+    },
+    dismissViolation() {
+      S.safety.violation = null;
+      bump("safety");
+    },
+    dismissFileError() {
+      S.safety.fileError = null;
+      bump("safety");
     },
 
     // raw repl

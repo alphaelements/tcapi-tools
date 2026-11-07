@@ -21,6 +21,7 @@ pub mod config;
 pub mod connection;
 pub mod discovery;
 pub mod error;
+pub mod heartbeat;
 pub mod protocol;
 pub mod reconcile;
 pub mod transport;
@@ -34,11 +35,14 @@ mod testutil;
 pub use connection::Connection;
 pub use discovery::{discover, discover_detailed, enumerate_ports, Discovery, ProbeFailure};
 pub use error::{Result, SdkError};
+pub use heartbeat::{heartbeat_period, Heartbeat};
 pub use protocol::TS_GET_MAX;
 pub use transport::{TrafficDirection, TrafficHook};
 pub use types::{
     ch_to_gp, check_dio_mask, gp_to_ch, hold_ticks_from_ns, pin_label, Capabilities, DeviceInfo,
-    EdgeMode, IoState, PatternMode, PatternState, PatternStatus, PatternStep, PinMap, PushEvent,
-    SyncRole, SyncState, TimestampEvent, TimestampResult, TsStatus, VersionInfo, DIO_CHANNELS,
-    FEAT_RESET, FEAT_SYNC, PATTERN_TICK_NS, PROTO_VERSION, VALID_DIO_MASK,
+    EdgeMode, FailsafeCause, Feature, IoState, Pads, PatternMode, PatternState, PatternStatus,
+    PatternStep, PinMap, PushEvent, ResetCause, ResetInfo, SafetyConfig, SafetyState, SyncRole,
+    SyncState, TimestampEvent, TimestampResult, TsStatus, VersionInfo, DIO_CHANNELS, FEAT_EXCL,
+    FEAT_OUTRESET, FEAT_PADS, FEAT_RESET, FEAT_RSTINFO, FEAT_SYNC, FEAT_USBSAFE, FEAT_WDOG,
+    MAX_EXCLUSIVE_GROUPS, PATTERN_TICK_NS, PROTO_VERSION, VALID_DIO_MASK, WDOG_MAX_MS, WDOG_MIN_MS,
 };

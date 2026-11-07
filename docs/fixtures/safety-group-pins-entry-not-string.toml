@@ -1,0 +1,7 @@
+# Every entry of `pins` must be a string.
+# expected_error: exclusive group 1: pins must be an array of pin names
+# expected_line: 7
+version = 2
+
+[[exclusive]]
+pins = ["GP2", 3]

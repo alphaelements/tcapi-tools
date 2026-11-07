@@ -5,11 +5,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsAotCompatible>true</IsAotCompatible>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <PackageId>Pochi.Sdk</PackageId>
     <Version>0.1.0</Version>
     <Description>C# SDK for Pochi-DIO (RP2350 high-speed digital I/O unit)</Description>
-    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>

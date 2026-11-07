@@ -22,11 +22,17 @@ from .errors import (
     from_error_code,
 )
 from .types import (
+    MAX_EXCLUSIVE_GROUPS,
     PROTO_VERSION,
+    WDOG_MAX_MS,
+    WDOG_MIN_MS,
     Capabilities,
     EdgeMode,
+    FailsafeCause,
+    FailsafeEvent,
     InputChangeEvent,
     IoState,
+    Pads,
     PatternDoneEvent,
     PatternMode,
     PatternState,
@@ -35,6 +41,9 @@ from .types import (
     PatternTimeoutEvent,
     PinMap,
     PushEvent,
+    ResetCause,
+    ResetInfo,
+    SafetyState,
     TimestampEvent,
     TsStatus,
     VersionInfo,
@@ -435,6 +444,110 @@ def parse_sync_count(data: str) -> int:
     return _Fields("sync count", data, ("clocks",)).dec("clocks", _U64)
 
 
+# --- safety functions ---
+
+
+def wdog_command(ms: int) -> str:
+    """Build ``wdog <ms>``: ``0`` disables the watchdog, ``100..=10000``
+    enables it. Any other value is refused before sending (the device
+    answers ``BAD_PARAM``)."""
+    if ms != 0 and not WDOG_MIN_MS <= ms <= WDOG_MAX_MS:
+        raise InvalidArgumentError(
+            f"watchdog timeout {ms} ms must be 0 or between "
+            f"{WDOG_MIN_MS} and {WDOG_MAX_MS}"
+        )
+    return f"wdog {ms}"
+
+
+def usbsafe_command(on: bool) -> str:
+    """Build ``usbsafe on|off``."""
+    return f"usbsafe {'on' if on else 'off'}"
+
+
+def excl_set_command(masks: list[int]) -> str:
+    """Build ``excl set <mask>...``: 1 to 16 groups, each a subset of the DIO
+    pins with at least 2 bits. That every pin is an *output* depends on the
+    active map and is checked by the device."""
+    if not 1 <= len(masks) <= MAX_EXCLUSIVE_GROUPS:
+        raise InvalidArgumentError(
+            f"excl set takes 1 to {MAX_EXCLUSIVE_GROUPS} groups, got {len(masks)}"
+        )
+    for i, mask in enumerate(masks):
+        check_dio_mask(f"exclusive group {i} mask", mask)
+        if mask.bit_count() < 2:
+            raise InvalidArgumentError(
+                f"exclusive group {i} mask {mask:#010x} needs at least 2 pins"
+            )
+    return "excl set " + " ".join(f"{m:#x}" for m in masks)
+
+
+def parse_safety(data: str) -> SafetyState:
+    """Parse the ``safety`` response
+    ``wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0``.
+    The latch and its cause must agree: ``failsafe=1`` has a cause other
+    than ``none``, ``failsafe=0`` has cause ``none``."""
+    f = _Fields(
+        "safety",
+        data,
+        ("wdog_ms", "remaining_ms", "failsafe", "cause", "usbsafe", "excl"),
+    )
+    try:
+        cause = FailsafeCause(f.raw("cause"))
+    except ValueError:
+        raise f._invalid("cause") from None
+    failsafe = f.flag("failsafe")
+    if failsafe == (cause is FailsafeCause.NONE):
+        raise ParseError(f"failsafe latch and cause disagree in safety: {data}")
+    excl = f.dec("excl", _U8)
+    if excl > MAX_EXCLUSIVE_GROUPS:
+        raise f._invalid("excl")
+    return SafetyState(
+        wdog_ms=f.dec("wdog_ms", _U32),
+        remaining_ms=f.dec("remaining_ms", _U32),
+        failsafe=failsafe,
+        cause=cause,
+        usbsafe=f.flag("usbsafe"),
+        excl=excl,
+    )
+
+
+def parse_rstinfo(data: str) -> ResetInfo:
+    """Parse the ``rstinfo`` response ``cause=por uptime_ms=0
+    boot=0x00000001``."""
+    f = _Fields("rstinfo", data, ("cause", "uptime_ms", "boot"))
+    try:
+        cause = ResetCause(f.raw("cause"))
+    except ValueError:
+        raise f._invalid("cause") from None
+    return ResetInfo(
+        cause=cause, uptime_ms=f.dec("uptime_ms", _U64), boot=f.mask("boot")
+    )
+
+
+def parse_pads(data: str) -> Pads:
+    """Parse the ``pads`` response ``out=0x00000005 pad=0x00000005``."""
+    f = _Fields("pads", data, ("out", "pad"))
+    return Pads(out=f.mask("out"), pad=f.mask("pad"))
+
+
+def parse_excl_get(header: str, lines: list[str]) -> list[int]:
+    """Parse the counted ``excl get`` response: the header ``count=<n>`` and
+    ``n`` lines ``  mask=0x%08x``, in the order the groups were set."""
+    count = _Fields("excl get", header, ("count",)).dec("count", _U32)
+    if count > MAX_EXCLUSIVE_GROUPS:
+        raise ParseError(
+            f"excl get announced {count} groups, the device holds at most "
+            f"{MAX_EXCLUSIVE_GROUPS}"
+        )
+    if count != len(lines):
+        raise ParseError(
+            f"excl get header announced {count} groups but {len(lines)} lines were read"
+        )
+    return [
+        _Fields("excl get line", line.strip(), ("mask",)).mask("mask") for line in lines
+    ]
+
+
 # --- push events ---
 
 
@@ -456,6 +569,16 @@ def parse_push_event(payload: str) -> PushEvent:
     if kind == "PATTERN_TIMEOUT":
         f = _Fields("PATTERN_TIMEOUT event", rest, ("loops",))
         return PatternTimeoutEvent(loops=f.dec("loops", _U16))
+    if kind == "FAILSAFE":
+        f = _Fields("FAILSAFE event", rest, ("cause",))
+        # A trip always has a cause; `none` is only the idle `safety` value.
+        try:
+            cause = FailsafeCause(f.raw("cause"))
+        except ValueError:
+            raise f._invalid("cause") from None
+        if cause is FailsafeCause.NONE:
+            raise f._invalid("cause")
+        return FailsafeEvent(cause=cause)
     raise UnknownEventError(f"unknown event: {trimmed}")
 
 
@@ -467,18 +590,23 @@ __all__ = [
     "SdkError",
     "UnknownEventError",
     "devnum_command",
+    "excl_set_command",
     "from_error_code",
     "map_set_command",
     "parse_caps",
     "parse_count_field",
+    "parse_excl_get",
     "parse_info",
     "parse_map",
+    "parse_pads",
     "parse_pattern_status",
     "parse_pattern_total",
     "parse_pong",
     "parse_push_event",
     "parse_read",
     "parse_response",
+    "parse_rstinfo",
+    "parse_safety",
     "parse_state",
     "parse_sync_count",
     "parse_ts_event_line",
@@ -490,5 +618,7 @@ __all__ = [
     "ping_command",
     "ts_arm_command",
     "ts_get_command",
+    "usbsafe_command",
+    "wdog_command",
     "write_command",
 ]

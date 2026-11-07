@@ -133,4 +133,16 @@ public class WireJsonTests
         TestHelpers.AssertSdkThrows(ErrorCode.Parse,
             () => WireJson.Deserialize<DeviceInfo>("null"));
     }
+
+    [Fact]
+    [Trait("Category", "Negative")]
+    public void UnregisteredTypeIsRejectedNotReflected()
+    {
+        // Source generation only knows the wire types; an unknown type must
+        // fail loudly instead of silently falling back to reflection.
+        TestHelpers.AssertSdkThrows(ErrorCode.InvalidArgument,
+            () => WireJson.Serialize(new Uri("http://example.invalid/")));
+        TestHelpers.AssertSdkThrows(ErrorCode.InvalidArgument,
+            () => WireJson.Deserialize<Version>("{}"));
+    }
 }

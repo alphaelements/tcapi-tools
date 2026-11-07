@@ -1,0 +1,5 @@
+# `version` is required.
+# expected_error: missing key "version"
+# expected_line: 1
+[usb]
+safe = true

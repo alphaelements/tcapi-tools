@@ -3,7 +3,7 @@
 <!-- TODO: uncomment when CI is wired
 [![CI](https://github.com/alphaelements/pochi-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/alphaelements/pochi-tools/actions)
 -->
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Multi-language SDK and GUI application for **Pochi-DIO**, an RP2350-based
 high-speed digital I/O unit.
@@ -79,12 +79,7 @@ npm run tauri build  # production build
 
 ## License
 
-Licensed under either of
-
-- [Apache License, Version 2.0](LICENSE-APACHE)
-- [MIT License](LICENSE-MIT)
-
-at your option.
+Licensed under the [Apache License, Version 2.0](LICENSE).
 
 ## Contributing
 
