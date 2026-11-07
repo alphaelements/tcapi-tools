@@ -19,11 +19,25 @@
 // `syncEdge()` on the slave directly once the scenario decides a master
 // elsewhere on the bus produced one.
 //
+// The safety functions (docs/30-usb-protocol.md section 12 of the firmware,
+// protocol/golden/safety.txt) are modelled too: the watchdog and the failsafe
+// latch, exclusive output groups, `outputs reset`, `usbsafe` with a USB link
+// model (`setUsbState` / `setDtr`), `rstinfo` and restarts (`reboot`), `pads`.
+//
 // Not modelled (the golden cases that need them are excluded from the replay
 // and the app reports them as unsupported): flash write faults, the pattern
 // wall-clock timeout and binary framing.
 // ============================================================
 
+import {
+  FEAT_EXCL,
+  FEAT_OUTRESET,
+  FEAT_PADS,
+  FEAT_RSTINFO,
+  FEAT_USBSAFE,
+  FEAT_WDOG,
+  FEATURES_ALL,
+} from "./features";
 import { PIN_MAP_DEFAULT, type WirePinMap } from "./pinmap";
 import { VALID_DIO_MASK } from "./pins";
 
@@ -31,8 +45,18 @@ export const FW_VERSION = "0.1.3";
 export const PROTO_VERSION = 2;
 /// UID of the golden simulator; the app overrides it per mock device.
 export const GOLDEN_UID = "0000000000000000";
-/// `caps feat`: FEAT_SYNC | FEAT_RESET.
-const FEATURES = 0x03;
+/// Feature bit each safety command needs; a device without the bit does not
+/// know the command (`ERR UNKNOWN_CMD`), like firmware from before the bit.
+const COMMAND_FEATURE: Readonly<Record<string, number>> = {
+  wdog: FEAT_WDOG,
+  safety: FEAT_WDOG,
+  failsafe: FEAT_WDOG,
+  outputs: FEAT_OUTRESET,
+  excl: FEAT_EXCL,
+  usbsafe: FEAT_USBSAFE,
+  rstinfo: FEAT_RSTINFO,
+  pads: FEAT_PADS,
+};
 const DIO = 25;
 const TS_RES_NS = 40;
 const TICK_NS = 200;
@@ -58,19 +82,55 @@ export const HELP_LINES: readonly string[] = [
   "  ts arm|disarm|get|status                 Timestamp operations",
   "  subscribe on|off                         Input change events",
   "  sync arm|master|start|stop|disarm|count  Multi-device clock sync",
+  "  wdog <ms>                                Set the watchdog timeout (0=off, 100-10000)",
+  "  safety                                   Get the safety state",
+  "  failsafe clear                           Release the failsafe latch",
+  "  outputs reset                            Return all outputs to their defaults",
+  "  excl set|clear|get                       Exclusive output groups",
+  "  usbsafe on|off                           Failsafe when the USB link is lost",
+  "  rstinfo                                  Get the reset cause and uptime",
+  "  pads                                     Read the output pad levels",
   "  reset                                    Reboot the device",
   "  bootsel                                  Reboot into the USB bootloader",
   "  help                                     Show this help",
 ];
+
+/// Smallest / largest enabled watchdog timeout in milliseconds.
+const WDOG_MIN_MS = 100;
+const WDOG_MAX_MS = 10_000;
+/// Most exclusive groups the device holds.
+const MAX_EXCLUSIVE_GROUPS = 16;
+const NS_PER_MS = 1_000_000;
+
+/// Why the failsafe latch is set (`safety cause=`).
+export type FailsafeCause = "none" | "wdog" | "usb";
+/// Cause of the last restart (`rstinfo cause=`).
+export type ResetCause = "por" | "wdt" | "soft" | "bor" | "other";
+/// USB device state seen by the firmware (golden `~ usb`).
+export type UsbState = "configured" | "suspend" | "reset" | "unenumerated";
 
 /// A request the model deliberately does not implement.
 export class UnsupportedCommand extends Error {}
 
 /// Device error answered as `ERR <name>`.
 class DeviceError extends Error {
-  constructor(readonly code: string) {
+  /// `data` is the `key=value` tail of the errors that carry some
+  /// (`ERR EXCLUSIVE group=<i> mask=0x%08x`).
+  constructor(
+    readonly code: string,
+    readonly data: string = "",
+  ) {
     super(code);
   }
+}
+
+/// The first exclusive group of `groups` with two or more pins ON in `state`
+/// (a logical output word), as the error the device answers; null when the
+/// state is allowed.
+function exclusiveViolation(state: number, groups: readonly number[]): DeviceError | null {
+  const index = groups.findIndex((g) => popcount(state & g) >= 2);
+  if (index < 0) return null;
+  return new DeviceError("EXCLUSIVE", `group=${index} mask=${hex8(groups[index])}`);
 }
 
 type EdgeMode = "rising" | "falling" | "both";
@@ -98,6 +158,9 @@ export interface MockDeviceOptions {
   uid?: string;
   /// Map stored in flash at power-up (applied at boot and after `reset`).
   flashMap?: WirePinMap | null;
+  /// `caps feat=` word (default: every defined bit). Safety commands whose
+  /// bit is missing answer `ERR UNKNOWN_CMD`.
+  features?: number;
   /// Initial `devnum` (255 = unassigned).
   devnum?: number;
   /// Wire output pin k to input pin k (rig loopback) instead of leaving
@@ -213,6 +276,7 @@ export class MockDeviceCore {
 
   private readonly uidValue: string;
   private readonly loopback: boolean;
+  private readonly features: number;
   private flashMap: WirePinMap | null;
   private devnum: number;
 
@@ -243,9 +307,26 @@ export class MockDeviceCore {
   /// current clock; only meaningful while `syncState` is a clocking state.
   private syncOriginNs = 0;
 
+  // --- safety (all volatile: a restart clears them) ---
+  private wdogMs = 0;
+  /// Virtual time of the last request answered `OK` (restarts the watchdog).
+  private lastOkNs = 0;
+  private failsafe = false;
+  private failsafeCause: FailsafeCause = "none";
+  private usbsafe = false;
+  private groups: number[] = [];
+
+  // --- link and restart bookkeeping ---
+  private dtr = true;
+  private usbState: UsbState = "configured";
+  private resetCause: ResetCause = "por";
+  private bootCount = 1;
+  private bootNs = 0;
+
   constructor(opts: MockDeviceOptions = {}) {
     this.uidValue = opts.uid ?? GOLDEN_UID;
     this.loopback = opts.loopback ?? false;
+    this.features = opts.features ?? FEATURES_ALL;
     this.flashMap = opts.flashMap ? { ...opts.flashMap } : null;
     this.devnum = opts.devnum ?? DEVNUM_UNASSIGNED;
     this.boot();
@@ -307,7 +388,74 @@ export class MockDeviceCore {
   private boot(): void {
     this.subscribed = false;
     this.syncState = "idle";
+    this.wdogMs = 0;
+    this.failsafe = false;
+    this.failsafeCause = "none";
+    this.usbsafe = false;
+    this.groups = [];
+    this.lastOkNs = this.nowNs;
     this.applyMap(this.flashMap ?? PIN_MAP_DEFAULT);
+  }
+
+  /// Restart the device with `cause` (the `reset` command, or a restart from
+  /// outside): RAM state is lost, flash state (saved map, device number) is
+  /// kept, the clock keeps running, the USB link comes back at once.
+  reboot(cause: ResetCause): void {
+    this.bootCount += 1;
+    this.resetCause = cause;
+    this.bootNs = this.nowNs;
+    this.dtr = true;
+    this.usbState = "configured";
+    this.pending.length = 0;
+    this.boot();
+  }
+
+  /// The DTR line of the CDC port (the host opens / closes the port).
+  /// Falling DTR switches `subscribe` off; outputs and the watchdog timer are
+  /// not affected.
+  setDtr(asserted: boolean): void {
+    if (this.dtr && !asserted) this.subscribed = false;
+    this.dtr = asserted;
+  }
+
+  /// The USB device state the firmware sees. Leaving Configured with
+  /// `usbsafe on` (after the first enumeration) trips the failsafe.
+  setUsbState(state: UsbState): void {
+    const wasConfigured = this.usbState === "configured";
+    this.usbState = state;
+    if (wasConfigured && state !== "configured" && this.usbsafe) this.trip("usb");
+  }
+
+  /// Whether pushed lines can reach the host: DTR asserted and Configured.
+  private get linkUp(): boolean {
+    return this.dtr && this.usbState === "configured";
+  }
+
+  /// Queue a pushed `! ...` line for the host (dropped while the link is down).
+  private push(line: string): void {
+    if (this.linkUp) this.pending.push(line);
+  }
+
+  /// Failsafe trip: outputs to `def`, pattern stopped, latch set, event pushed
+  /// once. The first cause is kept while latched.
+  private trip(cause: "wdog" | "usb"): void {
+    if (this.failsafe) return;
+    this.safeState();
+    this.failsafe = true;
+    this.failsafeCause = cause;
+    this.push(`! FAILSAFE cause=${cause}`);
+  }
+
+  /// `safe_state()`: a running pattern stops (like `pattern stop`, steps stay
+  /// loaded, no event) and every output goes to its `def`. Exclusive groups
+  /// are not checked: `def` was validated when it was defined.
+  private safeState(): void {
+    if (this.patState === "running") {
+      this.patState = "loaded";
+      this.patStep = 0;
+      this.patLoops = 0;
+    }
+    this.setLatch(this.map.out_default);
   }
 
   /// External sync bus edge (GP28), driven by whatever device on the bus is
@@ -325,11 +473,26 @@ export class MockDeviceCore {
   /// way. Events raised are queued for `takeEvents`.
   advanceTo(targetNs: number): void {
     if (targetNs < this.nowNs) throw new RangeError("virtual time cannot go backwards");
-    while (this.patState === "running" && this.patStepEndNs <= targetNs) {
-      this.nowNs = this.patStepEndNs;
-      this.finishPatternStep();
+    for (;;) {
+      const patternAt = this.patState === "running" ? this.patStepEndNs : Infinity;
+      const wdogAt = this.watchdogDeadlineNs();
+      const next = Math.min(patternAt, wdogAt);
+      if (next > targetNs) break;
+      this.nowNs = Math.max(this.nowNs, next);
+      // The watchdog trips at the first poll where now - last_ok >= timeout
+      // (the boundary is inclusive), before a pattern step due at the same
+      // instant is looked at.
+      if (wdogAt <= patternAt) this.trip("wdog");
+      else this.finishPatternStep();
     }
     this.nowNs = targetNs;
+  }
+
+  /// Virtual time at which the watchdog trips, `Infinity` when it cannot
+  /// (disabled or already latched).
+  private watchdogDeadlineNs(): number {
+    if (this.wdogMs === 0 || this.failsafe) return Infinity;
+    return this.lastOkNs + this.wdogMs * NS_PER_MS;
   }
 
   advance(deltaNs: number): void {
@@ -381,7 +544,7 @@ export class MockDeviceCore {
       }
     }
     if (this.subscribed && (changed & this.map.edge) !== 0) {
-      this.pending.push(`! INPUT in=${hex8(after)} t=${wallCount}`);
+      this.push(`! INPUT in=${hex8(after)} t=${wallCount}`);
     }
   }
 
@@ -445,7 +608,7 @@ export class MockDeviceCore {
     }
     this.patState = "done";
     this.patStep = 0;
-    this.pending.push(`! PATTERN_DONE loops=${this.patLoops}`);
+    this.push(`! PATTERN_DONE loops=${this.patLoops}`);
   }
 
   // -------------------------------------------------------------- execute
@@ -457,9 +620,13 @@ export class MockDeviceCore {
       return ["ERR LINE_TOO_LONG"];
     }
     try {
-      return this.dispatch(line.trim().split(/\s+/).filter(Boolean));
+      const lines = this.dispatch(line.trim().split(/\s+/).filter(Boolean));
+      // Every request answered OK restarts the watchdog timer, at the instant
+      // of the response; ERR responses and malformed lines never do.
+      if ((lines[0] ?? "").startsWith("OK")) this.lastOkNs = this.nowNs;
+      return lines;
     } catch (e) {
-      if (e instanceof DeviceError) return [`ERR ${e.code}`];
+      if (e instanceof DeviceError) return [e.data ? `ERR ${e.code} ${e.data}` : `ERR ${e.code}`];
       throw e;
     }
   }
@@ -467,6 +634,10 @@ export class MockDeviceCore {
   private dispatch(tok: string[]): string[] {
     const cmd = (tok[0] ?? "").toLowerCase();
     const args = tok.slice(1);
+    const needs = COMMAND_FEATURE[cmd];
+    if (needs !== undefined && (this.features & needs) === 0) {
+      throw new DeviceError("UNKNOWN_CMD");
+    }
     switch (cmd) {
       case "version":
         noArgs(args);
@@ -501,11 +672,36 @@ export class MockDeviceCore {
         return this.subscribe(args);
       case "reset":
         noArgs(args);
-        this.boot();
+        this.reboot("soft");
         return ["OK"];
       case "bootsel":
         noArgs(args);
+        this.safeState();
         return ["OK"];
+      case "wdog":
+        return this.wdog(args);
+      case "safety":
+        noArgs(args);
+        return [this.safetyLine()];
+      case "failsafe":
+        return this.failsafeCommand(args);
+      case "outputs":
+        return this.outputsCommand(args);
+      case "excl":
+        return this.exclCommand(args);
+      case "usbsafe":
+        return this.usbsafeCommand(args);
+      case "rstinfo":
+        noArgs(args);
+        return [
+          `OK cause=${this.resetCause} uptime_ms=${Math.floor((this.nowNs - this.bootNs) / NS_PER_MS)} ` +
+            `boot=${hex8(this.bootCount)}`,
+        ];
+      case "pads":
+        noArgs(args);
+        // The pads follow the outputs in the model: the logical read-back of
+        // the output pins equals the output state.
+        return [`OK out=${hex8(this.latch)} pad=${hex8(this.latch & this.map.direction)}`];
       case "help":
         noArgs(args);
         return [`OK count=${HELP_LINES.length}`, ...HELP_LINES];
@@ -520,7 +716,7 @@ export class MockDeviceCore {
     const out = popcount(this.map.direction);
     return (
       `OK dio=${DIO} out=${out} in=${DIO - out} ts_res_ns=${TS_RES_NS} tick_ns=${TICK_NS} ` +
-      `pattern=${PATTERN_MAX} ring=${TS_RING} feat=${hex8(FEATURES)}`
+      `pattern=${PATTERN_MAX} ring=${TS_RING} feat=${hex8(this.features)}`
     );
   }
 
@@ -529,6 +725,98 @@ export class MockDeviceCore {
     const n = u32(args[0]);
     if (n > DEVNUM_UNASSIGNED) throw new DeviceError("BAD_PARAM");
     this.devnum = n;
+    return ["OK"];
+  }
+
+  // --------------------------------------------------------------- safety
+
+  private wdog(args: string[]): string[] {
+    if (args.length !== 1) throw new DeviceError("BAD_PARAM");
+    const ms = u32(args[0]);
+    if (ms !== 0 && (ms < WDOG_MIN_MS || ms > WDOG_MAX_MS)) throw new DeviceError("BAD_PARAM");
+    this.wdogMs = ms;
+    return ["OK"];
+  }
+
+  /// `remaining_ms` is read before this request restarts the timer.
+  private safetyLine(): string {
+    let remaining = 0;
+    if (this.wdogMs !== 0 && !this.failsafe) {
+      const leftNs = this.wdogMs * NS_PER_MS - (this.nowNs - this.lastOkNs);
+      remaining = Math.max(0, Math.ceil(leftNs / NS_PER_MS));
+    }
+    return (
+      `OK wdog_ms=${this.wdogMs} remaining_ms=${remaining} failsafe=${this.failsafe ? 1 : 0} ` +
+      `cause=${this.failsafeCause} usbsafe=${this.usbsafe ? 1 : 0} excl=${this.groups.length}`
+    );
+  }
+
+  private failsafeCommand(args: string[]): string[] {
+    if ((args[0] ?? "").toLowerCase() !== "clear") throw new DeviceError("UNKNOWN_CMD");
+    noArgs(args.slice(1));
+    // The latch is released; the outputs stay as they are and the timer
+    // restarts (every OK does).
+    this.failsafe = false;
+    this.failsafeCause = "none";
+    return ["OK"];
+  }
+
+  private outputsCommand(args: string[]): string[] {
+    if ((args[0] ?? "").toLowerCase() !== "reset") throw new DeviceError("UNKNOWN_CMD");
+    noArgs(args.slice(1));
+    // Never refused: not by BUSY, NO_RESOURCE, FAILSAFE nor EXCLUSIVE. The
+    // latch is not touched.
+    this.safeState();
+    return ["OK"];
+  }
+
+  private usbsafeCommand(args: string[]): string[] {
+    if (args.length !== 1) throw new DeviceError("BAD_PARAM");
+    const arg = args[0].toLowerCase();
+    if (arg !== "on" && arg !== "off") throw new DeviceError("BAD_PARAM");
+    this.usbsafe = arg === "on";
+    return ["OK"];
+  }
+
+  private exclCommand(args: string[]): string[] {
+    const sub = (args[0] ?? "").toLowerCase();
+    const rest = args.slice(1);
+    switch (sub) {
+      case "get":
+        noArgs(rest);
+        return [
+          `OK count=${this.groups.length}`,
+          ...this.groups.map((g) => `  mask=${hex8(g)}`),
+        ];
+      case "clear":
+        noArgs(rest);
+        if (this.patState === "running") throw new DeviceError("BUSY");
+        this.groups = [];
+        return ["OK"];
+      case "set":
+        return this.exclSet(rest);
+      default:
+        throw new DeviceError("UNKNOWN_CMD");
+    }
+  }
+
+  private exclSet(args: string[]): string[] {
+    if (args.length < 1 || args.length > MAX_EXCLUSIVE_GROUPS) throw new DeviceError("BAD_PARAM");
+    const masks = args.map(u32);
+    // Each group: at least two pins, all of them outputs.
+    for (const m of masks) {
+      if (popcount(m) < 2 || (m & ~this.map.direction) !== 0) throw new DeviceError("BAD_PARAM");
+    }
+    if (this.patState === "running") throw new DeviceError("BUSY");
+    // The state the new groups must allow: the map's def (applied without a
+    // check by the trip), the current outputs and every loaded pattern step.
+    const states = [this.map.out_default & this.map.direction, this.latch];
+    for (const step of this.steps) states.push(step.out);
+    for (const state of states) {
+      const violation = exclusiveViolation(state, masks);
+      if (violation) throw violation;
+    }
+    this.groups = masks;
     return ["OK"];
   }
 
@@ -541,8 +829,15 @@ export class MockDeviceCore {
         return [`OK ${mapText(this.map)}`];
       case "set": {
         const map = parseMapArgs(rest);
-        validateMap(map);
+        // Error order (30-usb-protocol.md 12.2 / 12.6): BUSY while a pattern
+        // runs, an invalid map or one that drops a group pin (BAD_MAP),
+        // FAILSAFE, then a def that violates a group (EXCLUSIVE).
         if (this.patState === "running") throw new DeviceError("BUSY");
+        validateMap(map);
+        if (this.groups.some((g) => (g & ~map.direction) !== 0)) throw new DeviceError("BAD_MAP");
+        if (this.failsafe) throw new DeviceError("FAILSAFE");
+        const violation = exclusiveViolation(map.out_default & map.direction, this.groups);
+        if (violation) throw violation;
         this.applyMap(map);
         return ["OK"];
       }
@@ -553,6 +848,9 @@ export class MockDeviceCore {
       case "default":
         noArgs(rest);
         if (this.patState === "running") throw new DeviceError("BUSY");
+        // The all-input default map cannot hold a group: clear them first.
+        if (this.groups.length > 0) throw new DeviceError("BAD_MAP");
+        if (this.failsafe) throw new DeviceError("FAILSAFE");
         this.applyMap({ ...PIN_MAP_DEFAULT });
         return ["OK"];
       default:
@@ -566,7 +864,14 @@ export class MockDeviceCore {
     const mask = u32(args[1]);
     if (this.map.direction === 0) throw new DeviceError("NO_RESOURCE");
     if ((mask & ~this.map.direction) !== 0) throw new DeviceError("BAD_PARAM");
-    this.setLatch((this.latch & ~mask) | (values & mask));
+    // Latched: only an instruction that leaves its target pins at def.
+    if (this.failsafe && ((values ^ this.map.out_default) & mask) !== 0) {
+      throw new DeviceError("FAILSAFE");
+    }
+    const next = ((this.latch & ~mask) | (values & mask)) >>> 0;
+    const violation = exclusiveViolation(next, this.groups);
+    if (violation) throw violation;
+    this.setLatch(next);
     return ["OK"];
   }
 
@@ -625,6 +930,11 @@ export class MockDeviceCore {
       if ((s.out & ~this.map.direction) !== 0) throw new DeviceError("BAD_PARAM");
     }
     if (this.steps.length + added.length > PATTERN_MAX) throw new DeviceError("TOO_LONG");
+    // One violating step rejects the whole call: nothing is added.
+    for (const s of added) {
+      const violation = exclusiveViolation(s.out, this.groups);
+      if (violation) throw violation;
+    }
     this.steps.push(...added);
     this.patState = "loaded";
     this.patLoops = 0;
@@ -646,6 +956,12 @@ export class MockDeviceCore {
     }
     if (this.patState === "running") throw new DeviceError("BUSY");
     if (this.steps.length === 0) throw new DeviceError("BAD_PARAM");
+    if (this.failsafe) throw new DeviceError("FAILSAFE");
+    // Defence in depth: the buffer was checked when it was loaded.
+    for (const s of this.steps) {
+      const violation = exclusiveViolation(s.out, this.groups);
+      if (violation) throw violation;
+    }
     this.patMode = mode;
     this.patRepeat = repeat;
     this.patState = "running";

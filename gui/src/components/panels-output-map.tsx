@@ -14,6 +14,7 @@ import type { ChannelFlag, PullDir } from "../lib/pinmap";
 import { chBit, pinLabel } from "../lib/pins";
 import { tauriAvailable } from "../lib/tauri";
 import { NUM_PINS, PochiStore, useStore } from "../store/store";
+import { OutputsDefaultButton } from "./panels-safety";
 
 // ---------------- OutputControl ----------------
 export function OutputControl() {
@@ -68,6 +69,7 @@ export function OutputControl() {
           style={{ flex: 1, minWidth: 0 }} />
         <button className="btn sm primary" disabled={disabled} onClick={submitHex}>Set</button>
       </div>
+      <OutputsDefaultButton style={{ justifyContent: "center" }} />
     </div>
   );
 }

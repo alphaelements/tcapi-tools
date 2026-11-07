@@ -125,3 +125,75 @@ describe("hooks and unsupported verbs", () => {
     expect(dev.outputs).toBe(0);
   });
 });
+
+describe("safety model beyond the golden transcripts", () => {
+  it("trips at the deadline inside one long advance, not at its end", () => {
+    const dev = rig();
+    dev.execute("wdog 100");
+    dev.execute("write 0x1 0x1");
+    dev.advance(5_000_000_000); // 5 s in one step
+    expect(dev.takeEvents()).toEqual(["! FAILSAFE cause=wdog"]);
+    expect(dev.outputs).toBe(0);
+    // The event is pushed once, not once per elapsed timeout.
+    dev.advance(5_000_000_000);
+    expect(dev.takeEvents()).toEqual([]);
+  });
+
+  it("keeps the watchdog quiet while the host pings (heartbeat)", () => {
+    const dev = rig();
+    dev.execute("wdog 100");
+    for (let i = 0; i < 40; i++) {
+      dev.advance(25_000_000);
+      expect(dev.execute("ping 1")).toEqual(["OK pong=1"]);
+    }
+    expect(dev.takeEvents()).toEqual([]);
+    expect(dev.execute("safety")[0]).toContain("failsafe=0");
+  });
+
+  it("does not push a failsafe event while DTR is low, but latches", () => {
+    const dev = rig();
+    dev.execute("wdog 100");
+    dev.setDtr(false);
+    dev.advance(100_000_000);
+    expect(dev.takeEvents()).toEqual([]);
+    expect(dev.execute("safety")[0]).toContain("failsafe=1 cause=wdog");
+  });
+
+  it("drops the safety state and queued events on reboot", () => {
+    const dev = rig();
+    dev.execute("excl set 0x3");
+    dev.execute("usbsafe on");
+    dev.execute("wdog 100");
+    dev.advance(100_000_000);
+    dev.reboot("bor");
+    expect(dev.takeEvents()).toEqual([]);
+    expect(dev.execute("safety")).toEqual([
+      "OK wdog_ms=0 remaining_ms=0 failsafe=0 cause=none usbsafe=0 excl=0",
+    ]);
+    expect(dev.execute("rstinfo")).toEqual(["OK cause=bor uptime_ms=0 boot=0x00000002"]);
+  });
+
+  it("reports an exclusive violation with the group and its mask", () => {
+    const dev = rig();
+    dev.execute("excl set 0x6");
+    dev.execute("write 0x2 0x2");
+    expect(dev.execute("write 0x4 0x4")).toEqual(["ERR EXCLUSIVE group=0 mask=0x00000006"]);
+  });
+});
+
+describe("feature bits", () => {
+  it("answers caps with the configured word and refuses commands whose bit is missing", () => {
+    const dev = new MockDeviceCore({ features: 0x03 });
+    expect(dev.execute("caps")[0]).toContain("feat=0x00000003");
+    for (const line of ["wdog 0", "safety", "failsafe clear", "outputs reset", "excl get", "usbsafe on", "rstinfo", "pads"]) {
+      expect(dev.execute(line), line).toEqual(["ERR UNKNOWN_CMD"]);
+    }
+    expect(dev.execute("ping 1")).toEqual(["OK pong=1"]);
+  });
+
+  it("offers a command with just its own bit", () => {
+    const dev = new MockDeviceCore({ features: 0x08 });
+    expect(dev.execute("excl get")).toEqual(["OK count=0"]);
+    expect(dev.execute("wdog 0")).toEqual(["ERR UNKNOWN_CMD"]);
+  });
+});

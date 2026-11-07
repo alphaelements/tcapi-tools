@@ -536,6 +536,38 @@ interface TimestampViewerState {
 }
 ```
 
+### Safety (SafetyBanners + Safety tab)
+
+**Purpose**: Watchdog, failsafe latch, exclusive output groups and the
+`safety.toml` file, on firmware that advertises the safety feature bits.
+
+**Availability**: every control follows the `caps feat=` bits
+(`gui/src/lib/features.ts`): the Safety tab and its State/Watchdog/Release
+controls need bit 2 (`wdog`), exclusive groups bit 3, `Outputs to default`
+bit 4, `usbsafe` bit 6, and `Apply safety.toml` needs bits 2, 3 and 6 (the
+file sets all three). A device without any of them shows no safety UI and
+receives no safety command.
+
+**Visual Design**:
+- FAILSAFE banner under the menu bar while the latch is set: the cause
+  (`wdog` / `usb`), `Outputs to default` (always enabled) and
+  `Release failsafe…`, which asks for confirmation before `failsafe clear`.
+  Source: `pochi://failsafe` plus a `get_safety` read on connect, on every
+  push, after every safety action and after any write refused with
+  `ERR FAILSAFE`.
+- Heartbeat: the Watchdog section shows `running` (ping period) / `off` /
+  `failed: <message>`; `pochi://heartbeat-failed` also raises a banner with
+  `Restart heartbeat`.
+- Exclusive violation: `ERR EXCLUSIVE group=<i> mask=0x...` is shown as the
+  group number and the pin names of the mask (`GP2 (ch2), GP3 (ch3)`).
+- `Apply safety.toml…` runs `safety_load_toml` then `apply_safety` in the
+  backend (the frontend does not parse the file); a parse error is shown
+  verbatim as `file:line: message`.
+
+**Commands**: `wdog`, `get_safety`, `failsafe_clear`, `outputs_reset`,
+`excl_set`, `excl_clear`, `excl_get`, `usbsafe`, `safety_load_toml`,
+`apply_safety`.
+
 ## 7. Data Flow
 
 ### Command Flow (Frontend to Device)
