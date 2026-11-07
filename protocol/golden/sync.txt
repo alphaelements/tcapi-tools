@@ -1,6 +1,6 @@
 # proto=2
 # generated_by=hand
-# fw_commit=f376234f2f93
+# fw_commit=b3b07c8
 # Sync state machine (idle at the start of every case):
 #   idle --arm--> slave-armed --sync_edge--> clocking (slave)
 #   idle --master--> master-armed --start--> clocking (master) --stop--> idle

@@ -332,3 +332,7 @@ Revision 4 (golden infrastructure, no transcript line changed). `safety.txt` is 
 (simulator, Rust / Python / TypeScript / C# SDKs, the VS Code extension, the GUI mock); the simulator implements the
 directives `~ dtr`, `~ usb ...` and `~ reboot cause=...` on top of `runtime::Device::set_usb_state` and
 `set_reset_info` (DD-17), reports failures by case name, and has a wall-clock mode for its live transports.
+
+Revision 5 (one case added, no existing line changed). `safety.txt` gained `safety_reboot_converts_def_with_opol`: after a
+restart the saved map's `def` is converted to the pad level with `opol` (DD-20), the same conversion as the trip. The
+firmware already passed it (the case documents the behaviour for the SDK and extension replayers).

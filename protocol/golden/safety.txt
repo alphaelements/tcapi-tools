@@ -1,6 +1,6 @@
 # proto=2
 # generated_by=hand
-# fw_commit=f376234f2f93
+# fw_commit=b3b07c8
 
 # Safety functions: watchdog and failsafe latch, exclusive output groups,
 # outputs reset, usbsafe, reset information, pad read-back.
@@ -1124,6 +1124,23 @@
 ~ expect_pins out=0x00000008
 > write 0x7 0x7
 < OK
+
+# --- safety_reboot_converts_def_with_opol ---
+# The initial state after a restart is def converted with opol (DD-20): MAP def=0x8, opol=0x9 (GP0 and GP3 inverted)
+# gives logical out=0x8 and pad level 0x1 (GP0 high, GP3 low), the same as the trip.
+> map set flags=0x00 dir=0x0000000f pu=0x00000000 pd=0x0c7ffff0 def=0x00000008 opol=0x00000009 ipol=0x00000000 edge=0x0c7ffff0
+< OK
+> map save
+< OK
+> write 0x3 0x3
+< OK
+~ expect_pins out=0x00000002
+~ reboot cause=wdt
+> state
+< OK in=0x00000000 out=0x00000008
+~ expect_pins out=0x00000001
+> pads
+< OK out=0x00000008 pad=0x00000008
 
 # --- safety_reboot_without_saved_map_drives_no_output ---
 # Without a saved map every pin is an input after a restart.

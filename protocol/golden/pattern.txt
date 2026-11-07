@@ -1,6 +1,6 @@
 # proto=2
 # generated_by=hand
-# fw_commit=f376234f2f93
+# fw_commit=b3b07c8
 
 # Every case that needs outputs first applies map OUT2 (GP0-GP1 are outputs):
 #   map set flags=0x00 dir=0x00000003 pu=0x00000000 pd=0x0c7ffffc def=0x00000000 opol=0x00000000 ipol=0x00000000 edge=0x0c7ffffc

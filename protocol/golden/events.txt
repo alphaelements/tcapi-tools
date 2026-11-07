@@ -1,6 +1,6 @@
 # proto=2
 # generated_by=hand
-# fw_commit=f376234f2f93
+# fw_commit=b3b07c8
 # Events are lines starting with `< ! ` and are never part of a request's response.
 
 # --- INPUT: every change on an edge pin is reported with the full input snapshot and the time in us ---
