@@ -1424,6 +1424,55 @@ latch, exclusive groups, watchdog, `usbsafe`, pattern, timestamp and `subscribe`
 are not carried over. Before the firmware starts (boot ROM, BOOTSEL) the pins
 have the chip's own default state, which the firmware cannot control.
 
+**Declaring the initial state of each pin.** There is no separate setting: the
+initial state is the saved map. Use `map set`, check it with `map get`, and
+store it with `map save`. Example: GP0 is an active-high relay, GP1 is an
+active-low relay, GP2 is an input with pull-up, GP3 is an input without pull,
+all other inputs have the default pull-down:
+
+```
+> map set flags=0x00 dir=0x00000003 pu=0x00000004 pd=0x0c7ffff0 def=0x00000000 opol=0x00000002 ipol=0x00000000 edge=0x0c7ffffc
+< OK
+> map save
+< OK
+```
+
+After every restart the pins are: GP0 low (relay OFF), GP1 high (relay OFF:
+logical 0 with `opol=1` is the high level), GP2 pulled up, GP3 floating, the
+other inputs pulled down. The reply of `map get` can be pasted back into
+`map set` unchanged. A `map set` that was not followed by `map save` is lost at
+the next restart, and the device returns to the default map (all pins inputs
+with pull-down). A saved map that fails validation (for example a damaged flash
+block) is ignored in the same way: the device starts with the default map and
+drives no output.
+
+The same map as `map.toml` (see [`config-files.md`](config-files.md)):
+
+```toml
+version = 2
+
+[pins]
+GP0 = { dir = "out", default = 0 }
+GP1 = { dir = "out", default = 0, invert = true }
+GP2 = { dir = "in", pull = "up" }
+GP3 = { dir = "in", pull = "none" }
+```
+
+**Keep `def` on the OFF side.** `def` is always the logical level (ON = 1); the
+conversion to the electrical level is done by `opol`. A pin whose `def` is 1
+starts ON after every restart, whatever its `opol`. To keep a relay from
+switching on at a restart, leave its `def` at 0 and set `opol` (`invert = true`)
+for an active-low board. `def` is also the pin's safe state (section 4), so
+the same value is applied on a failsafe trip.
+
+| Stage | Pin state |
+|---|---|
+| Power-on, boot ROM, BOOTSEL | The chip's default. The firmware is not running and cannot control the pins. **Not yet measured**; if the board needs a defined level here, add an external pull resistor. |
+| Firmware start, until the pin state is applied (clock, pad setup, PIO setup) | Output drivers are not enabled; pulls are the chip's default. **Not yet measured.** |
+| Initial state applied | Per pin as declared in the saved map (default map if none). The output value is written before the output driver is enabled, so no glitch of an old value appears at the moment the driver turns on. |
+| USB enumeration and later | The state above is kept; USB start-up does not change any pin. |
+| Panic / HardFault | Pins are released to inputs (high impedance) and the chip resets; afterwards the row "Initial state applied" holds. |
+
 ### Persistence
 
 `map save` stores the map, with the device number, in a 42-byte flash block

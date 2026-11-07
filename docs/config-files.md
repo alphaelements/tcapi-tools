@@ -99,7 +99,7 @@ GP26 = { dir = "in",  pull = "up" }
 | Key      | Type                       | Applies to | Default  | Meaning |
 |----------|----------------------------|------------|----------|---------|
 | `dir`    | `"in"` \| `"out"`          | both       | `"in"`   | Pin direction. |
-| `default`| integer `0` or `1`         | output     | `0`      | Level driven when the map is applied (before polarity). |
+| `default`| integer `0` or `1`         | output     | `0`      | Level driven when the map is applied (before polarity). It is also the level the pin has after every restart and its safe state, so a pin that must start OFF keeps `default = 0`; for an active-low board set `invert = true`. |
 | `invert` | boolean                    | both       | `false`  | Output: invert driven level. Input: invert sampled level. |
 | `pull`   | `"up"` \| `"down"` \| `"none"` | input  | `"down"` | Internal pull resistor. |
 | `edge`   | boolean                    | input      | `true`   | Include the pin in edge (change) detection. |
