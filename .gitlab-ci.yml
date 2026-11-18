@@ -25,7 +25,7 @@ security-gate:
 
 mirror-main:
   stage: deploy
-  image: alpine/git
+  image: bitnami/git:latest
   needs: [security-gate]
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
