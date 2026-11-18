@@ -1,14 +1,31 @@
 stages:
+  - gate
   - deploy
 
 # Local-first quality model: lefthook pre-commit/pre-push runs all checks.
-# CI owns only deploy-stage work that cannot run locally:
-#   mirror-main — push main to the GitHub public repo on every merge.
+# CI owns deploy-stage work that cannot run locally:
+#   security-gate — cargo audit + deny + secret scan (blocks mirror on failure)
+#   mirror-main   — push main to the GitHub public repo on every merge.
+
+security-gate:
+  stage: gate
+  image: rust:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - cargo install cargo-audit cargo-deny --locked 2>/dev/null || true
+  script:
+    - cargo audit
+    - cargo deny check
+    - |
+      if git log --all -p | grep -qiE '(@gmail\.com|@yahoo\.com|@hotmail\.com|PRIVATE.TOKEN|AKIA[A-Z0-9]{16}|BEGIN (RSA|OPENSSH) PRIVATE KEY)'; then
+        echo "ERROR: potential secret detected in git history"
+        exit 1
+      fi
 
 mirror-main:
   stage: deploy
-  # GitHub mirror repo is not created yet — tolerate failure until it exists.
-  allow_failure: true
+  needs: [security-gate]
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
   variables:
