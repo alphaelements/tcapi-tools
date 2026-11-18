@@ -26,11 +26,11 @@ async function expectCode(promise: Promise<unknown>, code: ErrorCode): Promise<v
 }
 
 describe("matchesPochi", () => {
-  const base = { path: "/dev/ttyACM0", vendorId: "2E8A", productId: "000A" };
+  const base = { path: "/dev/ttyACM0", vendorId: "2E8A", productId: "1175" };
 
-  it("accepts a Pochi product on VID 2E8A / PID 000A (case-insensitive ids)", () => {
+  it("accepts a Pochi product on VID 2E8A / PID 1175 (case-insensitive ids)", () => {
     expect(matchesPochi({ ...base, pnpId: "usb-Raspberry_Pi_Pochi-DIO_0123-if00" })).toBe(true);
-    expect(matchesPochi({ ...base, vendorId: "2e8a", productId: "000a", pnpId: "usb-Pochi" })).toBe(true);
+    expect(matchesPochi({ ...base, vendorId: "2e8a", productId: "1175", pnpId: "usb-Pochi" })).toBe(true);
   });
 
   it("rejects the legacy Tachyon name", () => {

@@ -5,15 +5,15 @@ namespace Pochi.Sdk.Tests;
 public class MatchesPochiTests
 {
     [Theory]
-    [InlineData(0x2E8A, 0x000A, "Pochi-DIO", true)]
-    [InlineData(0x2E8A, 0x000A, "Pochi", true)]
-    [InlineData(0x2E8A, 0x000A, "pochi-dio", false)] // the prefix is case-sensitive
-    [InlineData(0x2E8A, 0x000A, "My Pochi-DIO", false)] // a prefix, not a substring
-    [InlineData(0x2E8A, 0x000A, "Picotool", false)]
-    [InlineData(0x2E8A, 0x000A, "", false)]
+    [InlineData(0x2E8A, 0x1175, "Pochi-DIO", true)]
+    [InlineData(0x2E8A, 0x1175, "Pochi", true)]
+    [InlineData(0x2E8A, 0x1175, "pochi-dio", false)] // the prefix is case-sensitive
+    [InlineData(0x2E8A, 0x1175, "My Pochi-DIO", false)] // a prefix, not a substring
+    [InlineData(0x2E8A, 0x1175, "Picotool", false)]
+    [InlineData(0x2E8A, 0x1175, "", false)]
     [InlineData(0x2E8A, 0x000C, "Pochi-DIO", false)] // Debugprobe PID
-    [InlineData(0x1234, 0x000A, "Pochi-DIO", false)]
-    [InlineData(0x2E8A, 0x000A, null, false)]
+    [InlineData(0x1234, 0x1175, "Pochi-DIO", false)]
+    [InlineData(0x2E8A, 0x1175, null, false)]
     public void Filter(int? vid, int? pid, string? product, bool expected) =>
         Assert.Equal(expected, Discovery.MatchesPochi(vid, pid, product));
 }
@@ -77,13 +77,13 @@ public class SysfsEnumerationTests : IDisposable
     [Fact]
     public void FindsPochiAndIgnoresOthers()
     {
-        AddTty("ttyACM0", "2e8a", "000a", "Pochi-DIO");
-        AddTty("ttyACM1", "2e8a", "000a", "Pochi-DIO v2");
+        AddTty("ttyACM0", "2e8a", "1175", "Pochi-DIO");
+        AddTty("ttyACM1", "2e8a", "1175", "Pochi-DIO v2");
         AddTty("ttyACM2", "2e8a", "000c", "Debugprobe (CMSIS-DAP)");
-        AddTty("ttyACM4", "2e8a", "000a", "Picotool");
+        AddTty("ttyACM4", "2e8a", "1175", "Picotool");
         AddTty("ttyUSB0", "0403", "6001", "FT232R USB UART");
         AddBareTty("ttyS0"); // non-USB tty: no device link
-        AddTty("ttyACM3", "2e8a", "000a", null); // no product string
+        AddTty("ttyACM3", "2e8a", "1175", null); // no product string
 
         var ports = Discovery.EnumeratePorts(Path.Combine(_root, "class", "tty"));
         Assert.Equal(["/dev/ttyACM0", "/dev/ttyACM1"], ports);

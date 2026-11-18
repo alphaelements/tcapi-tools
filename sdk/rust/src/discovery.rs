@@ -7,7 +7,7 @@ use crate::error::{Result, SdkError};
 use crate::types::DeviceInfo;
 
 const POCHI_VID: u16 = 0x2E8A;
-const POCHI_PID: u16 = 0x000A;
+const POCHI_PID: u16 = 0x1175;
 
 /// A port that matched the USB filter but could not be probed.
 #[derive(Debug)]
@@ -37,7 +37,7 @@ fn matches_pochi(info: &serialport::UsbPortInfo) -> bool {
 }
 
 /// List serial port paths whose USB descriptors match a Pochi-DIO
-/// (VID 0x2E8A / PID 0x000A / product "Pochi*").
+/// (VID 0x2E8A / PID 0x1175 / product "Pochi*").
 /// No ports are opened. Results are sorted by port path: the OS
 /// enumeration order is unspecified, and callers rely on a deterministic
 /// device order.
@@ -153,14 +153,14 @@ mod tests {
             manufacturer: None,
             product: product.map(str::to_string),
         };
-        assert!(matches_pochi(&info(0x2E8A, 0x000A, Some("Pochi-DIO"))));
+        assert!(matches_pochi(&info(0x2E8A, 0x1175, Some("Pochi-DIO"))));
         // The pre-rename product name is no longer accepted (R-U1).
-        assert!(!matches_pochi(&info(0x2E8A, 0x000A, Some("Tachyon-DIO"))));
+        assert!(!matches_pochi(&info(0x2E8A, 0x1175, Some("Tachyon-DIO"))));
         // Debugprobe: same VID, different PID — must NOT match.
         assert!(!matches_pochi(&info(0x2E8A, 0x000C, Some("Debugprobe"))));
-        assert!(!matches_pochi(&info(0x2E8A, 0x000A, Some("Other"))));
-        assert!(!matches_pochi(&info(0x2E8A, 0x000A, None)));
-        assert!(!matches_pochi(&info(0x1234, 0x000A, Some("Pochi-DIO"))));
+        assert!(!matches_pochi(&info(0x2E8A, 0x1175, Some("Other"))));
+        assert!(!matches_pochi(&info(0x2E8A, 0x1175, None)));
+        assert!(!matches_pochi(&info(0x1234, 0x1175, Some("Pochi-DIO"))));
     }
 
     #[test]
