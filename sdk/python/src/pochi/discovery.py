@@ -1,7 +1,7 @@
 """Device discovery: USB enumeration, probing, and selection.
 Mirrors ``sdk/rust/src/discovery.rs``.
 
-A port matches when VID is 0x2E8A, PID is 0x000A and, if the operating
+A port matches when VID is 0x2E8A, PID is 0x1175 and, if the operating
 system provides a product string, it starts with ``Pochi``. Each matching
 port is then probed with ``version`` (``proto=2`` required) followed by
 ``info``; a device on another protocol version is reported among the
@@ -17,7 +17,7 @@ from .errors import MultipleDevicesError, NoDeviceError, SdkError
 from .types import DeviceInfo
 
 _POCHI_VID = 0x2E8A
-_POCHI_PID = 0x000A
+_POCHI_PID = 0x1175
 
 
 @dataclass
@@ -49,7 +49,7 @@ def matches_pochi(vid: int | None, pid: int | None, product: str | None) -> bool
 
 def enumerate_ports() -> list[str]:
     """List serial port paths whose USB descriptors match a Pochi-DIO
-    (VID 0x2E8A / PID 0x000A / product "Pochi*"). No ports are opened. Results are sorted by port path: the OS
+    (VID 0x2E8A / PID 0x1175 / product "Pochi*"). No ports are opened. Results are sorted by port path: the OS
     enumeration order is unspecified, and callers rely on a deterministic
     device order."""
     return sorted(

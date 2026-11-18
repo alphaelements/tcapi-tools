@@ -18,22 +18,22 @@ from .golden import ReplayPort, find_case
 
 class TestMatchesPochi:
     def test_pochi_product(self):
-        assert discovery.matches_pochi(0x2E8A, 0x000A, "Pochi-DIO")
-        assert discovery.matches_pochi(0x2E8A, 0x000A, "Pochi")
+        assert discovery.matches_pochi(0x2E8A, 0x1175, "Pochi-DIO")
+        assert discovery.matches_pochi(0x2E8A, 0x1175, "Pochi")
 
     def test_missing_product_string_is_accepted_when_vid_pid_match(self):
         # "if the operating system provides a product string, it starts with Pochi"
-        assert discovery.matches_pochi(0x2E8A, 0x000A, None)
+        assert discovery.matches_pochi(0x2E8A, 0x1175, None)
 
     @pytest.mark.parametrize(
         "product", ["Tachyon-DIO", "Tachyon", "Debugprobe", "pochi", ""]
     )
     def test_other_product_names_are_rejected(self, product):
-        assert not discovery.matches_pochi(0x2E8A, 0x000A, product)
+        assert not discovery.matches_pochi(0x2E8A, 0x1175, product)
 
     @pytest.mark.parametrize(
         "vid,pid",
-        [(0x2E8A, 0x000C), (0x1234, 0x000A), (None, None), (0x2E8A, None)],
+        [(0x2E8A, 0x000C), (0x1234, 0x1175), (None, None), (0x2E8A, None)],
     )
     def test_vid_pid_must_match(self, vid, pid):
         assert not discovery.matches_pochi(vid, pid, "Pochi-DIO")

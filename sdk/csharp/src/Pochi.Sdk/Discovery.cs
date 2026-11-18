@@ -22,10 +22,10 @@ public sealed record DiscoveryResult(
 public static class Discovery
 {
     private const int PochiVid = 0x2E8A;
-    private const int PochiPid = 0x000A;
+    private const int PochiPid = 0x1175;
 
     /// <summary>True if the USB descriptor identifies a Pochi-DIO: VID
-    /// 0x2E8A, PID 0x000A and a product string that starts with "Pochi". No
+    /// 0x2E8A, PID 0x1175 and a product string that starts with "Pochi". No
     /// other product name is accepted. A port whose OS descriptor has no
     /// product string is not listed here; the <c>version</c> probe is the final
     /// check for the ports that are.</summary>
@@ -40,7 +40,7 @@ public static class Discovery
     }
 
     /// <summary>List serial port paths whose USB descriptors match a
-    /// Pochi-DIO (VID 0x2E8A / PID 0x000A / product "Pochi*"). No ports are
+    /// Pochi-DIO (VID 0x2E8A / PID 0x1175 / product "Pochi*"). No ports are
     /// opened. Results are sorted by port path:
     /// the OS enumeration order is unspecified, and callers rely on a
     /// deterministic device order.</summary>

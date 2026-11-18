@@ -11,7 +11,7 @@ import { Transport } from "./transport.js";
 import type { DeviceInfo } from "./types.js";
 
 const POCHI_VID = "2e8a";
-const POCHI_PID = "000a";
+const POCHI_PID = "1175";
 
 /** A port that matched the USB filter but could not be probed. */
 export interface ProbeFailure {
@@ -49,7 +49,7 @@ export function matchesPochi(info: UsbPortInfo): boolean {
 
 /**
  * List serial port paths whose USB descriptors match a Pochi-DIO
- * (VID 0x2E8A / PID 0x000A / product "Pochi*").
+ * (VID 0x2E8A / PID 0x1175 / product "Pochi*").
  * No ports are opened. Results are sorted by port path: the OS
  * enumeration order is unspecified, and callers rely on a deterministic
  * device order.
