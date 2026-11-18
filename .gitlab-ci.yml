@@ -6,6 +6,9 @@ stages:
 # CI owns deploy-stage work that cannot run locally:
 #   security-gate — cargo audit + deny + secret scan (blocks mirror on failure)
 #   mirror-main   — push main to the GitHub public repo on every merge.
+#
+# cargo audit --ignore flags mirror the deny.toml [advisories.ignore] entries
+# for Tauri's transitive GTK/glib deps that cannot be fixed downstream.
 
 security-gate:
   stage: gate
@@ -15,7 +18,7 @@ security-gate:
   before_script:
     - cargo install cargo-audit cargo-deny --locked 2>/dev/null || true
   script:
-    - cargo audit
+    - cargo audit --ignore RUSTSEC-2024-0370 --ignore RUSTSEC-2024-0411 --ignore RUSTSEC-2024-0412 --ignore RUSTSEC-2024-0413 --ignore RUSTSEC-2024-0414 --ignore RUSTSEC-2024-0415 --ignore RUSTSEC-2024-0416 --ignore RUSTSEC-2024-0417 --ignore RUSTSEC-2024-0418 --ignore RUSTSEC-2024-0419 --ignore RUSTSEC-2024-0420 --ignore RUSTSEC-2024-0429 --ignore RUSTSEC-2025-0075 --ignore RUSTSEC-2025-0080 --ignore RUSTSEC-2025-0081 --ignore RUSTSEC-2025-0098 --ignore RUSTSEC-2025-0100 --ignore RUSTSEC-2026-0386
     - cargo deny check
     - |
       if git log --all -p | grep -qiE '(@gmail\.com|@yahoo\.com|@hotmail\.com|PRIVATE.TOKEN|AKIA[A-Z0-9]{16}|BEGIN (RSA|OPENSSH) PRIVATE KEY)'; then
