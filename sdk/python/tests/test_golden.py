@@ -20,7 +20,9 @@ from tcapi.protocol import parse_response
 from tcapi.transport import Transport
 from tcapi.types import (
     FEATURE_MASK,
+    EdgeMode,
     FailsafeCause,
+    PatternMode,
     PatternState,
     PatternStep,
     PinMap,
@@ -271,12 +273,8 @@ def test_write_and_arm_commands_match_canonical_golden_spelling():
     spellings = {r.text for c in CASES for r in c.requests}
     assert "write 0x2 0x3" in spellings
     assert "ts arm 0x1 both" in spellings
-    from tcapi.types import EdgeMode
-
     assert protocol.ts_arm_command(0x1, EdgeMode.BOTH) == "ts arm 0x1 both"
     assert "pattern run loop 3" in spellings
-    from tcapi.types import PatternMode
-
     assert protocol.pattern_run_command(PatternMode.LOOP, 3) == "pattern run loop 3"
     assert "pattern run once" in spellings
     assert protocol.pattern_run_command(PatternMode.ONCE, 1) == "pattern run once"

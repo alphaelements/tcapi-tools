@@ -387,13 +387,16 @@ class TestResync:
 
         thread = threading.Thread(target=flood, daemon=True)
         thread.start()
-        outcome: list[BaseException | None] = []
+        outcome: list[Exception | None] = []
 
         def run() -> None:
             try:
                 transport.command("version")
                 outcome.append(None)
-            except BaseException as exc:  # recorded and asserted below
+            # Thread boundary of the test: an exception raised in this
+            # thread cannot fail the test by itself, so whatever it is gets
+            # handed to the main thread, which asserts its exact type below.
+            except Exception as exc:  # noqa: BLE001
                 outcome.append(exc)
 
         runner = threading.Thread(target=run, daemon=True)
@@ -477,7 +480,10 @@ class TestSerialisation:
                     n = base + i
                     data = transport.command(f"ping {n}")
                     results[n] = int(data.removeprefix("pong="))
-            except Exception as exc:  # collected for the assertion below
+            # Thread boundary of the test: an exception raised in a worker
+            # cannot fail the test by itself, so every one is collected and
+            # the main thread asserts that there were none.
+            except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 
         threads = [threading.Thread(target=worker, args=(b,)) for b in (0, 1000, 2000)]

@@ -1,9 +1,11 @@
 """Discovery (docs/sdk-api-design.md section 3): USB filter, probing with
 ``version`` (proto=2 required) then ``info``, selection helpers."""
 
+from typing import ClassVar
+
 import pytest
 
-import tcapi.discovery as discovery
+from tcapi import discovery
 from tcapi.errors import (
     MultipleDevicesError,
     NoDeviceError,
@@ -84,7 +86,8 @@ class TestProbe:
 
 
 class TestSelection:
-    DEVICES = [
+    # Shared read-only fixture; the helpers under test take a list.
+    DEVICES: ClassVar[list[DeviceInfo]] = [
         DeviceInfo("AAAA", 1, "/dev/ttyACM0", "0.1.3"),
         DeviceInfo("BBBB", 2, "/dev/ttyACM1", "0.1.3"),
         DeviceInfo("CCCC", 2, "/dev/ttyACM2", "0.1.3"),

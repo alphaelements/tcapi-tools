@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+from pathlib import Path
 
 import pytest
 
@@ -32,7 +33,7 @@ from tcapi.types import (
 def test_constants():
     assert PROTO_VERSION == 2
     assert VALID_DIO_MASK == 0x0C7FFFFF
-    assert bin(VALID_DIO_MASK).count("1") == 25
+    assert VALID_DIO_MASK.bit_count() == 25
     assert DIO_CHANNELS == 25
     assert PATTERN_TICK_NS == 200
     for gp in (23, 24, 25, 28, 29, 30, 31):
@@ -96,8 +97,6 @@ def test_v1_names_are_gone(name):
 
 
 def test_no_tachyon_anywhere_in_the_package():
-    from pathlib import Path
-
     src = Path(tcapi.__file__).parent
     for path in src.glob("*.py"):
         assert "tachyon" not in path.read_text().lower(), path.name
@@ -108,16 +107,16 @@ def test_no_tachyon_anywhere_in_the_package():
 
 def base_map(**kw) -> PinMap:
     # dir=GP0-GP3 outputs; everything else input.
-    fields = dict(
-        flags=0,
-        direction=0x0000000F,
-        pull_up=0x000000F0,
-        pull_down=0x0C7FFF00,
-        out_default=0x00000005,
-        out_polarity=0x00000008,
-        in_polarity=0x00000100,
-        edge=0x0C7FFFF0,
-    )
+    fields = {
+        "flags": 0,
+        "direction": 0x0000000F,
+        "pull_up": 0x000000F0,
+        "pull_down": 0x0C7FFF00,
+        "out_default": 0x00000005,
+        "out_polarity": 0x00000008,
+        "in_polarity": 0x00000100,
+        "edge": 0x0C7FFFF0,
+    }
     fields.update(kw)
     return PinMap(**fields)
 

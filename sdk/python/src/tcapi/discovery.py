@@ -63,8 +63,8 @@ def probe(port_path: str) -> DeviceInfo:
     """Probe one port: open it (asserting DTR, requiring ``proto=2`` from
     ``version``) and query ``info``."""
     # Imported here: connection.py imports this module for the open_by_*
-    # helpers.
-    from .connection import Connection
+    # helpers, so a top-level import would be circular.
+    from .connection import Connection  # noqa: PLC0415
 
     with Connection.open(port_path) as conn:
         return conn.info()

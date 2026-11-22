@@ -358,7 +358,9 @@ class PinMap:
     def parse_get(cls, data: str) -> PinMap:
         """Parse the data of a ``map get`` response (``v=2 flags=... edge=...``).
         The map is validated, so an invalid device response is an error."""
-        from .protocol import parse_map
+        # Imported here: protocol.py imports this module for the types it
+        # parses into, so a top-level import would be circular.
+        from .protocol import parse_map  # noqa: PLC0415
 
         return parse_map(data)
 

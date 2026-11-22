@@ -12,8 +12,10 @@ is one device subscription per connection, fanned out to every subscriber.
 
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
+from typing import TYPE_CHECKING
 
 from . import protocol
 from .discovery import discover, find_by_device_number, find_by_uid, select_sole_device
@@ -45,6 +47,11 @@ from .types import (
     TsStatus,
     VersionInfo,
 )
+
+if TYPE_CHECKING:
+    # Annotation-only (annotations are not evaluated at runtime here), so
+    # this adds no runtime dependency; `typing.Self` needs Python 3.11.
+    from typing_extensions import Self
 
 
 class EventSubscription:
@@ -79,7 +86,7 @@ class EventSubscription:
         connection itself is closed."""
         self._connection._unsubscribe(self)
 
-    def __enter__(self) -> EventSubscription:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -166,12 +173,10 @@ class Connection:
         return version
 
     def _close_transport_after_failure(self) -> None:
-        try:
+        # The handshake error is the one the caller needs; a failure to
+        # close a port that already failed to answer adds nothing.
+        with contextlib.suppress(SdkError):
             self._transport.close()
-        except SdkError:
-            # The handshake error is the one the caller needs; a failure to
-            # close a port that already failed to answer adds nothing.
-            pass
 
     @property
     def protocol_version(self) -> int:
@@ -206,7 +211,7 @@ class Connection:
             heartbeat._signal_stop()
         self._transport.close()
 
-    def __enter__(self) -> Connection:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:

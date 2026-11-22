@@ -127,10 +127,14 @@ def test_load_safety_accepts_a_file_written_with_a_byte_order_mark(tmp_path):
 
 
 def test_non_ascii_digits_in_a_pin_name_are_invalid():
-    src = 'version = 2\n[[exclusive]]\npins = ["GP١", "GP3"]\n'
+    # U+0661 ARABIC-INDIC DIGIT ONE is the input under test: a digit to
+    # str.isdigit() but not a pin number. The look-alike is the point, so
+    # RUF001 (ambiguous character) is expected on exactly these two literals.
+    src = 'version = 2\n[[exclusive]]\npins = ["GP١", "GP3"]\n'  # noqa: RUF001
     with pytest.raises(config.ConfigError) as info:
         config.parse_safety(src, "s.toml")
-    assert info.value.message == 'exclusive group 1: invalid pin "GP١" in pins'
+    expected = 'exclusive group 1: invalid pin "GP١" in pins'  # noqa: RUF001
+    assert info.value.message == expected
 
 
 def test_seventeen_groups_are_reported_before_a_fault_inside_one():

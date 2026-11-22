@@ -17,7 +17,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "ruff",
+    # Pinned exactly: ruff's default rule set and formatter output change
+    # between releases, so an unpinned linter makes the gate non-deterministic.
+    "ruff==0.17.6",
 ]
 
 [tool.setuptools.packages.find]
@@ -26,3 +28,53 @@ where = ["src"]
 [tool.pytest.ini_options]
 # scripts/ holds hardware tools (some named test_*.py) that need real devices.
 testpaths = ["tests"]
+
+[tool.ruff]
+# The gate is `ruff check .` + `ruff format --check .` with the ruff version
+# pinned in [project.optional-dependencies].dev (and uv.lock).
+required-version = "==0.17.6"
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+# The rule set is chosen here, never inherited from ruff's defaults (which
+# differ between ruff releases).
+select = [
+    "F",    # pyflakes
+    "E4",   # pycodestyle: imports
+    "E7",   # pycodestyle: statements
+    "E9",   # pycodestyle: syntax / IO errors
+    "W",    # pycodestyle warnings
+    "I",    # import order
+    "B",    # bugbear: likely bugs
+    "UP",   # idioms available on the minimum Python (3.10)
+    "SIM",  # needless complexity
+    "C4",   # comprehensions / collection literals
+    "PIE",  # misc. redundant code
+    "PYI",  # typing correctness of the public API (e.g. `Self` returns)
+    "ISC",  # implicit string concatenation (silent missing-comma bugs)
+    "FURB", # modern stdlib replacements
+    "RUF",  # ruff-specific correctness rules
+    "BLE",  # no blind `except Exception` ("no silent error suppression")
+    "S110", # no try/except/pass
+    "S112", # no try/except/continue
+    "EXE",  # shebang <-> executable bit consistency of scripts/
+    "PLC",  # pylint conventions
+    "PLE",  # pylint errors
+    "PLW",  # pylint warnings
+    "PLR0402", # `import a.b as b` -> `from a import b`
+    "PLR1",    # pylint refactors that are not size thresholds
+    "PLR5501", # collapsible else-if
+]
+# Deliberately not selected:
+# - E1/E2/E3/E5 (layout, line length): layout is owned by `ruff format`;
+#   E501 would only flag the long string literals the formatter keeps intact.
+# - S other than S110/S112 (flake8-bandit): the SDK has no subprocess,
+#   network, crypto or deserialisation surface, and S101 contradicts the
+#   pytest-style `assert`s used by tests/ and the hardware check scripts.
+# - PLR09xx / PLR2004 / C90 (size and magic-number thresholds): the protocol
+#   parsers branch per field by nature and no complexity budget has been
+#   agreed for this SDK; adopting one is a separate decision.
+# - D, ANN, T20, N, PT, TRY, EM, FBT, ARG, SLF, COM, PERF, TC, PTH: style
+#   policies this repo has not adopted (e.g. the scripts print by design,
+#   `ConnectionError_` / `TimeoutError_` are public API names).

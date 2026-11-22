@@ -81,10 +81,12 @@ def run_benchmark(
             "map default",
         ]:
             for d in [dev1, dev2]:
+                # Best-effort restore: keep going so the remaining commands
+                # and both close() calls still run, but say what failed.
                 try:
                     d.raw(cmd)
-                except Exception:
-                    pass
+                except tcapi.SdkError as e:
+                    print(f"cleanup {cmd!r} failed: {e}", file=sys.stderr)
         dev1.close()
         dev2.close()
 
@@ -234,7 +236,7 @@ def _run(
     )
 
     if verbose:
-        for i, (g, d) in enumerate(zip(paired, diffs_ns)):
+        for i, (g, d) in enumerate(zip(paired, diffs_ns, strict=True)):
             e0, e1 = g.events
             rec = "REC" if g.reconciled else "raw"
             print(

@@ -94,6 +94,18 @@ pre-commit:
         fi
       fail_text: "TypeScript type checking failed."
 
+    py-lint:
+      glob: "sdk/python/{**/*.py,pyproject.toml}"
+      run: |
+        cd sdk/python
+        if [ ! -x .venv/bin/ruff ]; then
+          echo "ERROR: sdk/python/.venv/bin/ruff not found."
+          echo "Create the venv and install the dev extra (pip install -e '.[dev]')."
+          exit 1
+        fi
+        .venv/bin/ruff check . && .venv/bin/ruff format --check .
+      fail_text: "ruff failed. Fix the findings ('ruff check .') and formatting ('ruff format .') in sdk/python."
+
 pre-push:
   parallel: false
   commands:

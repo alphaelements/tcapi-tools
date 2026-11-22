@@ -173,15 +173,19 @@ def _finish_group(events: list[SourceEvent], ts_res_ns: int) -> ReconcileGroup:
         reconciled_ns, reconciled, warning = (
             as_is,
             False,
-            "sync_active=0 across different devices; independent TIMER0 bases, "
-            "no correction applied",
+            (
+                "sync_active=0 across different devices; independent TIMER0 bases, "
+                "no correction applied"
+            ),
         )
     elif k > MAX_EXHAUSTIVE_K:
         reconciled_ns, reconciled, warning = (
             as_is,
             False,
-            f"group size {k} exceeds exhaustive-search limit {MAX_EXHAUSTIVE_K}; "
-            "no correction applied",
+            (
+                f"group size {k} exceeds exhaustive-search limit {MAX_EXHAUSTIVE_K}; "
+                "no correction applied"
+            ),
         )
     else:
         pairs = [(e.raw_count, e.raw_phase) for e in events]

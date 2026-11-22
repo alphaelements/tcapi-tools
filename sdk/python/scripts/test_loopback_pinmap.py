@@ -412,7 +412,7 @@ def run_pattern_write_busy_test(
         dev1.write(0x01, 0x01)
         dev1.pattern_stop()
         return False, "write succeeded during pattern (expected BUSY error)"
-    except Exception as e:
+    except tcapi.SdkError as e:
         dev1.pattern_stop()
         err_str = str(e)
         if "BUSY" in err_str:
@@ -577,7 +577,9 @@ def main() -> None:
 
                 wd.write(pat.clear_values, pat.clear_mask)
 
-            except Exception as e:
+            # A device/SDK error fails this case and the run continues;
+            # anything else is a bug in this script and must stop it.
+            except tcapi.SdkError as e:
                 failed += 1
                 msg = f"  ERROR {pat.name}: {e}"
                 print(msg)
@@ -595,7 +597,7 @@ def main() -> None:
                 msg = f"  FAIL  {test_name}: write succeeded on all-IN map (expected error)"
                 print(msg)
                 errors.append(msg)
-            except Exception as e:
+            except tcapi.SdkError as e:
                 if "NO_RESOURCE" in str(e):
                     passed += 1
                     print(f"  PASS  {test_name}: write correctly rejected ({e})")
@@ -604,7 +606,7 @@ def main() -> None:
                     msg = f"  FAIL  {test_name}: unexpected error: {e}"
                     print(msg)
                     errors.append(msg)
-        except Exception as e:
+        except tcapi.SdkError as e:
             failed += 1
             msg = f"  ERROR {test_name}: {e}"
             print(msg)
@@ -632,7 +634,7 @@ def main() -> None:
                     fmsg = f"  FAIL  {test_name}: {msg}"
                     print(fmsg)
                     errors.append(fmsg)
-            except Exception as e:
+            except tcapi.SdkError as e:
                 failed += 1
                 fmsg = f"  ERROR {test_name}: {e}"
                 print(fmsg)
@@ -663,7 +665,7 @@ def main() -> None:
                     fmsg = f"  FAIL  {test_name}: {msg}"
                     print(fmsg)
                     errors.append(fmsg)
-            except Exception as e:
+            except tcapi.SdkError as e:
                 failed += 1
                 fmsg = f"  ERROR {test_name}: {e}"
                 print(fmsg)
@@ -672,10 +674,12 @@ def main() -> None:
     finally:
         for cmd in ["ts disarm", "pattern stop", "map default"]:
             for d in [dev1, dev2]:
+                # Best-effort restore: keep going so the remaining commands
+                # and both close() calls still run, but say what failed.
                 try:
                     d.raw(cmd)
-                except Exception:
-                    pass
+                except tcapi.SdkError as e:
+                    print(f"cleanup {cmd!r} failed: {e}", file=sys.stderr)
         dev1.close()
         dev2.close()
 

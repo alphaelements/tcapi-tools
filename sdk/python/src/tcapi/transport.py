@@ -31,9 +31,14 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import serial
+
+if TYPE_CHECKING:
+    # Annotation-only (annotations are not evaluated at runtime here), so
+    # this adds no runtime dependency; `typing.Self` needs Python 3.11.
+    from typing_extensions import Self
 
 from .errors import (
     DisconnectedError,
@@ -191,7 +196,7 @@ class Transport:
         except Exception as exc:  # port may already be gone
             raise IoError(f"failed to close port: {exc}") from exc
 
-    def __enter__(self) -> Transport:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -272,7 +277,10 @@ class Transport:
         self._shutdown.set()
         try:
             self._port.close()
-        except Exception as exc:
+        # Not swallowed: whatever the port backend raises on close is
+        # converted to the DisconnectedError this method always ends in,
+        # with the close failure in the message and the stream error as cause.
+        except Exception as exc:  # noqa: BLE001
             raise DisconnectedError(
                 f"{reason}; closing the port failed: {exc}"
             ) from cause
@@ -320,7 +328,12 @@ class Transport:
         while not self._shutdown.is_set():
             try:
                 chunk = self._port.read(256)
-            except Exception:
+            # Thread boundary: port backends raise more than OSError here
+            # (pyserial raises TypeError when the port is closed under a
+            # blocked read). Any read failure must end the loop and set
+            # `_disconnected` below; an exception escaping this thread would
+            # leave callers waiting on a connection that is already dead.
+            except Exception:  # noqa: BLE001
                 break  # fatal I/O error: device gone
             if chunk is None:
                 continue
