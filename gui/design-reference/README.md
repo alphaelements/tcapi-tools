@@ -1,7 +1,8 @@
 # GUI Design Reference
 
-Canonical UI reference for the Tcapi Tools GUI — the original prototype
-sources, byte-identical to the designer's `tcapi.zip` drop. The
+Canonical UI reference for the Tcapi Tools GUI — the designer's prototype
+sources, kept in sync with the product's current naming rather than as an
+untouched copy of the original drop. The
 production GUI must match this prototype exactly. Open `index.html` in
 a browser to run it (loads React 18 UMD / Babel / fonts from CDN; a
 fully self-contained 1.6 MB variant lives outside git in
