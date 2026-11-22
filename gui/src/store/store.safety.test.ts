@@ -27,7 +27,7 @@ vi.mock("../lib/tauri", () => ({
 // The stream clock is not under test: its frame loop never ticks.
 vi.stubGlobal("requestAnimationFrame", () => 0);
 
-const { PochiStore } = await import("./store");
+const { TcapiStore } = await import("./store");
 
 const SAFE_OFF = {
   wdog_ms: 0,
@@ -64,7 +64,7 @@ function healthy(features: number, overrides: Record<string, Handler> = {}) {
 }
 
 async function connect() {
-  const store = PochiStore;
+  const store = TcapiStore;
   store.get().devices = [{ uid: "u", num: 1, port: "/dev/x", fw: "0.1.3" }];
   await store.connect("u");
   expect(store.get().connStatus).toBe("connected");
@@ -76,7 +76,7 @@ async function connect() {
 beforeEach(async () => {
   calls.length = 0;
   healthy(FEATURES_ALL);
-  await PochiStore.disconnect();
+  await TcapiStore.disconnect();
 });
 
 describe("connect reads the safety state per feature bit", () => {
@@ -98,7 +98,7 @@ describe("connect reads the safety state per feature bit", () => {
     expect(calls.map((c) => c.cmd)).not.toContain("get_safety");
     expect(calls.map((c) => c.cmd)).not.toContain("excl_get");
     expect(S.safety.state).toBeNull();
-    expect(PochiStore.safetyFeatures().any).toBe(false);
+    expect(TcapiStore.safetyFeatures().any).toBe(false);
   });
 
   it("asks only for what a partial device has", async () => {
@@ -110,13 +110,13 @@ describe("connect reads the safety state per feature bit", () => {
 });
 
 describe("push events", () => {
-  it("shows the latch on pochi://failsafe and stops the pattern state", async () => {
+  it("shows the latch on tcapi://failsafe and stops the pattern state", async () => {
     healthy(FEATURES_ALL, {
       get_safety: () => ({ ...SAFE_OFF, wdog_ms: 100, failsafe: true, cause: "wdog" }),
     });
     const store = await connect();
     store.get().pattern.playState = "running";
-    listeners.get("pochi://failsafe")?.({ cause: "wdog" });
+    listeners.get("tcapi://failsafe")?.({ cause: "wdog" });
     expect(store.get().safety.state?.failsafe).toBe(true);
     expect(store.get().safety.state?.cause).toBe("wdog");
     expect(store.get().pattern.playState).toBe("idle");
@@ -126,7 +126,7 @@ describe("push events", () => {
   it("marks the heartbeat failed with the backend message", async () => {
     healthy(FEATURES_ALL, { get_safety: () => ({ ...SAFE_OFF, wdog_ms: 400 }) });
     const store = await connect();
-    listeners.get("pochi://heartbeat-failed")?.({ message: "ping: timeout waiting for response" });
+    listeners.get("tcapi://heartbeat-failed")?.({ message: "ping: timeout waiting for response" });
     expect(store.get().safety.heartbeat).toBe("failed");
     expect(store.get().safety.heartbeatError).toBe("ping: timeout waiting for response");
     // A later refresh does not hide the failure while the watchdog is on.
@@ -140,7 +140,7 @@ describe("push events", () => {
       get_safety: () => ({ ...SAFE_OFF, wdog_ms: 400 }),
     });
     const store = await connect();
-    listeners.get("pochi://heartbeat-failed")?.({ message: "x" });
+    listeners.get("tcapi://heartbeat-failed")?.({ message: "x" });
     await store.setWatchdog(400);
     expect(store.get().safety.heartbeat).toBe("running");
     expect(store.get().safety.heartbeatError).toBeNull();

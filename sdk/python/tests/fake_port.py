@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 
 class FakePort:
-    """Duplex in-memory port satisfying ``pochi.transport.PortLike``.
+    """Duplex in-memory port satisfying ``tcapi.transport.PortLike``.
     ``read`` blocks with the configured timeout; ``feed`` injects
     device -> host lines; written host -> device lines invoke
     ``on_command``."""

@@ -1,4 +1,4 @@
-//! High-level typed connection to one Pochi-DIO device.
+//! High-level typed connection to one Tcapi-DIO device.
 
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -14,7 +14,7 @@ use crate::types::{
     VersionInfo, PROTO_VERSION,
 };
 
-/// An open connection to a Pochi-DIO device.
+/// An open connection to a Tcapi-DIO device.
 ///
 /// Opening asserts DTR and checks `version`: a device that does not report
 /// `proto=2` is refused with [`SdkError::UnsupportedFirmware`]. The

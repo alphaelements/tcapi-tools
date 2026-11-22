@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Check that a repository's license declarations match its license policy (ST-DCIT-018a).
 
-Two policies exist in the Pochi family:
+Two policies exist in the Tcapi family:
 
-  proprietary  -- closed-source firmware repos (pochi-dio, incl. sim/).
+  proprietary  -- closed-source firmware repos (tcapi-dio, incl. sim/).
                   LICENSE is an "All rights reserved" notice; Cargo packages use
                   `license-file` (pointing at that LICENSE) plus `publish = false`
                   and carry no SPDX `license`; no open-source license text or
                   claim appears anywhere in the declarations.
-  apache-2.0   -- public repos (pochi-cli, pochi-tools). LICENSE is the full
+  apache-2.0   -- public repos (tcapi-cli, tcapi-tools). LICENSE is the full
                   Apache-2.0 text; every manifest that declares a license
                   declares exactly `Apache-2.0` (no `MIT OR Apache-2.0`);
                   LICENSE-MIT / LICENSE-APACHE are gone.
@@ -156,7 +156,7 @@ def check_license_file(root: Path, policy: str):
         if "all rights reserved" not in text.lower():
             out.append("LICENSE: must state 'All rights reserved'")
         if OPEN_SOURCE_TEXT.search(text):
-            out.append("LICENSE: contains open-source license text; pochi-dio is proprietary")
+            out.append("LICENSE: contains open-source license text; tcapi-dio is proprietary")
         return out
     required = ("Apache License", "Version 2.0, January 2004", "TERMS AND CONDITIONS FOR USE, REPRODUCTION")
     if not all(marker in text for marker in required) or len(text) < 5000:

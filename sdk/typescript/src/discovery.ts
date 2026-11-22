@@ -10,8 +10,8 @@ import { assertSupportedProtocol, parseInfo, parseVersion } from "./protocol.js"
 import { Transport } from "./transport.js";
 import type { DeviceInfo } from "./types.js";
 
-const POCHI_VID = "2e8a";
-const POCHI_PID = "1175";
+const TCAPI_VID = "2e8a";
+const TCAPI_PID = "1175";
 
 /** A port that matched the USB filter but could not be probed. */
 export interface ProbeFailure {
@@ -36,20 +36,20 @@ export interface UsbPortInfo {
 }
 
 /**
- * True if the USB descriptor identifies a Pochi-DIO. node-serialport
+ * True if the USB descriptor identifies a Tcapi-DIO. node-serialport
  * exposes no product string on Linux, so the product check uses pnpId
- * (e.g. `usb-Raspberry_Pi_Pochi-DIO_<uid>-if00`).
+ * (e.g. `usb-Raspberry_Pi_Tcapi-DIO_<uid>-if00`).
  */
-export function matchesPochi(info: UsbPortInfo): boolean {
-  if (info.vendorId?.toLowerCase() !== POCHI_VID) return false;
-  if (info.productId?.toLowerCase() !== POCHI_PID) return false;
+export function matchesTcapi(info: UsbPortInfo): boolean {
+  if (info.vendorId?.toLowerCase() !== TCAPI_VID) return false;
+  if (info.productId?.toLowerCase() !== TCAPI_PID) return false;
   const pnp = info.pnpId ?? "";
-  return pnp.includes("Pochi");
+  return pnp.includes("Tcapi");
 }
 
 /**
- * List serial port paths whose USB descriptors match a Pochi-DIO
- * (VID 0x2E8A / PID 0x1175 / product "Pochi*").
+ * List serial port paths whose USB descriptors match a Tcapi-DIO
+ * (VID 0x2E8A / PID 0x1175 / product "Tcapi*").
  * No ports are opened. Results are sorted by port path: the OS
  * enumeration order is unspecified, and callers rely on a deterministic
  * device order.
@@ -57,7 +57,7 @@ export function matchesPochi(info: UsbPortInfo): boolean {
 export async function enumeratePorts(): Promise<string[]> {
   const ports = await SerialPort.list();
   return ports
-    .filter((p) => matchesPochi(p))
+    .filter((p) => matchesTcapi(p))
     .map((p) => p.path)
     .sort();
 }
@@ -94,7 +94,7 @@ export async function probeTransport(
 }
 
 /**
- * Enumerate and probe all connected Pochi-DIO devices, reporting probe
+ * Enumerate and probe all connected Tcapi-DIO devices, reporting probe
  * failures alongside successes.
  */
 export async function discoverDetailed(): Promise<Discovery> {
@@ -114,7 +114,7 @@ export async function discoverDetailed(): Promise<Discovery> {
 }
 
 /**
- * Enumerate and probe all connected Pochi-DIO devices. Convenience
+ * Enumerate and probe all connected Tcapi-DIO devices. Convenience
  * wrapper over `discoverDetailed` that returns devices only.
  */
 export async function discover(): Promise<DeviceInfo[]> {
@@ -126,7 +126,7 @@ export function findByUid(devices: DeviceInfo[], uid: string): DeviceInfo {
   const upper = uid.toUpperCase();
   const device = devices.find((d) => d.uid.toUpperCase() === upper);
   if (!device) {
-    throw new SdkError(ErrorCode.NoDevice, `no Pochi-DIO device with UID ${uid}`);
+    throw new SdkError(ErrorCode.NoDevice, `no Tcapi-DIO device with UID ${uid}`);
   }
   return device;
 }
@@ -138,7 +138,7 @@ export function findByUid(devices: DeviceInfo[], uid: string): DeviceInfo {
 export function findByDeviceNumber(devices: DeviceInfo[], n: number): DeviceInfo {
   const matches = devices.filter((d) => d.deviceNumber === n);
   if (matches.length === 0) {
-    throw new SdkError(ErrorCode.NoDevice, `no Pochi-DIO device with device number ${n}`);
+    throw new SdkError(ErrorCode.NoDevice, `no Tcapi-DIO device with device number ${n}`);
   }
   if (matches.length > 1) {
     throw new SdkError(
@@ -152,12 +152,12 @@ export function findByDeviceNumber(devices: DeviceInfo[], n: number): DeviceInfo
 /** Select the only device, erroring when there are zero or several. */
 export function selectSoleDevice(devices: DeviceInfo[]): DeviceInfo {
   if (devices.length === 0) {
-    throw new SdkError(ErrorCode.NoDevice, "no Pochi-DIO device found");
+    throw new SdkError(ErrorCode.NoDevice, "no Tcapi-DIO device found");
   }
   if (devices.length > 1) {
     throw new SdkError(
       ErrorCode.MultipleDevices,
-      `${devices.length} Pochi-DIO devices found; specify UID, device number, or port`,
+      `${devices.length} Tcapi-DIO devices found; specify UID, device number, or port`,
     );
   }
   return devices[0];

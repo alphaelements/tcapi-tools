@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use pochi_sdk::{Connection, DeviceInfo};
+use tcapi_sdk::{Connection, DeviceInfo};
 
 /// Backend state behind the Tauri-managed handle. One connection at a time;
 /// `device_info` mirrors the connected device for status queries.

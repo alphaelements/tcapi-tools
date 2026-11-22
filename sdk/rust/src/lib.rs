@@ -1,4 +1,4 @@
-//! Rust SDK for Pochi-DIO — RP2350-based high-speed digital I/O unit.
+//! Rust SDK for Tcapi-DIO — RP2350-based high-speed digital I/O unit.
 //!
 //! Talks the USB CDC **text command mode** (`{cmd}\r\n` → `OK ...` /
 //! `ERR ...`, push lines `! ...`). Speaks protocol v2 only (`proto=2`); there is no
@@ -7,14 +7,14 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use pochi_sdk::{discover, Connection};
+//! use tcapi_sdk::{discover, Connection};
 //!
 //! let devices = discover()?;
 //! let mut conn = Connection::open(&devices[0].port)?;
 //! let caps = conn.caps()?;
 //! conn.write(0x05, 0x0F)?;
 //! let inputs = conn.read()?;
-//! # Ok::<(), pochi_sdk::SdkError>(())
+//! # Ok::<(), tcapi_sdk::SdkError>(())
 //! ```
 
 pub mod config;

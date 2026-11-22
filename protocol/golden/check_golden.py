@@ -214,7 +214,7 @@ if len(set(stamps.values())) > 1:
 unstamped = sorted(name for name, stamp in stamps.items() if stamp.endswith("+wt"))
 if unstamped:
     warnings.append(f"fw_commit is not stamped yet in {len(unstamped)} file(s) "
-                    "(run scripts/stamp-golden-fw-commit.sh in pochi-dio after committing the revision)")
+                    "(run scripts/stamp-golden-fw-commit.sh in tcapi-dio after committing the revision)")
 
 
 def check_error_table(readme):

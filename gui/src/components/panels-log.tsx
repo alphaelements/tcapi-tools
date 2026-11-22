@@ -4,7 +4,7 @@
 // ESM/TSX conversion; raw() now reaches the device).
 // ============================================================
 import { useEffect, useRef, useState } from "react";
-import { fmt, LogDirection, PochiStore, useStore } from "../store/store";
+import { fmt, LogDirection, TcapiStore, useStore } from "../store/store";
 
 const DIR_STYLE: Record<LogDirection, { prefix: string; color: string; text: string }> = {
   sent: { prefix: ">", color: "var(--accent)", text: "#c4b5fd" },
@@ -15,7 +15,7 @@ const DIR_STYLE: Record<LogDirection, { prefix: string; color: string; text: str
 
 export function CommandLog({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   useStore(["log", "conn"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [auto, setAuto] = useState(true);
   const [input, setInput] = useState("");
@@ -30,7 +30,7 @@ export function CommandLog({ collapsed, onToggle }: { collapsed: boolean; onTogg
     if (!input.trim()) return;
     histRef.current.push(input);
     hi.current = histRef.current.length;
-    void PochiStore.raw(input);
+    void TcapiStore.raw(input);
     setInput("");
   }
   function onKey(e: React.KeyboardEvent) {
@@ -53,7 +53,7 @@ export function CommandLog({ collapsed, onToggle }: { collapsed: boolean; onTogg
           autoscroll
         </label>
         <button className="btn ghost sm" onClick={() => { void navigator.clipboard?.writeText(S.log.map((e) => `${DIR_STYLE[e.direction].prefix} ${e.text}`).join("\n")); }}>Copy</button>
-        <button className="btn ghost sm" onClick={() => PochiStore.clearLog()}>Clear</button>
+        <button className="btn ghost sm" onClick={() => TcapiStore.clearLog()}>Clear</button>
       </div>
       {!collapsed && (
         <>

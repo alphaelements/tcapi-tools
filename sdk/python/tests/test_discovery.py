@@ -3,40 +3,40 @@
 
 import pytest
 
-import pochi.discovery as discovery
-from pochi.errors import (
+import tcapi.discovery as discovery
+from tcapi.errors import (
     MultipleDevicesError,
     NoDeviceError,
     UnsupportedFirmwareError,
 )
-from pochi.transport import Transport
-from pochi.types import DeviceInfo
+from tcapi.transport import Transport
+from tcapi.types import DeviceInfo
 
 from .fake_port import FakePort
 from .golden import ReplayPort, find_case
 
 
-class TestMatchesPochi:
-    def test_pochi_product(self):
-        assert discovery.matches_pochi(0x2E8A, 0x1175, "Pochi-DIO")
-        assert discovery.matches_pochi(0x2E8A, 0x1175, "Pochi")
+class TestMatchesTcapi:
+    def test_tcapi_product(self):
+        assert discovery.matches_tcapi(0x2E8A, 0x1175, "Tcapi-DIO")
+        assert discovery.matches_tcapi(0x2E8A, 0x1175, "Tcapi")
 
     def test_missing_product_string_is_accepted_when_vid_pid_match(self):
-        # "if the operating system provides a product string, it starts with Pochi"
-        assert discovery.matches_pochi(0x2E8A, 0x1175, None)
+        # "if the operating system provides a product string, it starts with Tcapi"
+        assert discovery.matches_tcapi(0x2E8A, 0x1175, None)
 
     @pytest.mark.parametrize(
-        "product", ["Tachyon-DIO", "Tachyon", "Debugprobe", "pochi", ""]
+        "product", ["Tachyon-DIO", "Tachyon", "Debugprobe", "tcapi", ""]
     )
     def test_other_product_names_are_rejected(self, product):
-        assert not discovery.matches_pochi(0x2E8A, 0x1175, product)
+        assert not discovery.matches_tcapi(0x2E8A, 0x1175, product)
 
     @pytest.mark.parametrize(
         "vid,pid",
         [(0x2E8A, 0x000C), (0x1234, 0x1175), (None, None), (0x2E8A, None)],
     )
     def test_vid_pid_must_match(self, vid, pid):
-        assert not discovery.matches_pochi(vid, pid, "Pochi-DIO")
+        assert not discovery.matches_tcapi(vid, pid, "Tcapi-DIO")
 
 
 def patch_transport(monkeypatch, ports: dict[str, FakePort]):

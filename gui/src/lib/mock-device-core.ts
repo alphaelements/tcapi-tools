@@ -1,5 +1,5 @@
 // ============================================================
-// mock-device-core.ts — virtual Pochi-DIO speaking the v2 text protocol
+// mock-device-core.ts — virtual Tcapi-DIO speaking the v2 text protocol
 //
 // The model behind the browser-only mock device (mock-device.ts). It is a
 // text-line device: `execute("map get")` returns the wire lines a firmware

@@ -13,23 +13,23 @@ import { parseHexInput } from "../lib/fmt";
 import type { ChannelFlag, PullDir } from "../lib/pinmap";
 import { chBit, pinLabel } from "../lib/pins";
 import { tauriAvailable } from "../lib/tauri";
-import { NUM_PINS, PochiStore, useStore } from "../store/store";
+import { NUM_PINS, TcapiStore, useStore } from "../store/store";
 import { OutputsDefaultButton } from "./panels-safety";
 
 // ---------------- OutputControl ----------------
 export function OutputControl() {
   useStore(["pins", "map", "conn", "pattern"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const connected = S.connStatus === "connected";
   const locked = S.pattern.playState === "running";
-  const outs = PochiStore.outputChannels();
+  const outs = TcapiStore.outputChannels();
   const [hex, setHex] = useState("");
 
   const disabled = !connected || outs.length === 0 || locked;
 
   function submitHex() {
     const v = parseHexInput(hex);
-    if (v !== null) void PochiStore.writeHex(v);
+    if (v !== null) void TcapiStore.writeHex(v);
   }
 
   return (
@@ -51,15 +51,15 @@ export function OutputControl() {
               <span className={"dot-led " + (on ? "on" : "low")}></span>
               <span className="mono" style={{ fontSize: 10.5, color: on ? "var(--high)" : "var(--text-dim)", width: 34 }}>{on ? "HIGH" : "LOW"}</span>
               <div style={{ flex: 1 }} />
-              <span className={"switch " + (on ? "on" : "")} onClick={() => !disabled && void PochiStore.toggleOutput(ch)} style={{ opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? "none" : "auto" }}></span>
+              <span className={"switch " + (on ? "on" : "")} onClick={() => !disabled && void TcapiStore.toggleOutput(ch)} style={{ opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? "none" : "auto" }}></span>
             </div>
           );
         })}
       </div>
       <div style={{ display: "flex", gap: 6 }}>
-        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={disabled} onClick={() => void PochiStore.setAllOutputs(true)}>All HIGH</button>
-        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={disabled} onClick={() => void PochiStore.setAllOutputs(false)}>All LOW</button>
-        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={disabled} onClick={() => void PochiStore.invertOutputs()}>Invert</button>
+        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={disabled} onClick={() => void TcapiStore.setAllOutputs(true)}>All HIGH</button>
+        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={disabled} onClick={() => void TcapiStore.setAllOutputs(false)}>All LOW</button>
+        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={disabled} onClick={() => void TcapiStore.invertOutputs()}>Invert</button>
       </div>
       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
         <span className="eyebrow">write</span>
@@ -86,19 +86,19 @@ function FlagCell({ ch, flag, label, applies, on }: { ch: number; flag: ChannelF
   if (!applies) return <span className="mono dim" style={{ textAlign: "center", fontSize: 10 }}>—</span>;
   return (
     <input type="checkbox" checked={on} aria-label={`${pinLabel(ch)} ${label}`} data-testid={`map-${flag}-${ch}`}
-      onChange={(e) => PochiStore.setChannelFlag(ch, flag, e.target.checked)}
+      onChange={(e) => TcapiStore.setChannelFlag(ch, flag, e.target.checked)}
       style={{ margin: "0 auto", accentColor: "var(--accent)" }} />
   );
 }
 
 function MapRow({ ch }: { ch: number }) {
-  const c = PochiStore.channelConfig(ch);
+  const c = TcapiStore.channelConfig(ch);
   const isOut = c.role === "output";
   return (
     <div data-testid={`map-row-${ch}`} style={{ display: "grid", gridTemplateColumns: GRID, gap: 4, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border-soft)" }}>
       <span className="mono" style={{ fontSize: 10.5, fontWeight: 600 }}>{pinLabel(ch)}</span>
       <button className={"chip " + (isOut ? "out" : "in")} data-testid={`map-role-${ch}`} title={`${pinLabel(ch)}: click to make it an ${isOut ? "input" : "output"}`}
-        onClick={() => PochiStore.setChannelRole(ch, isOut ? "input" : "output")}
+        onClick={() => TcapiStore.setChannelRole(ch, isOut ? "input" : "output")}
         style={{ fontSize: 8.5, padding: "1px 4px", cursor: "pointer", justifyContent: "center" }}>
         {isOut ? "OUT" : "IN"}
       </button>
@@ -106,7 +106,7 @@ function MapRow({ ch }: { ch: number }) {
         <span className="mono dim" style={{ textAlign: "center", fontSize: 10 }}>—</span>
       ) : (
         <select className="field" aria-label={`${pinLabel(ch)} pull`} data-testid={`map-pull-${ch}`} value={c.pull}
-          onChange={(e) => PochiStore.setChannelPull(ch, e.target.value as PullDir)}
+          onChange={(e) => TcapiStore.setChannelPull(ch, e.target.value as PullDir)}
           style={{ padding: "1px 2px", fontSize: 10 }}>
           {PULL_DIRS.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
@@ -121,18 +121,18 @@ function MapRow({ ch }: { ch: number }) {
 
 export function PinMapEditor() {
   useStore(["map", "conn"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const connected = S.connStatus === "connected";
-  const outCount = PochiStore.outputChannels().length;
+  const outCount = TcapiStore.outputChannels().length;
   const channels = Array.from({ length: NUM_PINS }, (_, ch) => ch);
 
   async function loadToml() {
     if (!tauriAvailable) {
-      PochiStore.addLog("error", "map load: file dialog requires the Tauri runtime");
+      TcapiStore.addLog("error", "map load: file dialog requires the Tauri runtime");
       return;
     }
     const path = await open({ filters: [{ name: "TOML", extensions: ["toml"] }], multiple: false });
-    if (typeof path === "string") await PochiStore.loadMapToml(path);
+    if (typeof path === "string") await TcapiStore.loadMapToml(path);
   }
 
   return (
@@ -156,9 +156,9 @@ export function PinMapEditor() {
       <span className="mono dim" data-testid="map-flags" style={{ fontSize: 10 }}>flags 0x{S.map.flags.toString(16).padStart(2, "0")} (reserved)</span>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-        <button className="btn primary sm" style={{ justifyContent: "center" }} onClick={() => void PochiStore.applyMap()}>Apply</button>
-        <button className="btn sm" style={{ justifyContent: "center" }} onClick={() => void PochiStore.saveMap()}>Save to Flash</button>
-        <button className="btn sm" style={{ justifyContent: "center" }} onClick={() => void PochiStore.defaultMap()}>Reset Default</button>
+        <button className="btn primary sm" style={{ justifyContent: "center" }} onClick={() => void TcapiStore.applyMap()}>Apply</button>
+        <button className="btn sm" style={{ justifyContent: "center" }} onClick={() => void TcapiStore.saveMap()}>Save to Flash</button>
+        <button className="btn sm" style={{ justifyContent: "center" }} onClick={() => void TcapiStore.defaultMap()}>Reset Default</button>
         <button className="btn sm" style={{ justifyContent: "center" }} onClick={() => void loadToml()}>Load TOML…</button>
       </div>
     </div>

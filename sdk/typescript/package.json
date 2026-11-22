@@ -1,7 +1,7 @@
 {
-  "name": "@pochi/sdk",
+  "name": "@alphaelements/tcapi-sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for Pochi-DIO (RP2350 high-speed digital I/O unit)",
+  "description": "TypeScript SDK for Tcapi-DIO (RP2350 high-speed digital I/O unit)",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",

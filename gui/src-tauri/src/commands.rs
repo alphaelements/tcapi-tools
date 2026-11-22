@@ -1,18 +1,18 @@
 //! Tauri command surface (`docs/gui-feature-spec.md` §9): thin typed
-//! wrappers over `pochi-sdk` calls against the shared connection.
+//! wrappers over `tcapi-sdk` calls against the shared connection.
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use pochi_sdk::reconcile::{self, SourceEvent};
-use pochi_sdk::{
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
+use tcapi_sdk::reconcile::{self, SourceEvent};
+use tcapi_sdk::{
     config, Capabilities, Connection, DeviceInfo, EdgeMode, Feature, IoState, PatternMode,
     PatternStatus, PatternStep, PinMap, SafetyConfig, SafetyState, TimestampResult, VersionInfo,
     TS_GET_MAX,
 };
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
 
 use crate::events::{self, LogPayload};
 use crate::state::{with_state, AppInner, SharedState};
@@ -30,12 +30,12 @@ pub async fn discover(
 ) -> Result<Vec<DeviceInfo>, String> {
     let shared = state.inner().clone();
     with_state(shared, move |_| {
-        let found = pochi_sdk::discover_detailed().map_err(err)?;
+        let found = tcapi_sdk::discover_detailed().map_err(err)?;
         // Matching ports that failed to probe (old firmware, busy port)
         // surface in the command log instead of vanishing silently.
         for failure in &found.failures {
             let _ = app.emit(
-                "pochi://log",
+                "tcapi://log",
                 LogPayload {
                     direction: "error",
                     line: format!("scan {}: {}", failure.port, failure.error),
@@ -421,7 +421,7 @@ pub async fn wdog(app: AppHandle, state: State<'_, SharedState>, ms: u32) -> Res
     .await
 }
 
-/// `safety` — the safety state; the source of truth for `pochi://failsafe`.
+/// `safety` — the safety state; the source of truth for `tcapi://failsafe`.
 #[tauri::command]
 pub async fn get_safety(state: State<'_, SharedState>) -> Result<SafetyState, String> {
     let shared = state.inner().clone();
@@ -760,7 +760,7 @@ pub async fn write_text_file(path: String, contents: String) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pochi_sdk::TimestampEvent;
+    use tcapi_sdk::TimestampEvent;
 
     /// Capabilities.ts_res_ns of the v2 firmware.
     const TS_RES_NS: u32 = 40;

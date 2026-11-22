@@ -1,5 +1,5 @@
 // ============================================================
-// app.jsx — Pochi Tools GUI shell + assembly
+// app.jsx — Tcapi Tools GUI shell + assembly
 // ============================================================
 const { useState, useEffect, useRef } = React;
 
@@ -43,7 +43,7 @@ function Resizer({ dir, onDelta }) {
 // ---------- menu bar ----------
 function MenuBar() {
   useStore(['conn']);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const menus = ['File', 'View', 'Device', 'Tools', 'Help'];
   const [open, setOpen] = useState(null);
   const connected = S.connStatus === 'connected';
@@ -51,7 +51,7 @@ function MenuBar() {
     <div style={{ display: 'flex', alignItems: 'center', height: 38, background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '0 10px', gap: 4, flex: 'none', WebkitAppRegion: 'drag' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 12 }}>
         <Logo />
-        <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: '.01em' }}>Pochi Tools</span>
+        <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: '.01em' }}>Tcapi Tools</span>
       </div>
       <div style={{ display: 'flex', gap: 1 }}>
         {menus.map((m) => (
@@ -119,7 +119,7 @@ function RightDock() {
 // ---------- status bar ----------
 function StatusBar({ fps }) {
   useStore(['conn', 'pins', 'sim']);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const connected = S.connStatus === 'connected';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 0, height: 24, flex: 'none', background: 'var(--surface)', borderTop: '1px solid var(--border)', fontSize: 10.5, color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
@@ -131,7 +131,7 @@ function StatusBar({ fps }) {
       <div style={{ flex: 1 }} />
       <SbItem>{fps} fps</SbItem>
       <SbItem>125 MHz</SbItem>
-      <SbItem accent>Pochi-DIO SDK 0.1.0</SbItem>
+      <SbItem accent>Tcapi-DIO SDK 0.1.0</SbItem>
     </div>
   );
 }
@@ -154,11 +154,11 @@ function App() {
 
   // boot: start sim, scan, auto-connect for a live demo
   useEffect(() => {
-    PochiStore.startLoop();
-    PochiStore.scan();
+    TcapiStore.startLoop();
+    TcapiStore.scan();
     const id = setTimeout(() => {
-      const S = PochiStore.get();
-      if (S.devices[0]) PochiStore.connect(S.devices[0].uid);
+      const S = TcapiStore.get();
+      if (S.devices[0]) TcapiStore.connect(S.devices[0].uid);
     }, 1150);
     return () => clearTimeout(id);
   }, []);

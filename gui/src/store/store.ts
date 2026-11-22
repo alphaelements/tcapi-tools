@@ -161,7 +161,7 @@ export interface SafetyUiState {
   /// Exclusive groups of the device (wire masks, in the order they were set).
   groups: number[];
   heartbeat: HeartbeatStatus;
-  /// Why the heartbeat stopped (`pochi://heartbeat-failed`).
+  /// Why the heartbeat stopped (`tcapi://heartbeat-failed`).
   heartbeatError: string | null;
   /// The last `ERR EXCLUSIVE`, shown by pin name until dismissed.
   violation: ExclusiveViolation | null;
@@ -401,12 +401,12 @@ function createStore() {
     listenersInstalled = true;
 
     void listen<{ direction: LogDirection; line: string }>(
-      "pochi://log",
+      "tcapi://log",
       (p) => log(p.direction, p.line),
     );
 
     void listen<{ inputs: number; timestampUs: number }>(
-      "pochi://input",
+      "tcapi://input",
       (p) => {
         if (S.connStatus !== "connected") return;
         // Lock device time to the stream clock at the first event, then
@@ -421,14 +421,14 @@ function createStore() {
       },
     );
 
-    void listen<{ loops: number }>("pochi://pattern-done", (p) => {
+    void listen<{ loops: number }>("tcapi://pattern-done", (p) => {
       S.pattern.playState = "done";
       S.pattern.loops = p.loops;
       stopPatternPoll();
       bump("pattern");
     });
 
-    void listen<{ loops: number }>("pochi://pattern-timeout", (p) => {
+    void listen<{ loops: number }>("tcapi://pattern-timeout", (p) => {
       S.pattern.playState = "timed_out";
       S.pattern.loops = p.loops;
       stopPatternPoll();
@@ -437,21 +437,21 @@ function createStore() {
 
     // The device latched the failsafe: it already put the outputs at their
     // defaults and stopped a running pattern without any pattern event.
-    void listen<{ cause: FailsafeCause }>("pochi://failsafe", (p) => {
+    void listen<{ cause: FailsafeCause }>("tcapi://failsafe", (p) => {
       onFailsafe(p.cause);
     });
 
     // The host heartbeat stopped on a failure: the watchdog, if enabled,
     // will trip unless the link recovers.
-    void listen<{ message: string }>("pochi://heartbeat-failed", (p) => {
+    void listen<{ message: string }>("tcapi://heartbeat-failed", (p) => {
       S.safety.heartbeat = "failed";
       S.safety.heartbeatError = p.message;
       log("error", `heartbeat: ${p.message}`);
       bump("safety");
     });
 
-    // sync has no GUI yet (not in the mock); surfaced via pochi://log.
-    void listen<{ raw: string }>("pochi://unknown-event", () => {});
+    // sync has no GUI yet (not in the mock); surfaced via tcapi://log.
+    void listen<{ raw: string }>("tcapi://unknown-event", () => {});
   }
 
   /// Apply a `! FAILSAFE` push: show the latch at once, then read the real
@@ -1191,13 +1191,13 @@ function createStore() {
   return actions;
 }
 
-export const PochiStore = createStore();
-export type Store = typeof PochiStore;
+export const TcapiStore = createStore();
+export type Store = typeof TcapiStore;
 
 // React hook: re-render when any of the named version keys change
 export function useStore(keys: VersionKey | VersionKey[]) {
   const k = Array.isArray(keys) ? keys : [keys];
-  return useSyncExternalStore(PochiStore.subscribe, () => PochiStore.snap(k));
+  return useSyncExternalStore(TcapiStore.subscribe, () => TcapiStore.snap(k));
 }
 
 export { fmt };

@@ -1,6 +1,6 @@
 // ============================================================
-// store.jsx — Pochi device simulation + global store
-// Exposes to window: PochiStore, useStore, fmt, SIM
+// store.jsx — Tcapi device simulation + global store
+// Exposes to window: TcapiStore, useStore, fmt, SIM
 // ============================================================
 (function () {
   const NUM_PINS = 23;
@@ -487,19 +487,19 @@
     return actions;
   }
 
-  const PochiStore = createStore();
+  const TcapiStore = createStore();
 
   // React hook: re-render when any of the named version keys change
   function useStore(keys) {
     const k = Array.isArray(keys) ? keys : [keys];
     const React = window.React;
     return React.useSyncExternalStore(
-      PochiStore.subscribe,
-      () => PochiStore.snap(k),
+      TcapiStore.subscribe,
+      () => TcapiStore.snap(k),
     );
   }
 
-  window.PochiStore = PochiStore;
+  window.TcapiStore = TcapiStore;
   window.useStore = useStore;
   window.fmt = fmt;
   window.SIM = { NUM_PINS, GEN_PRESETS, genValue };

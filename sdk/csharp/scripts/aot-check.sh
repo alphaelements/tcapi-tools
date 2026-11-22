@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# NativeAOT / trimming compatibility check of Pochi.Sdk.
+# NativeAOT / trimming compatibility check of Tcapi.Sdk.
 #
-# Publishes the minimal consumer scripts/Pochi.Sdk.AotSmoke (PublishAot, zero
+# Publishes the minimal consumer scripts/Tcapi.Sdk.AotSmoke (PublishAot, zero
 # warnings required: TreatWarningsAsErrors + AOT/trim/single-file analyzers)
 # and runs the result where it can run.
 #
@@ -15,7 +15,7 @@
 #                  arm64 libz in the sysroot (see SYSROOT below); the binary is
 #                  run under qemu-aarch64 when that is installed
 #                  Sysroot recipe (Debian/Ubuntu x64): install the packages above,
-#                  then make $POCHI_ARM64_SYSROOT (default /tmp/sysroot-arm64)
+#                  then make $TCAPI_ARM64_SYSROOT (default /tmp/sysroot-arm64)
 #                  with symlinks usr/aarch64-linux-gnu -> /usr/aarch64-linux-gnu,
 #                  usr/lib and lib -> /usr/aarch64-linux-gnu/lib, usr/include ->
 #                  /usr/aarch64-linux-gnu/include, and put the arm64 libz.so.1
@@ -24,14 +24,14 @@
 #   * any other OS RID: trimmed self-contained publish (ILLink, every warning
 #                  shown, none allowed) instead of a native one; not run.
 #
-# Build products go to $POCHI_AOT_WORK (default: a temp directory), never into
+# Build products go to $TCAPI_AOT_WORK (default: a temp directory), never into
 # the source tree.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-project="$here/Pochi.Sdk.AotSmoke/Pochi.Sdk.AotSmoke.csproj"
-work="${POCHI_AOT_WORK:-${TMPDIR:-/tmp}/pochi-aot-check}"
-sysroot="${POCHI_ARM64_SYSROOT:-/tmp/sysroot-arm64}"
+project="$here/Tcapi.Sdk.AotSmoke/Tcapi.Sdk.AotSmoke.csproj"
+work="${TCAPI_AOT_WORK:-${TMPDIR:-/tmp}/tcapi-aot-check}"
+sysroot="${TCAPI_ARM64_SYSROOT:-/tmp/sysroot-arm64}"
 
 host_rid() {
   local os arch
@@ -47,18 +47,18 @@ rids=("$@")
 for rid in "${rids[@]}"; do
   out="$work/$rid/out"
   rm -rf "$work/$rid"
-  common=(-r "$rid" -c Release -o "$out" "-p:PochiAotWork=$work/$rid")
+  common=(-r "$rid" -c Release -o "$out" "-p:TcapiAotWork=$work/$rid")
   if [ "$rid" = "$host" ]; then
     echo "== $rid: NativeAOT publish"
     dotnet publish "$project" "${common[@]}"
-    "$out/Pochi.Sdk.AotSmoke"
+    "$out/Tcapi.Sdk.AotSmoke"
   elif [ "$rid" = "linux-arm64" ] && [ "$host" = "linux-x64" ]; then
     echo "== $rid: NativeAOT cross publish (sysroot $sysroot)"
     dotnet publish "$project" "${common[@]}" \
       -p:CppCompilerAndLinker=clang "-p:SysRoot=$sysroot" -p:LinkerFlavor=lld \
       -p:ObjCopyName=aarch64-linux-gnu-objcopy
     if command -v qemu-aarch64 >/dev/null; then
-      qemu-aarch64 -L /usr/aarch64-linux-gnu "$out/Pochi.Sdk.AotSmoke"
+      qemu-aarch64 -L /usr/aarch64-linux-gnu "$out/Tcapi.Sdk.AotSmoke"
     else
       echo "(qemu-aarch64 not installed: built, not run)"
     fi

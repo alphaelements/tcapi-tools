@@ -1,4 +1,4 @@
-"""``pochi.config`` (``safety.toml``) against every shared fixture in
+"""``tcapi.config`` (``safety.toml``) against every shared fixture in
 ``docs/fixtures/`` (R-TOML1/R-TOML2): the evaluated settings, the apply
 commands, the exact error message and the reported line must equal the
 fixture's ``# expected*`` comments. Mirrors ``sdk/rust/tests/config_fixtures.rs``
@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from pochi import config
-from pochi.errors import IoError, ParseError, SdkError
-from pochi.safety import SafetyConfig
+from tcapi import config
+from tcapi.errors import IoError, ParseError, SdkError
+from tcapi.safety import SafetyConfig
 
 FIXTURES = Path(__file__).resolve().parents[3] / "docs" / "fixtures"
 

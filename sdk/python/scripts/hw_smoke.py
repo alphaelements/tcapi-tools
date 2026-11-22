@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hardware smoke test — requires a connected Pochi-DIO device.
+"""Hardware smoke test — requires a connected Tcapi-DIO device.
 Run: .venv/bin/python scripts/hw_smoke.py
 Mirrors ``sdk/rust/tests/hw_smoke.rs``; restores device state on exit."""
 
@@ -7,8 +7,8 @@ import time
 
 from serial.tools import list_ports
 
-from pochi import Connection, discover_detailed
-from pochi.types import (
+from tcapi import Connection, discover_detailed
+from tcapi.types import (
     VALID_DIO_MASK,
     EdgeMode,
     PatternMode,
@@ -23,7 +23,7 @@ def main() -> None:
     detailed = discover_detailed()
     assert not detailed.failures, f"probe failures: {detailed.failures}"
     devices = detailed.devices
-    assert devices, "no Pochi-DIO found"
+    assert devices, "no Tcapi-DIO found"
     print("discovered:", devices)
 
     # A Debugprobe (2e8a:000c) on the same host must NOT be detected. Its tty

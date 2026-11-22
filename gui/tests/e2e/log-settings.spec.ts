@@ -43,16 +43,16 @@ test("settings: accent change applies immediately and persists", async ({ page }
   const after = await readAccent();
   expect(after).not.toBe(before);
   // Persisted to localStorage and restored after reload.
-  const stored = await page.evaluate(() => localStorage.getItem("pochi-tweaks"));
+  const stored = await page.evaluate(() => localStorage.getItem("tcapi-tweaks"));
   expect(stored).toContain(after);
   await page.reload();
-  await expect(page.getByText("Pochi-DIO #42")).toBeVisible();
+  await expect(page.getByText("Tcapi-DIO #42")).toBeVisible();
   expect(await readAccent()).toBe(after);
 });
 
 test("status bar shows clock, sdk version and firmware", async ({ page }) => {
   await connect(page);
   await expect(page.getByText("tick 200 ns")).toBeVisible();
-  await expect(page.getByText(/Pochi-DIO SDK/)).toBeVisible();
+  await expect(page.getByText(/Tcapi-DIO SDK/)).toBeVisible();
   await expect(page.getByText("● fw 0.1.3")).toBeVisible();
 });

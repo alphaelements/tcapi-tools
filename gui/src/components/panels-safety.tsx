@@ -30,7 +30,7 @@ import {
 } from "../lib/safety";
 import { pinLabel } from "../lib/pins";
 import { tauriAvailable } from "../lib/tauri";
-import { PochiStore, useStore } from "../store/store";
+import { TcapiStore, useStore } from "../store/store";
 
 const ALERT_STYLE = {
   display: "flex",
@@ -86,7 +86,7 @@ function ReleaseFailsafe({ compact }: { compact?: boolean }) {
       {asking && (
         <ConfirmDialog title="Release the failsafe latch?" confirmLabel="Release"
           onCancel={() => setAsking(false)}
-          onConfirm={() => { setAsking(false); void PochiStore.clearFailsafe(); }}>
+          onConfirm={() => { setAsking(false); void TcapiStore.clearFailsafe(); }}>
           The outputs stay at their default state. After the release the device accepts output
           changes again, and an enabled watchdog trips again if the host stops answering.
         </ConfirmDialog>
@@ -100,12 +100,12 @@ function ReleaseFailsafe({ compact }: { compact?: boolean }) {
 /// device with the feature is connected.
 export function OutputsDefaultButton({ className = "btn sm", style }: { className?: string; style?: React.CSSProperties }) {
   useStore(["conn"]);
-  const S = PochiStore.get();
-  if (!PochiStore.safetyFeatures().outputsReset) return null;
+  const S = TcapiStore.get();
+  if (!TcapiStore.safetyFeatures().outputsReset) return null;
   return (
     <button className={className} style={style} data-testid="outputs-default" disabled={S.connStatus !== "connected"}
       title="Return every output to its default state (outputs reset); stops a running pattern"
-      onClick={() => void PochiStore.resetOutputs()}>
+      onClick={() => void TcapiStore.resetOutputs()}>
       Outputs to default
     </button>
   );
@@ -115,8 +115,8 @@ export function OutputsDefaultButton({ className = "btn sm", style }: { classNam
 
 export function SafetyBanners() {
   useStore(["safety", "conn"]);
-  const S = PochiStore.get();
-  const feat = PochiStore.safetyFeatures();
+  const S = TcapiStore.get();
+  const feat = TcapiStore.safetyFeatures();
   if (S.connStatus !== "connected" || !feat.any) return null;
   const st = S.safety.state;
   const { violation, heartbeat, heartbeatError } = S.safety;
@@ -141,7 +141,7 @@ export function SafetyBanners() {
             Refused: exclusive group {violation.group} allows one pin ON at a time ({maskPins(violation.mask).join(", ")})
             <span className="mono dim"> · mask 0x{violation.mask.toString(16).padStart(8, "0")}</span>
           </span>
-          <button className="btn ghost sm" aria-label="Dismiss" onClick={() => PochiStore.dismissViolation()}>×</button>
+          <button className="btn ghost sm" aria-label="Dismiss" onClick={() => TcapiStore.dismissViolation()}>×</button>
         </div>
       )}
       {heartbeat === "failed" && (
@@ -151,7 +151,7 @@ export function SafetyBanners() {
             Watchdog heartbeat stopped{heartbeatError ? `: ${heartbeatError}` : ""}. The device trips the failsafe when the watchdog expires.
           </span>
           {st && st.wdog_ms > 0 && !latched && (
-            <button className="btn sm" data-testid="heartbeat-restart" onClick={() => void PochiStore.setWatchdog(st.wdog_ms)}>Restart heartbeat</button>
+            <button className="btn sm" data-testid="heartbeat-restart" onClick={() => void TcapiStore.setWatchdog(st.wdog_ms)}>Restart heartbeat</button>
           )}
         </div>
       )}
@@ -181,7 +181,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function WatchdogControls() {
   useStore(["safety"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const st = S.safety.state;
   const [text, setText] = useState("1000");
   const parsed = validateWdogInput(text);
@@ -193,9 +193,9 @@ function WatchdogControls() {
           onChange={(e) => setText(e.target.value)} style={{ flex: 1, minWidth: 0 }} />
         <span className="mono dim" style={{ fontSize: 10.5 }}>ms</span>
         <button className="btn sm primary" data-testid="wdog-enable" disabled={!parsed.ok || parsed.ms === 0}
-          onClick={() => parsed.ok && void PochiStore.setWatchdog(parsed.ms)}>Enable</button>
+          onClick={() => parsed.ok && void TcapiStore.setWatchdog(parsed.ms)}>Enable</button>
         <button className="btn sm" data-testid="wdog-disable" disabled={!st || st.wdog_ms === 0}
-          onClick={() => void PochiStore.setWatchdog(0)}>Disable</button>
+          onClick={() => void TcapiStore.setWatchdog(0)}>Disable</button>
       </div>
       <span className="mono" data-testid="wdog-error" style={{ fontSize: 10.5, color: parsed.ok ? "var(--text-dim)" : "#fbbf24" }}>
         {parsed.ok ? `0 = off, ${WDOG_MIN_MS}–${WDOG_MAX_MS} ms` : parsed.error}
@@ -214,9 +214,9 @@ function WatchdogControls() {
 
 function ExclusiveControls() {
   useStore(["safety", "map"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const groups = S.safety.groups;
-  const outs = PochiStore.outputChannels();
+  const outs = TcapiStore.outputChannels();
   const [picked, setPicked] = useState<number[]>([]);
   const toggle = (ch: number) =>
     setPicked((p) => (p.includes(ch) ? p.filter((c) => c !== ch) : [...p, ch].sort((a, b) => a - b)));
@@ -230,7 +230,7 @@ function ExclusiveControls() {
             <span className="mono dim" style={{ fontSize: 10.5, width: 18 }}>#{i}</span>
             <span className="mono" style={{ fontSize: 11, flex: 1, minWidth: 0 }}>{maskPins(mask).join(", ")}</span>
             <button className="btn ghost sm" aria-label={`Remove group ${i}`} data-testid={`excl-remove-${i}`}
-              onClick={() => void PochiStore.setExclusiveGroups(groups.filter((_, k) => k !== i))}>×</button>
+              onClick={() => void TcapiStore.setExclusiveGroups(groups.filter((_, k) => k !== i))}>×</button>
           </div>
         ))}
       </div>
@@ -248,11 +248,11 @@ function ExclusiveControls() {
           <div style={{ display: "flex", gap: 6 }}>
             <button className="btn sm primary" data-testid="excl-add" disabled={!canAdd}
               onClick={() => {
-                void PochiStore.setExclusiveGroups([...groups, groupMask(picked)]);
+                void TcapiStore.setExclusiveGroups([...groups, groupMask(picked)]);
                 setPicked([]);
               }}>Add group</button>
             <button className="btn sm" data-testid="excl-clear" disabled={groups.length === 0}
-              onClick={() => void PochiStore.setExclusiveGroups([])}>Clear all</button>
+              onClick={() => void TcapiStore.setExclusiveGroups([])}>Clear all</button>
           </div>
         </>
       ) : (
@@ -264,16 +264,16 @@ function ExclusiveControls() {
 
 function SafetyFile() {
   useStore(["safety"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const { fileError, applied } = S.safety;
 
   async function pick() {
     if (!tauriAvailable) {
-      PochiStore.addLog("error", "safety.toml: file dialog requires the Tauri runtime");
+      TcapiStore.addLog("error", "safety.toml: file dialog requires the Tauri runtime");
       return;
     }
     const path = await open({ filters: [{ name: "TOML", extensions: ["toml"] }], multiple: false });
-    if (typeof path === "string") await PochiStore.applySafetyFile(path);
+    if (typeof path === "string") await TcapiStore.applySafetyFile(path);
   }
 
   return (
@@ -284,7 +284,7 @@ function SafetyFile() {
       {fileError && (
         <div role="alert" data-testid="safety-file-error" className="mono" style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 10.5, lineHeight: 1.5, color: "#fecaca", background: "color-mix(in oklab, var(--warn) 14%, var(--surface-2))", border: "1px solid color-mix(in oklab, var(--warn) 40%, var(--border))", borderRadius: "var(--r-sm)", padding: "6px 8px", wordBreak: "break-word" }}>
           <span style={{ flex: 1 }}>{fileError}</span>
-          <button className="btn ghost sm" aria-label="Dismiss" style={{ padding: "0 4px" }} onClick={() => PochiStore.dismissFileError()}>×</button>
+          <button className="btn ghost sm" aria-label="Dismiss" style={{ padding: "0 4px" }} onClick={() => TcapiStore.dismissFileError()}>×</button>
         </div>
       )}
       {applied && !fileError && (
@@ -298,8 +298,8 @@ function SafetyFile() {
 
 export function SafetyPanel() {
   useStore(["safety", "conn"]);
-  const S = PochiStore.get();
-  const feat = PochiStore.safetyFeatures();
+  const S = TcapiStore.get();
+  const feat = TcapiStore.safetyFeatures();
   if (S.connStatus !== "connected" || !feat.any) {
     return <div style={{ fontSize: 11.5, color: "var(--text-dim)", padding: "10px 4px", lineHeight: 1.5 }}>Connect a device with safety functions.</div>;
   }
@@ -319,7 +319,7 @@ export function SafetyPanel() {
             {feat.usbsafe && <Row label="USB safe" testId="safety-usbsafe">{st ? (st.usbsafe ? "on" : "off") : "—"}</Row>}
             {feat.exclusive && <Row label="Groups" testId="safety-excl">{st ? st.excl : "—"}</Row>}
           </div>
-          <button className="btn sm" data-testid="safety-refresh" style={{ justifyContent: "center" }} onClick={() => void PochiStore.refreshSafety()}>Refresh</button>
+          <button className="btn sm" data-testid="safety-refresh" style={{ justifyContent: "center" }} onClick={() => void TcapiStore.refreshSafety()}>Refresh</button>
         </Section>
       )}
 
@@ -336,8 +336,8 @@ export function SafetyPanel() {
         <Section title="USB link">
           <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11.5, color: "var(--text-secondary)" }}>
             <span className={"switch " + (st?.usbsafe ? "on" : "")} role="switch" aria-checked={st?.usbsafe === true} aria-label="USB safe" data-testid="usbsafe-switch" tabIndex={0}
-              onClick={() => void PochiStore.setUsbsafe(!(st?.usbsafe === true))}
-              onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); void PochiStore.setUsbsafe(!(st?.usbsafe === true)); } }}></span>
+              onClick={() => void TcapiStore.setUsbsafe(!(st?.usbsafe === true))}
+              onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); void TcapiStore.setUsbsafe(!(st?.usbsafe === true)); } }}></span>
             Failsafe when the USB link is lost
           </label>
         </Section>

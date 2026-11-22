@@ -1,7 +1,7 @@
 # Cross-Language SDK API Design
 
 This document defines the API surface, type system, and behavioral
-contracts for all Pochi SDK implementations. The Rust SDK is the reference
+contracts for all Tcapi SDK implementations. The Rust SDK is the reference
 implementation; TypeScript, Python, and C# SDKs must match its behavior
 exactly.
 
@@ -74,7 +74,7 @@ rejects it as well (`BadParam` / `BadMap`).
 
 ### DeviceInfo
 
-Represents a discovered Pochi-DIO device.
+Represents a discovered Tcapi-DIO device.
 
 **Rust:**
 ```rust
@@ -413,9 +413,9 @@ pub enum SyncState {
 discover() -> DeviceInfo[]
 ```
 
-Enumerates all connected Pochi-DIO devices. A port matches when VID is
+Enumerates all connected Tcapi-DIO devices. A port matches when VID is
 `0x2E8A`, PID is `0x000A` and, if the operating system provides a product
-string, it starts with `"Pochi"`. Each matching port is then opened with DTR
+string, it starts with `"Tcapi"`. Each matching port is then opened with DTR
 asserted and probed with `version`; a device that does not report `proto=2`
 is not returned as usable (it appears among the failures). `info` is sent to
 populate `DeviceInfo`.
@@ -1086,7 +1086,7 @@ the device never produces.)
 | Parse | Response does not match the expected format (including unknown keys and wrong counted-line counts) |
 | InvalidArgument | Host-side validation failed before anything was sent (mask outside `VALID_DIO_MASK`, `PinMap::validate()` violation, `hold_ticks` 0, `ts_get` max outside 1-85, ns not a multiple of 200, line over 256 bytes, ...) |
 | Timeout | No response received within the timeout period |
-| NoDevice | No Pochi-DIO device found during discovery |
+| NoDevice | No Tcapi-DIO device found during discovery |
 | MultipleDevices | Multiple devices found but no selector specified |
 | Disconnected | Device went away mid-session (unplug, reader thread exit), or resynchronisation failed |
 | UnsupportedFirmware | `version` reported a `proto` other than 2 ("unsupported protocol"). Never parsed leniently |
@@ -1289,7 +1289,7 @@ for the wire response:
 The reconcile engine is part of the SDK, not just the CLI. Any application
 can use it.
 
-The Rust signatures below are normative (ported from `pochi-cli` together
+The Rust signatures below are normative (ported from `tcapi-cli` together
 with its test vectors); other languages mirror them with idiomatic naming
 and container types. All SDKs must produce identical results for the
 shared test vectors.

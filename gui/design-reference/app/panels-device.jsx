@@ -5,7 +5,7 @@
 (function () {
   function StatusPill() {
     useStore(['conn']);
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const map = {
       disconnected: ['low', 'Disconnected'],
       connecting: ['busy', 'Connecting…'],
@@ -22,13 +22,13 @@
   }
 
   function DeviceCard({ dev }) {
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const selected = S.selectedUid === dev.uid;
     const connected = S.connectedUid === dev.uid;
     return (
       <div
-        onClick={() => PochiStore.select(dev.uid)}
-        onDoubleClick={() => PochiStore.connect(dev.uid)}
+        onClick={() => TcapiStore.select(dev.uid)}
+        onDoubleClick={() => TcapiStore.connect(dev.uid)}
         style={{
           padding: '10px 11px', borderRadius: 'var(--r-md)', cursor: 'pointer',
           background: selected ? 'var(--surface-hover)' : 'var(--surface-2)',
@@ -38,7 +38,7 @@
         }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span className={'dot-led ' + (connected ? 'on' : 'low')}></span>
-          <span style={{ fontWeight: 600, fontSize: 12.5 }}>Pochi-DIO #{dev.num}</span>
+          <span style={{ fontWeight: 600, fontSize: 12.5 }}>Tcapi-DIO #{dev.num}</span>
           <span className="chip mono" style={{ marginLeft: 'auto' }}>{dev.port.replace('/dev/', '')}</span>
         </div>
         <div className="mono" style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 7, display: 'flex', justifyContent: 'space-between' }}>
@@ -67,7 +67,7 @@
 
   function DevicePanel() {
     useStore(['conn']);
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const isConn = S.connStatus === 'connected';
     const sel = S.selectedUid;
     return (
@@ -85,18 +85,18 @@
           {S.devices.map((d) => <DeviceCard key={d.uid} dev={d} />)}
         </div>
         <div style={{ padding: 10, borderTop: '1px solid var(--border-soft)', display: 'flex', flexDirection: 'column', gap: 7 }}>
-          <button className="btn" style={{ justifyContent: 'center' }} onClick={() => PochiStore.scan()} disabled={S.scanning}>
+          <button className="btn" style={{ justifyContent: 'center' }} onClick={() => TcapiStore.scan()} disabled={S.scanning}>
             <span className={'dot-led ' + (S.scanning ? 'busy' : '')} style={{ width: 7, height: 7 }}></span>
             {S.scanning ? 'Scanning…' : 'Scan'}
           </button>
           {!isConn ? (
             <button className="btn primary" style={{ justifyContent: 'center' }}
               disabled={!sel || S.connStatus === 'connecting'}
-              onClick={() => PochiStore.connect(sel)}>
+              onClick={() => TcapiStore.connect(sel)}>
               {S.connStatus === 'connecting' ? 'Connecting…' : 'Connect'}
             </button>
           ) : (
-            <button className="btn danger" style={{ justifyContent: 'center' }} onClick={() => PochiStore.disconnect()}>Disconnect</button>
+            <button className="btn danger" style={{ justifyContent: 'center' }} onClick={() => TcapiStore.disconnect()}>Disconnect</button>
           )}
         </div>
       </div>

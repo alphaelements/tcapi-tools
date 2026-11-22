@@ -14,7 +14,7 @@
 
   function CommandLog({ collapsed, onToggle }) {
     useStore(['log', 'conn']);
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const scrollRef = useRef(null);
     const [auto, setAuto] = useState(true);
     const [input, setInput] = useState('');
@@ -27,7 +27,7 @@
     function submit() {
       if (!input.trim()) return;
       histRef.current.push(input); hi.current = histRef.current.length;
-      PochiStore.raw(input);
+      TcapiStore.raw(input);
       setInput('');
     }
     function onKey(e) {
@@ -50,7 +50,7 @@
             autoscroll
           </label>
           <button className="btn ghost sm" onClick={() => { navigator.clipboard?.writeText(S.log.map((e) => `${DIR_STYLE[e.direction].prefix} ${e.text}`).join('\n')); }}>Copy</button>
-          <button className="btn ghost sm" onClick={() => PochiStore.clearLog()}>Clear</button>
+          <button className="btn ghost sm" onClick={() => TcapiStore.clearLog()}>Clear</button>
         </div>
         {!collapsed && (
           <>

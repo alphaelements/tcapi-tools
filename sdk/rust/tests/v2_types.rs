@@ -2,7 +2,7 @@
 //! (REF-V2 sections 2 and 4.2).
 
 use assert_matches::assert_matches;
-use pochi_sdk::{
+use tcapi_sdk::{
     ch_to_gp, gp_to_ch, hold_ticks_from_ns, pin_label, PatternStep, PinMap, SdkError,
     TimestampEvent, DIO_CHANNELS, PATTERN_TICK_NS, VALID_DIO_MASK,
 };

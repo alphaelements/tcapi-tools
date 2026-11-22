@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegoodthings/nicecode-actions/main/packages/tauri-conf.json",
-  "productName": "Pochi Tools",
+  "productName": "Tcapi Tools",
   "version": "0.1.0",
-  "identifier": "com.alphaelements.pochi-tools",
+  "identifier": "com.alphaelements.tcapi-tools",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Pochi Tools",
+        "title": "Tcapi Tools",
         "width": 1280,
         "height": 800,
         "resizable": true,

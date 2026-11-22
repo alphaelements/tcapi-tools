@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from pochi import Connection, config
-from pochi.errors import (
+from tcapi import Connection, config
+from tcapi.errors import (
     BadParamError,
     ExclusiveError,
     FailsafeError,
@@ -19,8 +19,8 @@ from pochi.errors import (
     TimeoutError_,
     from_error_code,
 )
-from pochi.safety import SafetyConfig
-from pochi.types import FailsafeCause, Pads, ResetCause, ResetInfo, SafetyState
+from tcapi.safety import SafetyConfig
+from tcapi.types import FailsafeCause, Pads, ResetCause, ResetInfo, SafetyState
 
 from .fake_port import FakePort
 from .golden import GOLDEN_FILES, canon, first_response, parse_file

@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use pochi_sdk::protocol::{self, Response};
-use pochi_sdk::{FailsafeCause, Feature, PatternState, PinMap, PushEvent, SdkError};
+use tcapi_sdk::protocol::{self, Response};
+use tcapi_sdk::{FailsafeCause, Feature, PatternState, PinMap, PushEvent, SdkError};
 
 const GOLDEN_FILES: [&str; 11] = [
     "version-info",

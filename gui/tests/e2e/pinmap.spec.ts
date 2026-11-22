@@ -109,7 +109,7 @@ test("all eight map keys round-trip through the editor and the device", async ({
   await expect(page.getByText("map save", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Disconnect" }).click();
   await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
-  await page.getByText("Pochi-DIO #42").dblclick();
+  await page.getByText("Tcapi-DIO #42").dblclick();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await dockTab(page, "Pin Map");
   await expect(page.getByTestId("map-role-23")).toHaveText("OUT");

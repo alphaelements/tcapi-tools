@@ -10,8 +10,8 @@ import inspect
 
 import pytest
 
-from pochi import reconcile as reconcile_module
-from pochi.reconcile import (
+from tcapi import reconcile as reconcile_module
+from tcapi.reconcile import (
     CountExtender,
     SourceEvent,
     as_is_ns,
@@ -20,7 +20,7 @@ from pochi.reconcile import (
     pair_stats,
     reconcile,
 )
-from pochi.types import TimestampEvent
+from tcapi.types import TimestampEvent
 
 RES = 40  # Capabilities.ts_res_ns of the golden device
 

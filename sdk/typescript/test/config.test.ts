@@ -199,7 +199,7 @@ describe("loadSafety", () => {
   });
 
   it("a missing file is an Io error, not a default", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pochi-safety-"));
+    const dir = mkdtempSync(join(tmpdir(), "tcapi-safety-"));
     try {
       const err = await loadSafety(join(dir, "no-such-file.toml")).then(
         () => undefined,
@@ -214,7 +214,7 @@ describe("loadSafety", () => {
   });
 
   it("reads a file written by the caller", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pochi-safety-"));
+    const dir = mkdtempSync(join(tmpdir(), "tcapi-safety-"));
     try {
       const path = join(dir, "safety.toml");
       writeFileSync(path, 'version = 2\n[usb]\nsafe = true\n');

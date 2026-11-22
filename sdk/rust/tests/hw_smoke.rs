@@ -1,9 +1,9 @@
-//! Hardware smoke tests — require a connected Pochi-DIO device.
+//! Hardware smoke tests — require a connected Tcapi-DIO device.
 //!
 //! Ignored by default (CI has no hardware). Run explicitly with:
 //!
 //! ```sh
-//! cargo test -p pochi-sdk --test hw_smoke -- --ignored --test-threads=1 --nocapture
+//! cargo test -p tcapi-sdk --test hw_smoke -- --ignored --test-threads=1 --nocapture
 //! ```
 //!
 //! `--test-threads=1` is required: the tests share one physical device.
@@ -15,11 +15,11 @@
 //! → subscribe push pass. Otherwise those steps verify only the
 //! protocol flow (count=0 counted read, subscribe on/off).
 //!
-//! When several Pochi-DIOs are connected, set `POCHI_SMOKE_UID=<UID>`
+//! When several Tcapi-DIOs are connected, set `TCAPI_SMOKE_UID=<UID>`
 //! to pick a specific one (e.g. the loopback rig). Default: first in
 //! port order.
 
-use pochi_sdk::{
+use tcapi_sdk::{
     discover, discover_detailed, Connection, EdgeMode, PatternState, PatternStep, PinMap,
     PushEvent, PATTERN_TICK_NS, TS_GET_MAX, VALID_DIO_MASK,
 };
@@ -40,7 +40,7 @@ fn step_ns(hold_ticks: u32) -> u64 {
 }
 
 #[test]
-#[ignore = "requires connected Pochi-DIO hardware"]
+#[ignore = "requires connected Tcapi-DIO hardware"]
 fn hw_discovery() {
     let detailed = discover_detailed().expect("discovery failed");
     assert!(
@@ -49,7 +49,7 @@ fn hw_discovery() {
         detailed.failures
     );
     let devices = detailed.devices;
-    assert!(!devices.is_empty(), "no Pochi-DIO found");
+    assert!(!devices.is_empty(), "no Tcapi-DIO found");
     println!("discovered: {devices:?}");
 
     // A Debugprobe (2e8a:000c) on the same host must NOT be detected. Its
@@ -68,7 +68,7 @@ fn hw_discovery() {
     println!("debugprobe ports: {debugprobe_ports:?}");
     assert!(
         devices.iter().all(|d| !debugprobe_ports.contains(&d.port)),
-        "Debugprobe misdetected as Pochi-DIO"
+        "Debugprobe misdetected as Tcapi-DIO"
     );
     for dev in &devices {
         assert_eq!(dev.uid.len(), 16, "UID must be 16 hex chars: {}", dev.uid);
@@ -77,17 +77,17 @@ fn hw_discovery() {
 }
 
 #[test]
-#[ignore = "requires connected Pochi-DIO hardware"]
+#[ignore = "requires connected Tcapi-DIO hardware"]
 fn hw_full_smoke() {
     let devices = discover().expect("discovery failed");
-    // Pick a specific device by UID via POCHI_SMOKE_UID when several
-    // Pochi-DIOs are connected (e.g. the loopback rig vs. spare units).
-    let device = match std::env::var("POCHI_SMOKE_UID") {
+    // Pick a specific device by UID via TCAPI_SMOKE_UID when several
+    // Tcapi-DIOs are connected (e.g. the loopback rig vs. spare units).
+    let device = match std::env::var("TCAPI_SMOKE_UID") {
         Ok(uid) if !uid.is_empty() => devices
             .iter()
             .find(|d| d.uid.eq_ignore_ascii_case(&uid))
-            .unwrap_or_else(|| panic!("POCHI_SMOKE_UID={uid} not in discovered: {devices:?}")),
-        _ => devices.first().expect("no Pochi-DIO found"),
+            .unwrap_or_else(|| panic!("TCAPI_SMOKE_UID={uid} not in discovered: {devices:?}")),
+        _ => devices.first().expect("no Tcapi-DIO found"),
     };
     println!("using {} (uid={})", device.port, device.uid);
 
@@ -119,7 +119,7 @@ fn hw_full_smoke() {
     // --- loopback edge capture + subscribe push (rig: GP0..3 → GP4..7) ---
     // Only when the persisted map matches the rig wiring. Other devices
     // (no loopback wire) skip this block — `hw_full_smoke` is intended to
-    // pass on any healthy Pochi-DIO.
+    // pass on any healthy Tcapi-DIO.
     let loopback_rig = original_map.direction & 0xFF == 0x0F;
     if loopback_rig {
         run_loopback_edge_capture(&mut conn);
@@ -364,7 +364,7 @@ fn run_loopback_edge_capture(conn: &mut Connection) {
     // present, so the span between its first and last edges should equal
     // `(tail.len() - 1)` steps of `step_ns(HOLD_TICKS)` (R-PT5). A regression where the FW completes
     // the pattern before honoring the last hold (the v0.1.2 problem A bug
-    // fixed in pochi-dio commit ae2af10) would make the span much shorter,
+    // fixed in tcapi-dio commit ae2af10) would make the span much shorter,
     // so a generous ±50 µs/step tolerance still catches it.
     let tail_ns = &ns[ns.len() - expected_tail.len()..];
     let span_ns = (tail_ns[tail_ns.len() - 1] - tail_ns[0]) as u64;
@@ -425,15 +425,15 @@ fn wait_pattern_idle(conn: &mut Connection, label: &str) {
     }
 }
 
-fn pick_device() -> pochi_sdk::DeviceInfo {
+fn pick_device() -> tcapi_sdk::DeviceInfo {
     let devices = discover().expect("discovery failed");
-    match std::env::var("POCHI_SMOKE_UID") {
+    match std::env::var("TCAPI_SMOKE_UID") {
         Ok(uid) if !uid.is_empty() => devices
             .iter()
             .find(|d| d.uid.eq_ignore_ascii_case(&uid))
             .cloned()
-            .unwrap_or_else(|| panic!("POCHI_SMOKE_UID={uid} not in discovered: {devices:?}")),
-        _ => devices.first().cloned().expect("no Pochi-DIO found"),
+            .unwrap_or_else(|| panic!("TCAPI_SMOKE_UID={uid} not in discovered: {devices:?}")),
+        _ => devices.first().cloned().expect("no Tcapi-DIO found"),
     }
 }
 
@@ -441,7 +441,7 @@ fn pick_device() -> pochi_sdk::DeviceInfo {
 /// `loops=0 step=0`, but keeps USB up — so the same Connection still answers
 /// follow-up commands (FW v0.1.3+).
 #[test]
-#[ignore = "requires connected Pochi-DIO hardware (FW v0.1.3+)"]
+#[ignore = "requires connected Tcapi-DIO hardware (FW v0.1.3+)"]
 fn hw_pattern_reset_during_loop() {
     let device = pick_device();
     let mut conn = Connection::open(&device.port).expect("connect");
@@ -493,7 +493,7 @@ fn hw_pattern_reset_during_loop() {
 /// `reset` makes the device re-enumerate; after a brief wait the SDK can
 /// rediscover it with the same UID (FW v0.1.3+).
 #[test]
-#[ignore = "requires connected Pochi-DIO hardware (FW v0.1.3+)"]
+#[ignore = "requires connected Tcapi-DIO hardware (FW v0.1.3+)"]
 fn hw_system_reset_reenumerates() {
     let device = pick_device();
     let uid = device.uid.clone();
@@ -531,7 +531,7 @@ fn hw_system_reset_reenumerates() {
 /// "second run hangs" mode that the FW B1/B2 fixes were intended to
 /// eliminate.
 #[test]
-#[ignore = "requires connected Pochi-DIO hardware (FW v0.1.3+)"]
+#[ignore = "requires connected Tcapi-DIO hardware (FW v0.1.3+)"]
 fn hw_full_smoke_loop_8_times() {
     for i in 0..8 {
         println!("--- hw_full_smoke iteration {} ---", i + 1);

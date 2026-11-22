@@ -6,10 +6,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use pochi_sdk::config::{
+use tcapi_sdk::config::{
     load_map, load_pattern, load_safety, parse_map, parse_pattern, parse_safety, ConfigError,
 };
-use pochi_sdk::{PatternStep, PinMap, SafetyConfig, SdkError, VALID_DIO_MASK};
+use tcapi_sdk::{PatternStep, PinMap, SafetyConfig, SdkError, VALID_DIO_MASK};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/fixtures")

@@ -1,7 +1,7 @@
-# Pochi-DIO CDC Text Protocol Reference (proto=2)
+# Tcapi-DIO CDC Text Protocol Reference (proto=2)
 
 Self-contained reference for the v2 CDC text command protocol used to
-communicate with Pochi-DIO devices. It covers everything SDK developers need
+communicate with Tcapi-DIO devices. It covers everything SDK developers need
 to implement a host-side driver.
 
 This document describes protocol version **2** only. There is no other
@@ -24,7 +24,7 @@ Notation used in examples (the golden notation):
 
 ## 1. Overview
 
-Pochi-DIO exposes a USB CDC-ACM (virtual serial port) interface. The host
+Tcapi-DIO exposes a USB CDC-ACM (virtual serial port) interface. The host
 sends text commands over this serial port and receives text responses. No
 binary framing, COBS encoding, or CRC computation is used by the host. The
 text protocol is the only host API for the CLI, every SDK, the GUI and the
@@ -48,11 +48,11 @@ mixes text and binary within one connection.
 |---|---|
 | VID | `0x2E8A` (Raspberry Pi) |
 | PID | `0x000A` |
-| Product string | Starts with `"Pochi"` (checked when the OS provides it) |
+| Product string | Starts with `"Tcapi"` (checked when the OS provides it) |
 | Serial number | 16-character hex string derived from the RP2350 chip UID |
 
 VID and PID must match, and, when the operating system provides a product
-string, it must start with `Pochi`. No other product name is accepted.
+string, it must start with `Tcapi`. No other product name is accepted.
 
 ### Opening the Port
 
@@ -764,7 +764,7 @@ Disarm and discard buffered events. A no-op when not armed.
 
 ### Multi-Device Clock Synchronization
 
-The sync subsystem lets several Pochi-DIO devices share a clock over GP28,
+The sync subsystem lets several Tcapi-DIO devices share a clock over GP28,
 giving zero-drift cross-device timestamps. State machine:
 
 ```
@@ -815,7 +815,7 @@ line, not a counted response.
 
 ### Safety
 
-Pochi-DIO is a general DIO device. For uses where an output must not misbehave
+Tcapi-DIO is a general DIO device. For uses where an output must not misbehave
 (for example switching relays) it has these safety functions. All of them are
 **volatile**: they return to their defaults at every restart (section 10,
 "Persistence").
@@ -1408,7 +1408,7 @@ skew between channels. When a capture straddles a microsecond boundary,
 2. Filter by USB properties:
    - VID = `0x2E8A`
    - PID = `0x000A`
-   - Product string, when the OS provides one, starts with `"Pochi"`
+   - Product string, when the OS provides one, starts with `"Tcapi"`
 3. For each matching port: open it, assert DTR, send `version` and require
    `proto=2`; a device reporting anything else is reported as unsupported,
    not listed as usable.
@@ -1577,7 +1577,7 @@ Host-side tools read `map.toml` and `pattern.toml` and convert them to the
 
 ### Overview
 
-Multiple Pochi-DIO devices share a common time base by connecting their GP28
+Multiple Tcapi-DIO devices share a common time base by connecting their GP28
 pins together on a single bus. One device acts as master (outputs the sync
 clock), and all others act as slaves (count the clock edges).
 

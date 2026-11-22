@@ -24,8 +24,8 @@ import sys
 import time
 from dataclasses import dataclass
 
-import pochi
-from pochi.types import (
+import tcapi
+from tcapi.types import (
     VALID_DIO_MASK,
     EdgeMode,
     PatternMode,
@@ -215,8 +215,8 @@ PATTERNS: list[TestPattern] = [
 
 
 def run_ts_cross_test(
-    dev1: pochi.Connection,
-    dev2: pochi.Connection,
+    dev1: tcapi.Connection,
+    dev2: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """Cross-wire timestamp test: Dev1 GP0=OUT toggles, Dev2 GP0=IN
@@ -250,7 +250,7 @@ def run_ts_cross_test(
 
 
 def run_ts_self_test(
-    dev1: pochi.Connection,
+    dev1: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """Self-loopback timestamp test: Dev1 GP0=OUT, GP4=IN.
@@ -282,7 +282,7 @@ def run_ts_self_test(
 
 
 def run_ts_scattered_test(
-    dev1: pochi.Connection,
+    dev1: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """Timestamp on GP4 with scattered map: GP0=OUT, GP5=OUT, GP1=IN, GP4=IN.
@@ -312,7 +312,7 @@ def run_ts_scattered_test(
 
 
 def run_pattern_basic_test(
-    dev1: pochi.Connection,
+    dev1: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """Pattern engine basic test: load a 2-step pattern on GP0=OUT,
@@ -355,7 +355,7 @@ def run_pattern_basic_test(
 
 
 def run_pattern_loop_test(
-    dev1: pochi.Connection,
+    dev1: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """Pattern engine loop test: run a pattern in loop mode, verify it
@@ -393,7 +393,7 @@ def run_pattern_loop_test(
 
 
 def run_pattern_write_busy_test(
-    dev1: pochi.Connection,
+    dev1: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """While a pattern is running, SET_OUTPUTS should return ERR_BUSY."""
@@ -423,7 +423,7 @@ def run_pattern_write_busy_test(
 
 
 def run_pattern_scattered_map_test(
-    dev1: pochi.Connection,
+    dev1: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """Pattern with scattered pin map: GP0+GP5=OUT, verify pattern runs
@@ -457,8 +457,8 @@ def run_pattern_scattered_map_test(
 
 
 def run_pattern_crosswire_test(
-    dev1: pochi.Connection,
-    dev2: pochi.Connection,
+    dev1: tcapi.Connection,
+    dev2: tcapi.Connection,
     verbose: bool,
 ) -> tuple[bool, str]:
     """Cross-wire pattern test: Dev1 GP0=OUT pattern, Dev2 GP0=IN reads."""
@@ -495,7 +495,7 @@ def main() -> None:
     args = parser.parse_args()
     verbose: bool = args.verbose
 
-    devices = pochi.discover()
+    devices = tcapi.discover()
     time.sleep(0.5)
 
     dev1_info = next((d for d in devices if d.device_number == 1), None)
@@ -505,8 +505,8 @@ def main() -> None:
         print(f"ERROR: need devnum=1 and devnum=2, found: {found}", file=sys.stderr)
         sys.exit(1)
 
-    dev1 = pochi.Connection.open(dev1_info.port)
-    dev2 = pochi.Connection.open(dev2_info.port)
+    dev1 = tcapi.Connection.open(dev1_info.port)
+    dev2 = tcapi.Connection.open(dev2_info.port)
 
     passed = 0
     failed = 0

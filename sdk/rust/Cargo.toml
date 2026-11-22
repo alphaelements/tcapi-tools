@@ -1,9 +1,9 @@
 [package]
-name = "pochi-sdk"
+name = "tcapi-sdk"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Rust SDK for Pochi-DIO (RP2350 high-speed digital I/O unit)"
+description = "Rust SDK for Tcapi-DIO (RP2350 high-speed digital I/O unit)"
 
 [dependencies]
 hex = "0.4"

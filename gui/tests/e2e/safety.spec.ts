@@ -14,7 +14,7 @@ type Hooks = {
 
 async function hooks<T>(page: Page, fn: (h: Hooks) => T): Promise<T> {
   return page.evaluate(
-    `(${fn.toString()})(window.__POCHI_MOCK__)`,
+    `(${fn.toString()})(window.__TCAPI_MOCK__)`,
   ) as Promise<T>;
 }
 
@@ -27,7 +27,7 @@ async function enableWatchdog(page: Page, ms: string) {
 
 test("hides safety controls without feature bits: a device without them shows no safety UI", async ({ page }) => {
   await gotoMock(page);
-  await connectTo(page, "Pochi-DIO #43");
+  await connectTo(page, "Tcapi-DIO #43");
   await expect(page.getByRole("button", { name: "Safety", exact: true })).toHaveCount(0);
   await expect(page.getByTestId("outputs-default")).toHaveCount(0);
   await expect(page.getByTestId("status-safety")).toHaveCount(0);
@@ -172,7 +172,7 @@ test("safety toml apply shows line numbered errors: a parse error is shown as fi
   await dockTab(page, "Safety");
   const message = "/mock/sample.toml:4: watchdog.timeout_ms must be 0 or 100-10000";
   await page.evaluate((m) => {
-    (window as unknown as { __POCHI_MOCK__: Hooks }).__POCHI_MOCK__.safetyTomlError = m;
+    (window as unknown as { __TCAPI_MOCK__: Hooks }).__TCAPI_MOCK__.safetyTomlError = m;
   }, "parse error: " + message);
   await page.getByTestId("safety-apply-file").click();
   await expect(page.getByTestId("safety-file-error")).toContainText(message);

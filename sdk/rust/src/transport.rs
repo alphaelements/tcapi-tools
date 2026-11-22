@@ -295,7 +295,7 @@ impl Transport {
             .exchange_unsynced("subscribe off")
             .and_then(|lines| parse_first(&lines));
         if let Err(e) = switched_off {
-            eprintln!("pochi-sdk: error: releasing the unused device subscription failed: {e}");
+            eprintln!("tcapi-sdk: error: releasing the unused device subscription failed: {e}");
         }
         self.device_subscribed = false;
     }
@@ -579,12 +579,12 @@ fn reader_loop(
 fn dispatch_event(subscribers: &Subscribers, line: &str, payload: &str) {
     let event = match protocol::parse_push_event(payload) {
         Ok(PushEvent::Unknown { .. }) => {
-            eprintln!("pochi-sdk: error: dropping unknown event: {line}");
+            eprintln!("tcapi-sdk: error: dropping unknown event: {line}");
             return;
         }
         Ok(event) => event,
         Err(err) => {
-            eprintln!("pochi-sdk: error: dropping malformed event ({err}): {line}");
+            eprintln!("tcapi-sdk: error: dropping malformed event ({err}): {line}");
             return;
         }
     };

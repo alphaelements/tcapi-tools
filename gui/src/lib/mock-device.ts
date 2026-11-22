@@ -1,23 +1,23 @@
 // ============================================================
-// mock-device.ts — browser-only virtual Pochi-DIO for E2E tests
+// mock-device.ts — browser-only virtual Tcapi-DIO for E2E tests
 //
 // Installed from main.tsx when the page is opened with `?mock`
 // (dev server only). Replaces the Tauri IPC layer via the official
 // @tauri-apps/api mocks, so the production store/components run
 // unchanged: invoke() hits the virtual device below and listen()
-// receives the same `pochi://*` events the Rust backend emits.
+// receives the same `tcapi://*` events the Rust backend emits.
 //
 // The device itself is MockDeviceCore (mock-device-core.ts), a v2 text
 // protocol model that is replayed against the golden transcripts. This file
 // is the thin counterpart of the Rust backend: every Tauri command is turned
 // into the wire line(s) the SDK would send, the response is parsed back, and
-// the traffic is logged as `pochi://log` like the SDK's traffic hook does.
+// the traffic is logged as `tcapi://log` like the SDK's traffic hook does.
 //
 // The virtual device mirrors the rig wiring: the k-th output pin is looped
 // back to the k-th input pin, so toggling an output flips the matching input,
 // generates waveform edges and, when armed, timestamp events.
 //
-// Test hooks live on window.__POCHI_MOCK__ (files written via
+// Test hooks live on window.__TCAPI_MOCK__ (files written via
 // write_text_file, forced ts overflow, raw device state).
 // ============================================================
 
@@ -153,7 +153,7 @@ export interface MockHandle {
   /// `file:line: message` shape), once.
   safetyTomlError: string | null;
   /// The host heartbeat dies with this message, as when a ping fails: the
-  /// backend reports `pochi://heartbeat-failed` and the watchdog, left unfed,
+  /// backend reports `tcapi://heartbeat-failed` and the watchdog, left unfed,
   /// trips on the virtual clock.
   failHeartbeat: (message: string) => void;
   /// The USB state the device sees (`usbsafe` trips when it leaves configured).
@@ -173,7 +173,7 @@ export interface MockHandle {
 
 declare global {
   interface Window {
-    __POCHI_MOCK__?: MockHandle;
+    __TCAPI_MOCK__?: MockHandle;
   }
 }
 
@@ -297,7 +297,7 @@ export function installMockDevice(): void {
     failHeartbeat: (message: string) => {
       requireConnected();
       stopHeartbeat();
-      void emit("pochi://heartbeat-failed", { message });
+      void emit("tcapi://heartbeat-failed", { message });
     },
     usb: (state: UsbState) => {
       requireConnected();
@@ -307,7 +307,7 @@ export function installMockDevice(): void {
       syncHandle();
     },
   };
-  window.__POCHI_MOCK__ = handle;
+  window.__TCAPI_MOCK__ = handle;
 
   function syncHandle() {
     handle.state = {
@@ -348,11 +348,11 @@ export function installMockDevice(): void {
   }
 
   function log(direction: "sent" | "received" | "event", line: string) {
-    void emit("pochi://log", { direction, line });
+    void emit("tcapi://log", { direction, line });
   }
 
   /// Turn the device's queued `! ...` lines into log lines and, like the
-  /// backend forwarder, into `pochi://*` events.
+  /// backend forwarder, into `tcapi://*` events.
   function flushEvents() {
     for (const line of core.takeEvents()) {
       log("event", line);
@@ -361,16 +361,16 @@ export function installMockDevice(): void {
       const done = /^! PATTERN_DONE loops=(\d+)$/.exec(line);
       const failsafe = /^! FAILSAFE cause=(wdog|usb)$/.exec(line);
       if (input) {
-        void emit("pochi://input", {
+        void emit("tcapi://input", {
           inputs: Number(input[1]) >>> 0,
           timestampUs: Number(input[2]),
         });
       } else if (done) {
-        void emit("pochi://pattern-done", { loops: Number(done[1]) });
+        void emit("tcapi://pattern-done", { loops: Number(done[1]) });
       } else if (failsafe) {
-        void emit("pochi://failsafe", { cause: failsafe[1] });
+        void emit("tcapi://failsafe", { cause: failsafe[1] });
       } else {
-        void emit("pochi://unknown-event", { raw: line });
+        void emit("tcapi://unknown-event", { raw: line });
       }
     }
   }

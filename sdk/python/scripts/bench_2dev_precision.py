@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two-device timestamp precision benchmark.
 
-Requires two Pochi-DIO devices connected with loopback + cross-wire:
+Requires two Tcapi-DIO devices connected with loopback + cross-wire:
   Dev1 GP0 (OUT) ──┬── Dev1 GP4 (IN)   [self-loopback]
                    └── Dev2 GP0 (IN)   [cross-wire]
   Dev1 GP28 ──────── Dev2 GP28         [sync clock]
@@ -27,8 +27,8 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 
-import pochi
-from pochi.reconcile import SourceEvent, group_events
+import tcapi
+from tcapi.reconcile import SourceEvent, group_events
 
 
 @dataclass
@@ -57,7 +57,7 @@ def run_benchmark(
     toggle_interval_s: float = 0.02,
     verbose: bool = False,
 ) -> BenchResult:
-    devices = pochi.discover()
+    devices = tcapi.discover()
     time.sleep(0.5)
 
     dev1_info = next((d for d in devices if d.device_number == 1), None)
@@ -67,8 +67,8 @@ def run_benchmark(
         print(f"ERROR: need devnum=1 and devnum=2, found: {found}", file=sys.stderr)
         sys.exit(1)
 
-    dev1 = pochi.Connection.open(dev1_info.port)
-    dev2 = pochi.Connection.open(dev2_info.port)
+    dev1 = tcapi.Connection.open(dev1_info.port)
+    dev2 = tcapi.Connection.open(dev2_info.port)
 
     try:
         return _run(dev1, dev2, rounds, toggles_per_round, toggle_interval_s, verbose)
@@ -90,15 +90,15 @@ def run_benchmark(
 
 
 def _run(
-    dev1: pochi.Connection,
-    dev2: pochi.Connection,
+    dev1: tcapi.Connection,
+    dev2: tcapi.Connection,
     rounds: int,
     toggles_per_round: int,
     toggle_interval_s: float,
     verbose: bool,
 ) -> BenchResult:
-    inputs = pochi.VALID_DIO_MASK & ~0x1
-    out_map = pochi.PinMap(
+    inputs = tcapi.VALID_DIO_MASK & ~0x1
+    out_map = tcapi.PinMap(
         flags=0,
         direction=0x1,  # GP0 output
         pull_up=0,
@@ -123,8 +123,8 @@ def _run(
     if verbose:
         print(f"Sync counts: Dev1={c1} Dev2={c2} diff={abs(c1 - c2)}")
 
-    dev1.ts_arm(0x10, pochi.EdgeMode.RISING)
-    dev2.ts_arm(0x01, pochi.EdgeMode.RISING)
+    dev1.ts_arm(0x10, tcapi.EdgeMode.RISING)
+    dev2.ts_arm(0x01, tcapi.EdgeMode.RISING)
 
     all_dev1 = []
     all_dev2 = []
@@ -154,7 +154,7 @@ def _run(
         all_src.append(
             SourceEvent(
                 device="Dev1",
-                channel=pochi.pin_label(4),
+                channel=tcapi.pin_label(4),
                 inputs=e.inputs,
                 raw_count=e.raw_count,
                 raw_phase=e.raw_phase,
@@ -165,7 +165,7 @@ def _run(
         all_src.append(
             SourceEvent(
                 device="Dev2",
-                channel=pochi.pin_label(0),
+                channel=tcapi.pin_label(0),
                 inputs=e.inputs,
                 raw_count=e.raw_count,
                 raw_phase=e.raw_phase,

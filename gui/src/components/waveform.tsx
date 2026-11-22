@@ -7,7 +7,7 @@
 // ============================================================
 import { useEffect, useRef } from "react";
 import { pinLabel } from "../lib/pins";
-import { PochiStore, useStore } from "../store/store";
+import { TcapiStore, useStore } from "../store/store";
 import type { Tweaks } from "./settings";
 
 const CHAN_COLORS = [
@@ -17,7 +17,7 @@ const CHAN_COLORS = [
 ];
 
 function channelLabel(ch: number): string {
-  return PochiStore.gpDir(ch) === "input" ? "IN" : "OUT";
+  return TcapiStore.gpDir(ch) === "input" ? "IN" : "OUT";
 }
 
 export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
@@ -40,13 +40,13 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
     const PAD_L = 92, PAD_R = 14, PAD_T = 10, PAD_B = 22;
 
     function laneList() {
-      const S = PochiStore.get();
+      const S = TcapiStore.get();
       return [...S.monitored].sort((a, b) => a - b);
     }
 
     function draw() {
       if (!canvas || !ctx) return;
-      const S = PochiStore.get();
+      const S = TcapiStore.get();
       const tw = tweakRef.current;
       const style = tw.waveformStyle || "scope";
       const wrap = wrapRef.current;
@@ -113,7 +113,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
         ctx.fillText(channelLabel(gp), 10, cy + 9);
 
         // sample the edge history across the window
-        const sample = PochiStore.history(gp).sampler();
+        const sample = TcapiStore.history(gp).sampler();
         ctx.lineWidth = style === "scope" ? 2 : 1.4;
         ctx.strokeStyle = color;
         ctx.lineJoin = "round";
@@ -213,7 +213,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const PAD_L = 92, PAD_R = 14;
     const plotW = rect.width - PAD_L - PAD_R;
     const winUs = S.windowUs;
@@ -234,7 +234,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
     const rect = canvas.getBoundingClientRect();
     const x = Math.max(d.PAD_L, Math.min(rect.width - 14, e.clientX - rect.left));
     const t = d.tStart + ((x - d.PAD_L) / d.plotW) * d.winUs;
-    PochiStore.setCursor(d.idx, t);
+    TcapiStore.setCursor(d.idx, t);
   }
   function up() {
     dragRef.current = null;
@@ -242,9 +242,9 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
     window.removeEventListener("pointerup", up);
   }
 
-  const S = PochiStore.get();
-  const allInputs = PochiStore.inputChannels();
-  const outs = PochiStore.outputChannels();
+  const S = TcapiStore.get();
+  const allInputs = TcapiStore.inputChannels();
+  const outs = TcapiStore.outputChannels();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, flex: 1, minWidth: 0 }}>
@@ -256,11 +256,11 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
         <div style={{ flex: 1 }} />
         <div className="seg">
           {[3000, 6000, 12000].map((w) => (
-            <button key={w} className={S.windowUs === w ? "active" : ""} onClick={() => PochiStore.setWindow(w)}>{w / 1000}ms</button>
+            <button key={w} className={S.windowUs === w ? "active" : ""} onClick={() => TcapiStore.setWindow(w)}>{w / 1000}ms</button>
           ))}
         </div>
-        <button className="btn ghost sm" onClick={() => PochiStore.setRecording(!S.recording)}>{S.recording ? "Pause" : "Rec"}</button>
-        <button className="btn ghost sm" onClick={() => PochiStore.clearWave()}>Clear</button>
+        <button className="btn ghost sm" onClick={() => TcapiStore.setRecording(!S.recording)}>{S.recording ? "Pause" : "Rec"}</button>
+        <button className="btn ghost sm" onClick={() => TcapiStore.clearWave()}>Clear</button>
       </div>
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <div ref={wrapRef} style={{ position: "relative", flex: 1, minWidth: 0 }}>
@@ -287,7 +287,7 @@ export function WaveformViewer({ tweaks }: { tweaks: Tweaks }) {
 function ChanRow({ ch, on, color }: { ch: number; on: boolean; color: string }) {
   return (
     <button
-      onClick={() => PochiStore.toggleMonitor(ch)}
+      onClick={() => TcapiStore.toggleMonitor(ch)}
       style={{
         display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", borderRadius: 4,
         background: on ? "var(--surface-2)" : "transparent", border: "1px solid " + (on ? "var(--border-soft)" : "transparent"),

@@ -28,11 +28,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use pochi_sdk::{
+use serialport::{SerialPort, TTYPort};
+use tcapi_sdk::{
     Connection, EdgeMode, PatternMode, PatternState, PatternStep, PinMap, PushEvent, ResetCause,
     SdkError, TS_GET_MAX, VALID_DIO_MASK,
 };
-use serialport::{SerialPort, TTYPort};
 
 // ------------------------------------------------------------ golden loading
 
@@ -853,10 +853,10 @@ fn ts_under_sync_feeds_the_reconcile_pipeline() {
         assert_eq!(result.events[3].ns(40), 107_000);
 
         // ts_get -> SourceEvent -> group_events, end to end.
-        let source: Vec<pochi_sdk::reconcile::SourceEvent> = result
+        let source: Vec<tcapi_sdk::reconcile::SourceEvent> = result
             .events
             .iter()
-            .map(|ev| pochi_sdk::reconcile::SourceEvent {
+            .map(|ev| tcapi_sdk::reconcile::SourceEvent {
                 device: "local".to_string(),
                 channel: format!("GP{}", ev.inputs.trailing_zeros().min(31)),
                 inputs: format!("0x{:08X}", ev.inputs),
@@ -865,7 +865,7 @@ fn ts_under_sync_feeds_the_reconcile_pipeline() {
                 sync_active: ev.sync_active,
             })
             .collect();
-        let groups = pochi_sdk::reconcile::group_events(&source, 40);
+        let groups = tcapi_sdk::reconcile::group_events(&source, 40);
         // Counts 2 and 3 share a group (within +-1); 4 and 107 stand alone.
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].events.len(), 2);

@@ -1,7 +1,7 @@
 # Configuration files: `map.toml`, `pattern.toml` and `safety.toml` (schema v2)
 
 Canonical definition of the three host-side TOML formats. Every implementation
-(Rust / TypeScript / Python / C# SDKs, `pochi-cli`, the GUI and the VSCode
+(Rust / TypeScript / Python / C# SDKs, `tcapi-cli`, the GUI and the VSCode
 extension) must accept exactly this schema and reject everything else with the
 errors listed in section 4. Conformance is checked against the fixtures in
 [`docs/fixtures/`](fixtures/) (section 5).
@@ -404,8 +404,8 @@ For the `safety-*` fixtures the evaluator also checks the apply sequence: the
 commands derived from the evaluated settings must equal the `# expected_command:`
 lines (so the order of section 7 cannot change silently).
 
-The fixtures are distributed to `pochi-cli` and `pochi-vscode` by
-`scripts/sync-protocol-golden.sh` in the `pochi` parent repository
+The fixtures are distributed to `tcapi-cli` and `tcapi-vscode` by
+`scripts/sync-protocol-golden.sh` in the `tcapi` parent repository
 (`<repo>/protocol/fixtures/`). Edit them **only here**; run
 `scripts/sync-protocol-golden.sh --check` to detect stale copies.
 

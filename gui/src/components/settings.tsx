@@ -20,7 +20,7 @@ export const TWEAK_DEFAULTS = {
 export type Tweaks = typeof TWEAK_DEFAULTS;
 export type TweakKey = keyof Tweaks;
 
-const STORAGE_KEY = "pochi-tweaks";
+const STORAGE_KEY = "tcapi-tweaks";
 
 function loadTweaks(): Tweaks {
   try {

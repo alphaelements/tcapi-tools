@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-import pochi.transport as transport_module
-from pochi.errors import (
+import tcapi.transport as transport_module
+from tcapi.errors import (
     BadParamError,
     DisconnectedError,
     InvalidArgumentError,
@@ -19,8 +19,8 @@ from pochi.errors import (
     TimeoutError_,
     UnknownCmdError,
 )
-from pochi.transport import Transport
-from pochi.types import InputChangeEvent, PatternDoneEvent
+from tcapi.transport import Transport
+from tcapi.types import InputChangeEvent, PatternDoneEvent
 
 from .fake_port import FakePort
 from .golden import find_request, first_response
@@ -445,7 +445,7 @@ class TestLineGuards:
         # NEGATIVE: a device that streams bytes without ever sending a newline
         transport, port = setup
         limit = transport_module.MAX_DEVICE_LINE_BYTES
-        with caplog.at_level(logging.ERROR, logger="pochi"):
+        with caplog.at_level(logging.ERROR, logger="tcapi"):
             port.feed_raw("x" * (limit + 10))
             assert wait_for(lambda: transport.desynced)
         assert "too long" in caplog.text
@@ -567,7 +567,7 @@ class TestEvents:
         transport, port = setup
         events = []
         transport.set_event_callback(events.append)
-        with caplog.at_level(logging.ERROR, logger="pochi"):
+        with caplog.at_level(logging.ERROR, logger="tcapi"):
             port.on_command = lambda _: port.feed(
                 "! SYNC_DONE status=ready devnum=1 ts=42", *VERSION
             )
@@ -582,7 +582,7 @@ class TestEvents:
         transport, port = setup
         events = []
         transport.set_event_callback(events.append)
-        with caplog.at_level(logging.ERROR, logger="pochi"):
+        with caplog.at_level(logging.ERROR, logger="tcapi"):
             port.feed("! INPUT in=0x1")
             assert wait_for(lambda: any("INPUT" in r.message for r in caplog.records))
         assert events == []
@@ -600,7 +600,7 @@ class TestEvents:
             raise RuntimeError("subscriber bug")
 
         transport.set_event_callback(boom)
-        with caplog.at_level(logging.ERROR, logger="pochi"):
+        with caplog.at_level(logging.ERROR, logger="tcapi"):
             port.feed(INPUT_EVENT)
             assert wait_for(
                 lambda: any(

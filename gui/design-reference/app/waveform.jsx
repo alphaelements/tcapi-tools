@@ -12,9 +12,9 @@
   ];
 
   function channelLabel(gp) {
-    const S = PochiStore.get();
-    if (PochiStore.gpDir(gp) === 'input') {
-      const g = PochiStore.inputGenForGp(gp);
+    const S = TcapiStore.get();
+    if (TcapiStore.gpDir(gp) === 'input') {
+      const g = TcapiStore.inputGenForGp(gp);
       return g ? g.name : 'IN';
     }
     return 'OUT';
@@ -40,12 +40,12 @@
       const PAD_L = 92, PAD_R = 14, PAD_T = 10, PAD_B = 22;
 
       function laneList() {
-        const S = PochiStore.get();
+        const S = TcapiStore.get();
         return [...S.monitored].sort((a, b) => a - b);
       }
 
       function draw() {
-        const S = PochiStore.get();
+        const S = TcapiStore.get();
         const tw = tweakRef.current;
         const accent = tw.accent || '#7c3aed';
         const style = tw.waveformStyle || 'scope';
@@ -129,7 +129,7 @@
             let prevV = -1;
             for (let px = 0; px <= plotW; px++) {
               const t = tStart + (px / plotW) * winUs;
-              const v = PochiStore.pinValueAt(gp, t);
+              const v = TcapiStore.pinValueAt(gp, t);
               const x = PAD_L + px;
               const y = v ? yHi : yLo;
               if (px === 0) ctx.moveTo(x, yLo);
@@ -148,7 +148,7 @@
             let prevV = -1, started = false;
             for (let px = 0; px <= plotW; px++) {
               const t = tStart + (px / plotW) * winUs;
-              const v = PochiStore.pinValueAt(gp, t);
+              const v = TcapiStore.pinValueAt(gp, t);
               const x = PAD_L + px;
               const y = v ? yHi : yLo;
               if (!started) { ctx.moveTo(x, y); started = true; }
@@ -211,7 +211,7 @@
     // cursor dragging
     function onPointerDown(e) {
       const rect = canvasRef.current.getBoundingClientRect();
-      const S = PochiStore.get();
+      const S = TcapiStore.get();
       const PAD_L = 92, PAD_R = 14;
       const plotW = rect.width - PAD_L - PAD_R;
       const winUs = S.windowUs;
@@ -231,7 +231,7 @@
       const rect = canvasRef.current.getBoundingClientRect();
       const x = Math.max(d.PAD_L, Math.min(rect.width - 14, e.clientX - rect.left));
       const t = d.tStart + ((x - d.PAD_L) / d.plotW) * d.winUs;
-      PochiStore.setCursor(d.idx, t);
+      TcapiStore.setCursor(d.idx, t);
     }
     function up() {
       dragRef.current = null;
@@ -239,7 +239,7 @@
       window.removeEventListener('pointerup', up);
     }
 
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const allInputs = [];
     for (let gp = S.splitIndex; gp < window.SIM.NUM_PINS; gp++) allInputs.push(gp);
     const outs = [];
@@ -255,11 +255,11 @@
           <div style={{ flex: 1 }} />
           <div className="seg">
             {[3000, 6000, 12000].map((w) => (
-              <button key={w} className={S.windowUs === w ? 'active' : ''} onClick={() => PochiStore.setWindow(w)}>{w / 1000}ms</button>
+              <button key={w} className={S.windowUs === w ? 'active' : ''} onClick={() => TcapiStore.setWindow(w)}>{w / 1000}ms</button>
             ))}
           </div>
-          <button className="btn ghost sm" onClick={() => PochiStore.setRecording(!S.recording)}>{S.recording ? 'Pause' : 'Rec'}</button>
-          <button className="btn ghost sm" onClick={() => PochiStore.clearWave()}>Clear</button>
+          <button className="btn ghost sm" onClick={() => TcapiStore.setRecording(!S.recording)}>{S.recording ? 'Pause' : 'Rec'}</button>
+          <button className="btn ghost sm" onClick={() => TcapiStore.clearWave()}>Clear</button>
         </div>
         <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
           <div ref={wrapRef} style={{ position: 'relative', flex: 1, minWidth: 0 }}>
@@ -286,7 +286,7 @@
   function ChanRow({ gp, on, color }) {
     return (
       <button
-        onClick={() => PochiStore.toggleMonitor(gp)}
+        onClick={() => TcapiStore.toggleMonitor(gp)}
         style={{
           display: 'flex', alignItems: 'center', gap: 7, padding: '4px 6px', borderRadius: 4,
           background: on ? 'var(--surface-2)' : 'transparent', border: '1px solid ' + (on ? 'var(--border-soft)' : 'transparent'),

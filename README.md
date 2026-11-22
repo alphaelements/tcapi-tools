@@ -1,11 +1,11 @@
-# Pochi Tools
+# Tcapi Tools
 
 <!-- TODO: uncomment when CI is wired
-[![CI](https://github.com/alphaelements/pochi-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/alphaelements/pochi-tools/actions)
+[![CI](https://github.com/alphaelements/tcapi-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/alphaelements/tcapi-tools/actions)
 -->
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Multi-language SDK and GUI application for **Pochi-DIO**, an RP2350-based
+Multi-language SDK and GUI application for **Tcapi-DIO**, an RP2350-based
 high-speed digital I/O unit.
 
 ## Features
@@ -15,7 +15,7 @@ high-speed digital I/O unit.
 - **Python SDK** — for scripting, automation, and Jupyter integration
 - **C# SDK** — for .NET and Unity applications
 - **Desktop GUI** — cross-platform app built with Tauri v2 + React
-- **CLI** — see [pochi-cli](https://github.com/alphaelements/pochi-cli) for the standalone command-line tool
+- **CLI** — see [tcapi-cli](https://github.com/alphaelements/tcapi-cli) for the standalone command-line tool
 
 ## SDK Languages
 
@@ -38,7 +38,7 @@ signal monitoring, and pattern editing.
 ## Directory Structure
 
 ```
-pochi-tools/
+tcapi-tools/
 ├── sdk/
 │   ├── rust/           # Rust SDK (reference implementation)
 │   ├── typescript/     # TypeScript/Node.js SDK

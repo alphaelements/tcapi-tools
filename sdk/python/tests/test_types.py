@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-import pochi
-from pochi.errors import InvalidArgumentError, ParseError
-from pochi.types import (
+import tcapi
+from tcapi.errors import InvalidArgumentError, ParseError
+from tcapi.types import (
     DIO_CHANNELS,
     FEAT_RESET,
     FEAT_SYNC,
@@ -75,11 +75,11 @@ def test_pin_label():
 
 
 def test_exported_from_package():
-    assert pochi.ch_to_gp is ch_to_gp
-    assert pochi.gp_to_ch is gp_to_ch
-    assert pochi.pin_label is pin_label
-    assert pochi.VALID_DIO_MASK == VALID_DIO_MASK
-    assert pochi.PinMap is PinMap
+    assert tcapi.ch_to_gp is ch_to_gp
+    assert tcapi.gp_to_ch is gp_to_ch
+    assert tcapi.pin_label is pin_label
+    assert tcapi.VALID_DIO_MASK == VALID_DIO_MASK
+    assert tcapi.PinMap is PinMap
 
 
 # --- removed v1 surface (R-U1) ---
@@ -90,15 +90,15 @@ def test_exported_from_package():
     ["PinMapV2", "PullMode", "SyncDoneEvent", "SyncTimeoutError", "channel_to_gp"],
 )
 def test_v1_names_are_gone(name):
-    assert not hasattr(pochi, name)
-    assert not hasattr(pochi.types, name)
-    assert not hasattr(pochi.errors, name)
+    assert not hasattr(tcapi, name)
+    assert not hasattr(tcapi.types, name)
+    assert not hasattr(tcapi.errors, name)
 
 
 def test_no_tachyon_anywhere_in_the_package():
     from pathlib import Path
 
-    src = Path(pochi.__file__).parent
+    src = Path(tcapi.__file__).parent
     for path in src.glob("*.py"):
         assert "tachyon" not in path.read_text().lower(), path.name
 

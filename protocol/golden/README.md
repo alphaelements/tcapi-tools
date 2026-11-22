@@ -1,8 +1,8 @@
-# Pochi-DIO v2 text protocol — golden transcripts
+# Tcapi-DIO v2 text protocol — golden transcripts
 
 Golden transcripts are the reference record of the v2 text command protocol
 (`proto=2`, REF-V2 section 3). The firmware, the host simulator
-(`pochi-dio-sim`) and every SDK/CLI/extension test replay the same files, so a
+(`tcapi-dio-sim`) and every SDK/CLI/extension test replay the same files, so a
 transcript here is the single source of truth for wire-visible behaviour.
 
 These files started as a **hand-written draft** (A0), written from the spec
@@ -55,11 +55,11 @@ The first three lines of every file are the header:
 * `generated_by=hand` records the origin (written from the spec, not recorded
   from a device); since revision 1 the files are also replayed against the
   firmware, see "Replaying the files".
-* `fw_commit` is the commit of the firmware sources (`pochi-dio`) whose replay
+* `fw_commit` is the commit of the firmware sources (`tcapi-dio`) whose replay
   the transcript passes, as a lowercase hex SHA (7 to 40 digits). A commit cannot
   name itself, so the stamp is set **after** the revision that changed the
   firmware or a transcript has been committed
-  (`scripts/stamp-golden-fw-commit.sh`, in the `pochi-dio` repository; it sets
+  (`scripts/stamp-golden-fw-commit.sh`, in the `tcapi-dio` repository; it sets
   every file to the current `HEAD`) and is committed as a header-only change.
   Until then it carries a `+wt` suffix (`<base sha>+wt`: that commit plus
   uncommitted changes); `check_golden.py` reports such a stamp as a warning.
@@ -276,14 +276,14 @@ levels; `~ dtr` / `~ usb` set the DTR line and the USB state the firmware is tol
 or an event it causes comes out right after the directive. A failing case is reported by its name
 (`golden::<name>` for the `# --- <name> ---` headings of the safety work, the quoted heading text
 for the older sentence headings). The replay is part of `cargo test` of the simulator (a separate crate:
-the root `cargo test` of `pochi-dio` does **not** run it):
+the root `cargo test` of `tcapi-dio` does **not** run it):
 
 ```
 cd sim && cargo test --target <host triple>
 ```
 
 The simulator tests run in the `lefthook` pre-commit and pre-push hooks of
-`pochi-dio` and in the umbrella `scripts/test-all.sh`.
+`tcapi-dio` and in the umbrella `scripts/test-all.sh`.
 
 The replay always runs on virtual time: it moves only through `~ advance`. The live transports of the
 simulator (pty; TCP) can instead tie the virtual clock to real time with `--wall-clock` (virtual time =
@@ -325,7 +325,7 @@ eight feature bits) and `help` lists 24 commands (`reset.txt`); both stay red un
 in. Every other line is unchanged. `check_golden.py` validates the new vocabulary (error names
 `FAILSAFE` / `EXCLUSIVE group=<i> mask=0x%08x`, event `FAILSAFE`, directives `dtr` `usb` `reboot`, the file
 `safety.txt` and its case names, the two new rows of the error table above); its own tests are
-`tests/test_check_golden.py` (pochi-dio only). The replayers (simulator, SDKs, extension, GUI mock) all list `safety.txt`
+`tests/test_check_golden.py` (tcapi-dio only). The replayers (simulator, SDKs, extension, GUI mock) all list `safety.txt`
 and the simulator knows the new directives (revision 4); the new lines stay red until the firmware implements them.
 
 Revision 4 (golden infrastructure, no transcript line changed). `safety.txt` is in the file list of every replayer

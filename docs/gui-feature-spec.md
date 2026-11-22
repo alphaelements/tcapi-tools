@@ -1,12 +1,12 @@
 # GUI Feature Specification
 
-Design specification for the Pochi Tools GUI application. This document
+Design specification for the Tcapi Tools GUI application. This document
 provides complete context for implementing the desktop application.
 
 ## 1. Overview
 
-Pochi Tools GUI is a desktop application for controlling and monitoring
-Pochi-DIO devices. It provides real-time visualization of GPIO states,
+Tcapi Tools GUI is a desktop application for controlling and monitoring
+Tcapi-DIO devices. It provides real-time visualization of GPIO states,
 waveform display, output control, pin map configuration, and pattern
 editing -- all through a modern, dark-themed interface.
 
@@ -29,13 +29,13 @@ need to:
 | Build tool | Vite | 6 |
 | Charting | custom Canvas 2D renderer (from the design prototype) | -- |
 | State management | version-key store + `useSyncExternalStore` (from the design prototype) | -- |
-| Serial communication | pochi-sdk (Rust crate) | 0.1.0 |
+| Serial communication | tcapi-sdk (Rust crate) | 0.1.0 |
 | IPC | Tauri command/event system | -- |
 
 ### Why Tauri v2
 
 - Native serial port access from Rust backend (no Electron serial bridge)
-- Direct integration with `pochi-sdk` (Rust) -- no FFI overhead
+- Direct integration with `tcapi-sdk` (Rust) -- no FFI overhead
 - Small binary size (~10MB vs Electron's ~100MB+)
 - Cross-platform: Linux, macOS, Windows from the same codebase
 - Push events from device flow through Tauri's event system naturally
@@ -44,7 +44,7 @@ need to:
 
 The application is configured in `gui/src-tauri/tauri.conf.json`:
 
-- **Identifier**: `com.alphaelements.pochi-tools`
+- **Identifier**: `com.alphaelements.tcapi-tools`
 - **Window**: 1280x800, resizable, not fullscreen
 - **Dev server**: Vite at `http://localhost:1420`
 
@@ -54,7 +54,7 @@ The application is configured in `gui/src-tauri/tauri.conf.json`:
   channel/GP helpers (`pins.ts`), the v2 map editor helpers (`pinmap.ts`),
   pattern tick conversion (`pattern.ts`), and the mock device conformance
   test (below).
-- **Unit (backend)**: `cargo test -p pochi-gui` — event routing, reconcile
+- **Unit (backend)**: `cargo test -p tcapi-gui` — event routing, reconcile
   rows, `ts get` draining, TOML loading through the SDK config parsers,
   state.
 - **Mock device conformance (golden)**: the browser-only virtual device is
@@ -77,10 +77,10 @@ The application is configured in `gui/src-tauri/tauri.conf.json`:
   the dev server). `mock-device.ts` is the browser-side counterpart of the
   Rust backend: it turns each Tauri command into the wire line(s) the SDK
   sends (so the command log shows real v2 lines), parses the response, and
-  forwards `! INPUT` / `! PATTERN_DONE` as `pochi://*` events. It mirrors
+  forwards `! INPUT` / `! PATTERN_DONE` as `tcapi://*` events. It mirrors
   the rig's loopback wiring (the k-th output pin drives the k-th input pin:
   GP0 → GP12 … GP11 → GP26) and boots with a saved map of GP0-GP11 as
-  outputs. `window.__POCHI_MOCK__` offers test hooks (forced ts overflow,
+  outputs. `window.__TCAPI_MOCK__` offers test hooks (forced ts overflow,
   saved-file capture, direct edge injection, an external `syncEdge()` bus
   edge). The mock device list has two healthy units (`#42`, `#43`) plus one
   rejected for old firmware, so a multi-device scenario can connect to each
@@ -91,7 +91,7 @@ The application is configured in `gui/src-tauri/tauri.conf.json`:
   exercised through the command-log console, the same path a user has
   today.
 - **Hardware**: manual pass driven over Xvfb + xdotool (see
-  `tmp/` handoffs); requires a connected Pochi-DIO.
+  `tmp/` handoffs); requires a connected Tcapi-DIO.
 
 ## 3. Color Palette
 
@@ -220,7 +220,7 @@ The features needed for the first usable release.
 
 ### DevicePanel
 
-**Purpose**: Discover, connect to, and display information about Pochi-DIO
+**Purpose**: Discover, connect to, and display information about Tcapi-DIO
 devices.
 
 **State**:
@@ -307,7 +307,7 @@ fn subscribe(enable: bool) -> Result<(), String>
 **Tauri Events** (backend to frontend):
 ```rust
 // `inputs` is the logical input word, bit = GP pin
-app.emit("pochi://input", json!({ "inputs": inputs, "timestampUs": t_us }));
+app.emit("tcapi://input", json!({ "inputs": inputs, "timestampUs": t_us }));
 ```
 
 ### OutputControl
@@ -552,11 +552,11 @@ receives no safety command.
 - FAILSAFE banner under the menu bar while the latch is set: the cause
   (`wdog` / `usb`), `Outputs to default` (always enabled) and
   `Release failsafe…`, which asks for confirmation before `failsafe clear`.
-  Source: `pochi://failsafe` plus a `get_safety` read on connect, on every
+  Source: `tcapi://failsafe` plus a `get_safety` read on connect, on every
   push, after every safety action and after any write refused with
   `ERR FAILSAFE`.
 - Heartbeat: the Watchdog section shows `running` (ping period) / `off` /
-  `failed: <message>`; `pochi://heartbeat-failed` also raises a banner with
+  `failed: <message>`; `tcapi://heartbeat-failed` also raises a banner with
   `Restart heartbeat`.
 - Exclusive violation: `ERR EXCLUSIVE group=<i> mask=0x...` is shown as the
   group number and the pin names of the mask (`GP2 (ch2), GP3 (ch3)`).
@@ -577,9 +577,9 @@ receives no safety command.
 2. React component calls: await invoke("read_inputs")
 3. Tauri routes to: #[tauri::command] fn read_inputs(state) -> IoState
 4. Rust handler calls: state.connection.read()
-5. pochi-sdk sends: "read\r\n" over serial
+5. tcapi-sdk sends: "read\r\n" over serial
 6. Device responds: "OK in=0x00000005\r\n"
-7. pochi-sdk parses response -> the logical input word 5 (bit = GP pin)
+7. tcapi-sdk parses response -> the logical input word 5 (bit = GP pin)
 8. Tauri serializes IoState to JSON and returns to frontend
 9. React component updates state via the global store
 10. GpioMonitor re-renders with new pin values
@@ -590,9 +590,9 @@ receives no safety command.
 ```
 1. Device detects input change
 2. Device sends: "! INPUT in=0x00000005 t=1234567\r\n"
-3. pochi-sdk background reader receives the line
+3. tcapi-sdk background reader receives the line
 4. Rust backend parses the push event
-5. Backend calls: app.emit("pochi://input", { inputs, timestampUs })
+5. Backend calls: app.emit("tcapi://input", { inputs, timestampUs })
 6. Frontend listener receives the event
 7. The global store is updated
 8. GpioMonitor + WaveformViewer re-render
@@ -658,7 +658,7 @@ the full application.
 ## 9. Tauri Command Reference
 
 Complete list of Tauri commands that the backend must implement. Each
-command corresponds to one or more pochi-sdk calls.
+command corresponds to one or more tcapi-sdk calls.
 
 ### Discovery and Connection
 
@@ -721,7 +721,7 @@ fn map_save() -> Result<(), String>
 fn map_default() -> Result<(), String>
 
 /// Evaluates a map.toml (schema v2, docs/config-files.md) with the SDK
-/// config parser (`pochi_sdk::config::load_map`) and returns the map
+/// config parser (`tcapi_sdk::config::load_map`) and returns the map
 /// without touching the device; the frontend applies it via `map_set`.
 /// Errors read `<path>:<line>: <message>`.
 #[tauri::command]
@@ -746,7 +746,7 @@ fn pattern_load(steps: Vec<PatternStep>) -> Result<u16, String>
 // (pattern_load above)
 
 /// Parses a pattern.toml with the SDK config parser
-/// (`pochi_sdk::config::load_pattern`, holds already converted to ticks),
+/// (`tcapi_sdk::config::load_pattern`, holds already converted to ticks),
 /// uploads it, and returns the parsed steps alongside the accepted count so
 /// the editor can display what was uploaded.
 #[tauri::command]
@@ -783,7 +783,7 @@ fn ts_arm(mask: u32, mode: EdgeMode) -> Result<(), String>
 #[tauri::command]
 fn ts_get(max_events: u16) -> Result<TsResultPayload, String>
 
-/// ts get + host-side straddle reconciliation (pochi-sdk reconcile);
+/// ts get + host-side straddle reconciliation (tcapi-sdk reconcile);
 /// adjusted rows are flagged `reconciled: true`.
 #[tauri::command]
 fn ts_get_reconciled(max_events: u16) -> Result<TsResultPayload, String>
@@ -837,14 +837,14 @@ fn write_text_file(path: String, contents: String) -> Result<(), String>
 
 | Event | Payload | Source |
 |---|---|---|
-| `pochi://log` | `{ direction: "sent"\|"received"\|"event"\|"error", line }` | SDK traffic hook (every wire line) + scan probe failures |
-| `pochi://input` | `{ inputs, timestampUs }` | `! INPUT` push |
-| `pochi://pattern-done` | `{ loops }` | `! PATTERN_DONE` push |
-| `pochi://pattern-timeout` | `{ loops }` | `! PATTERN_TIMEOUT` push |
-| `pochi://unknown-event` | `{ raw }` | unrecognized push lines |
+| `tcapi://log` | `{ direction: "sent"\|"received"\|"event"\|"error", line }` | SDK traffic hook (every wire line) + scan probe failures |
+| `tcapi://input` | `{ inputs, timestampUs }` | `! INPUT` push |
+| `tcapi://pattern-done` | `{ loops }` | `! PATTERN_DONE` push |
+| `tcapi://pattern-timeout` | `{ loops }` | `! PATTERN_TIMEOUT` push |
+| `tcapi://unknown-event` | `{ raw }` | unrecognized push lines |
 
 `inputs` is the logical input word, bit = GP pin. v2 has no sync push event
-(the v1 `SyncDone` / `pochi://sync-done` are gone).
+(the v1 `SyncDone` / `tcapi://sync-done` are gone).
 
 ### Wire types seen by the frontend
 
@@ -893,10 +893,10 @@ fn start_event_listener(app: tauri::AppHandle, rx: mpsc::Receiver<PushEvent>) {
         while let Ok(event) = rx.recv() {
             match event {
                 PushEvent::InputChange { inputs, t_us } => {
-                    app.emit("pochi://input", json!({ "inputs": inputs, "timestampUs": t_us })).ok();
+                    app.emit("tcapi://input", json!({ "inputs": inputs, "timestampUs": t_us })).ok();
                 }
                 PushEvent::PatternDone { loops } => {
-                    app.emit("pochi://pattern-done", json!({ "loops": loops })).ok();
+                    app.emit("tcapi://pattern-done", json!({ "loops": loops })).ok();
                 }
                 // PatternTimeout, Unknown ...; there is no sync event in v2
             }

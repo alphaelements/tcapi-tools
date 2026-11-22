@@ -57,7 +57,7 @@ test("sync disarm always answers OK, even when idle", async ({ page }) => {
 test("two devices connected in turn each keep their own, independent sync clock", async ({
   page,
 }) => {
-  await connect(page); // Pochi-DIO #42, master role
+  await connect(page); // Tcapi-DIO #42, master role
   await sendRaw(page, "sync master");
   await sendRaw(page, "sync start");
   await sendRaw(page, "sync count");
@@ -68,7 +68,7 @@ test("two devices connected in turn each keep their own, independent sync clock"
 
   // Second unit: never touched by #42's session, starts fully idle -- a
   // master-only transition left over from #42 would otherwise still answer.
-  await connectTo(page, "Pochi-DIO #43");
+  await connectTo(page, "Tcapi-DIO #43");
   await sendRaw(page, "sync count");
   await expect(page.getByText("ERR SYNC_STATE", { exact: true }).last()).toBeVisible();
 
@@ -83,5 +83,5 @@ test("two devices connected in turn each keep their own, independent sync clock"
 
 test("auto-scan lists a second healthy unit for multi-device scenarios", async ({ page }) => {
   await gotoMock(page);
-  await expect(page.getByText("Pochi-DIO #43")).toBeVisible();
+  await expect(page.getByText("Tcapi-DIO #43")).toBeVisible();
 });

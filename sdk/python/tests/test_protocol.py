@@ -8,8 +8,8 @@ is the one place a hand-written device line is allowed (R-C4).
 
 import pytest
 
-from pochi import protocol
-from pochi.errors import (
+from tcapi import protocol
+from tcapi.errors import (
     BadMapError,
     BadParamError,
     BusyError,
@@ -25,7 +25,7 @@ from pochi.errors import (
     UnknownCmdError,
     UnknownDeviceError,
 )
-from pochi.types import (
+from tcapi.types import (
     EdgeMode,
     InputChangeEvent,
     PatternDoneEvent,

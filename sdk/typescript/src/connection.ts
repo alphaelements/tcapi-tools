@@ -1,5 +1,5 @@
 /**
- * High-level typed connection to one Pochi-DIO device (protocol v2).
+ * High-level typed connection to one Tcapi-DIO device (protocol v2).
  * Mirrors `sdk/rust/src/connection.rs`.
  *
  * Push events are delivered through `on("input-change" | "pattern-done" |

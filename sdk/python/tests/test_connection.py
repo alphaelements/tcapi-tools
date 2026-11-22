@@ -7,10 +7,10 @@ import queue
 
 import pytest
 
-import pochi
-from pochi import Connection
-from pochi.connection import EventSubscription
-from pochi.errors import (
+import tcapi
+from tcapi import Connection
+from tcapi.connection import EventSubscription
+from tcapi.errors import (
     BadParamError,
     BusyError,
     DisconnectedError,
@@ -21,7 +21,7 @@ from pochi.errors import (
     SyncStateError,
     UnsupportedFirmwareError,
 )
-from pochi.types import (
+from tcapi.types import (
     EdgeMode,
     InputChangeEvent,
     PatternDoneEvent,
@@ -94,7 +94,7 @@ class TestHandshake:
         # NEGATIVE
         port = FakePort()
         port.on_command = lambda _: port.feed("ERR UNKNOWN_CMD")
-        with pytest.raises(pochi.UnknownCmdError):
+        with pytest.raises(tcapi.UnknownCmdError):
             Connection.from_port(port)
         assert port.closed
 
@@ -139,7 +139,7 @@ class TestDeviceInfo:
         port = ReplayPort(None)
         conn = Connection.from_port(port)
         port.on_command = lambda _: port.feed("OK pong=6")
-        with pytest.raises(pochi.ParseError):
+        with pytest.raises(tcapi.ParseError):
             conn.ping(5)
 
     @pytest.mark.parametrize("n", [-1, 256])
@@ -681,7 +681,7 @@ class TestSubscriptions:
         err = first_response("timestamp", "subscribe on")  # reused below only for shape
         assert err == ["OK"]
         port.on_command = lambda line: port.feed("ERR NO_RESOURCE")
-        with pytest.raises(pochi.NoResourceError):
+        with pytest.raises(tcapi.NoResourceError):
             conn.subscribe_events()
         # A later attempt starts from zero again.
         port.on_command = lambda line: port.feed(*SUBSCRIBE_ON)
@@ -716,7 +716,7 @@ def test_unknown_event_is_logged_and_never_delivered(caplog):
     conn = Connection.from_port(port)
     port.on_command = lambda line: port.feed("OK")
     sub = conn.subscribe_events()
-    with caplog.at_level("ERROR", logger="pochi"):
+    with caplog.at_level("ERROR", logger="tcapi"):
         port.feed("! FROBNICATE x=1", event_line("INPUT"))
         got = sub.get(timeout=1)
     assert isinstance(got, InputChangeEvent)

@@ -2,8 +2,8 @@
 
 ## 1. Overview
 
-Pochi Tools is a monorepo providing multi-language SDKs and a GUI application
-for **Pochi-DIO**, an RP2350-based high-speed digital I/O unit. Pochi-DIO
+Tcapi Tools is a monorepo providing multi-language SDKs and a GUI application
+for **Tcapi-DIO**, an RP2350-based high-speed digital I/O unit. Tcapi-DIO
 offers 25 DIO channels (ch0-ch24 on GP0-GP22, GP26 and GP27) with 40 ns
 timestamp resolution, output pattern generation (200 ns tick), and
 multi-device clock synchronization over a single USB connection.
@@ -32,9 +32,9 @@ arithmetic.
 
 | Repository | Description |
 |---|---|
-| [pochi-dio](https://github.com/alphaelements/pochi-dio) | Firmware (Rust, no_std, bare-metal RP2350) |
-| [pochi-cli](https://github.com/alphaelements/pochi-cli) | Standalone CLI tool (Rust, std) |
-| **pochi-tools** (this repo) | SDKs (Rust/TS/Python/C#) + GUI application |
+| [tcapi-dio](https://github.com/alphaelements/tcapi-dio) | Firmware (Rust, no_std, bare-metal RP2350) |
+| [tcapi-cli](https://github.com/alphaelements/tcapi-cli) | Standalone CLI tool (Rust, std) |
+| **tcapi-tools** (this repo) | SDKs (Rust/TS/Python/C#) + GUI application |
 
 ## 2. System Diagram
 
@@ -43,11 +43,11 @@ arithmetic.
 │ Host Applications                                           │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐│
 │  │ GUI App  │  │ CLI Tool │  │ MCP Srv  │  │ User Apps   ││
-│  │ (Tauri)  │  │(pochi-cli│  │ (future) │  │ (custom)    ││
+│  │ (Tauri)  │  │(tcapi-cli│  │ (future) │  │ (custom)    ││
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬──────┘│
 │       │              │              │               │       │
 │  ┌────┴──────────────┴──────────────┴───────────────┴────┐  │
-│  │                    Pochi SDK                          │  │
+│  │                    Tcapi SDK                          │  │
 │  │  Rust │ TypeScript │ Python │ C#                      │  │
 │  │  ─────────────────────────────────                    │  │
 │  │  discovery │ transport │ protocol │ events │ types    │  │
@@ -56,13 +56,13 @@ arithmetic.
 └───────────────────────────┼─────────────────────────────────┘
                             │
                    ┌────────┴────────┐
-                   │   Pochi-DIO     │
+                   │   Tcapi-DIO     │
                    │   (RP2350)      │
                    │   25 DIO pins   │
                    └─────────────────┘
 ```
 
-The host communicates with Pochi-DIO over USB CDC using a text-based command
+The host communicates with Tcapi-DIO over USB CDC using a text-based command
 protocol. The SDK abstracts the serial port handling, command framing,
 response parsing, and event subscription into a clean API. The GUI and CLI
 are thin layers on top of the SDK.
@@ -74,8 +74,8 @@ same layers to ensure consistent behavior and API surface.
 
 ### Layer 1 -- Discovery
 
-Enumerates USB serial ports and identifies Pochi-DIO devices by filtering on
-USB VID (`0x2E8A`), PID (`0x000A`), and product string prefix (`"Pochi"`),
+Enumerates USB serial ports and identifies Tcapi-DIO devices by filtering on
+USB VID (`0x2E8A`), PID (`0x000A`), and product string prefix (`"Tcapi"`),
 then confirms `proto=2` with `version`. Returns a list of `DeviceInfo`
 objects containing UID, device number, port path, and firmware version.
 
@@ -138,7 +138,7 @@ host:
   (`caps.tick_ns`); a nanosecond value is converted only when it is an exact
   multiple, otherwise it is an error.
 - **TOML configuration**: `map.toml` / `pattern.toml` parsing lives in the Rust
-  SDK (`pochi-sdk` `config`) only; the CLI, the GUI backend and the VS Code
+  SDK (`tcapi-sdk` `config`) only; the CLI, the GUI backend and the VS Code
   extension (through its native layer) reuse it.
 
 ## 4. GUI Architecture
@@ -168,13 +168,13 @@ The GUI is a desktop application built with **Tauri v2** (Rust backend) and
 │  // push events:                            │    │
 │  app.emit("input-change", payload) ─────────┘    │
 │                                                  │
-│  pochi-sdk (Rust) ──► serial port ──► device     │
+│  tcapi-sdk (Rust) ──► serial port ──► device     │
 └──────────────────────────────────────────────────┘
 ```
 
 - **Frontend to Backend**: The React frontend calls Tauri commands via
   `invoke()`. Each command is a Rust function annotated with
-  `#[tauri::command]` that delegates to `pochi-sdk`.
+  `#[tauri::command]` that delegates to `tcapi-sdk`.
 - **Backend to Frontend**: Push events from the device (input changes,
   pattern completion, sync events) are forwarded to the frontend via
   `app.emit()`. The frontend subscribes with `listen()`.
@@ -185,7 +185,7 @@ The GUI is a desktop application built with **Tauri v2** (Rust backend) and
 ## 5. Monorepo Structure
 
 ```
-pochi-tools/
+tcapi-tools/
 ├── Cargo.toml              # Rust workspace root (members: sdk/rust, gui/src-tauri)
 ├── Cargo.lock              # Committed -- reproducible builds
 ├── deny.toml               # cargo-deny configuration (license auditing)
@@ -194,25 +194,25 @@ pochi-tools/
 │
 ├── sdk/
 │   ├── rust/               # Reference SDK implementation
-│   │   ├── Cargo.toml      # pochi-sdk crate
+│   │   ├── Cargo.toml      # tcapi-sdk crate
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── types.rs    # All shared types (DeviceInfo, Capabilities, etc.)
 │   │       └── error.rs    # SdkError enum with typed device error codes
 │   │
-│   ├── typescript/         # TypeScript SDK (@pochi/sdk)
+│   ├── typescript/         # TypeScript SDK (@alphaelements/tcapi-sdk)
 │   │   ├── package.json
 │   │   ├── tsconfig.json
 │   │   └── src/
 │   │
-│   ├── python/             # Python SDK (pochi-sdk)
+│   ├── python/             # Python SDK (tcapi-sdk)
 │   │   ├── pyproject.toml
 │   │   └── src/
 │   │
-│   └── csharp/             # C# SDK (Pochi.Sdk)
-│       ├── Pochi.Sdk.sln
-│       ├── src/Pochi.Sdk/
-│       └── tests/Pochi.Sdk.Tests/
+│   └── csharp/             # C# SDK (Tcapi.Sdk)
+│       ├── Tcapi.Sdk.sln
+│       ├── src/Tcapi.Sdk/
+│       └── tests/Tcapi.Sdk.Tests/
 │
 ├── gui/
 │   ├── package.json        # Frontend (React + Vite)
@@ -225,7 +225,7 @@ pochi-tools/
 │   │   └── styles/
 │   ├── public/
 │   └── src-tauri/          # Tauri backend (Rust)
-│       ├── Cargo.toml      # pochi-gui crate (depends on pochi-sdk)
+│       ├── Cargo.toml      # tcapi-gui crate (depends on tcapi-sdk)
 │       ├── tauri.conf.json
 │       └── src/
 │           ├── main.rs
@@ -250,14 +250,14 @@ pochi-tools/
 
 The Rust workspace (`Cargo.toml` at the root) includes two members:
 
-- `sdk/rust` -- the `pochi-sdk` crate, the foundation for all host-side logic
-- `gui/src-tauri` -- the `pochi-gui` crate, which depends on `pochi-sdk`
+- `sdk/rust` -- the `tcapi-sdk` crate, the foundation for all host-side logic
+- `gui/src-tauri` -- the `tcapi-gui` crate, which depends on `tcapi-sdk`
 
 Node packages are managed separately:
 
 - `gui/` -- Vite + React frontend with `@tauri-apps/api` and
   `@tauri-apps/plugin-shell`
-- `sdk/typescript/` -- standalone TypeScript SDK (`@pochi/sdk`)
+- `sdk/typescript/` -- standalone TypeScript SDK (`@alphaelements/tcapi-sdk`)
 
 Python and C# packages have their own build systems (`pyproject.toml` and
 `.sln`/`.csproj` respectively).

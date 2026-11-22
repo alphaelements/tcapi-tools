@@ -4,7 +4,7 @@ import {
   findByDeviceNumber,
   findByUid,
   findDuplicateNumbers,
-  matchesPochi,
+  matchesTcapi,
   probeTransport,
   selectSoleDevice,
 } from "../src/discovery.js";
@@ -25,22 +25,22 @@ async function expectCode(promise: Promise<unknown>, code: ErrorCode): Promise<v
   throw new Error(`expected SdkError ${code}`);
 }
 
-describe("matchesPochi", () => {
+describe("matchesTcapi", () => {
   const base = { path: "/dev/ttyACM0", vendorId: "2E8A", productId: "1175" };
 
-  it("accepts a Pochi product on VID 2E8A / PID 1175 (case-insensitive ids)", () => {
-    expect(matchesPochi({ ...base, pnpId: "usb-Raspberry_Pi_Pochi-DIO_0123-if00" })).toBe(true);
-    expect(matchesPochi({ ...base, vendorId: "2e8a", productId: "1175", pnpId: "usb-Pochi" })).toBe(true);
+  it("accepts a Tcapi product on VID 2E8A / PID 1175 (case-insensitive ids)", () => {
+    expect(matchesTcapi({ ...base, pnpId: "usb-Raspberry_Pi_Tcapi-DIO_0123-if00" })).toBe(true);
+    expect(matchesTcapi({ ...base, vendorId: "2e8a", productId: "1175", pnpId: "usb-Tcapi" })).toBe(true);
   });
 
   it("rejects the legacy Tachyon name", () => {
-    expect(matchesPochi({ ...base, pnpId: "usb-Raspberry_Pi_Tachyon-DIO_0123-if00" })).toBe(false);
+    expect(matchesTcapi({ ...base, pnpId: "usb-Raspberry_Pi_Tachyon-DIO_0123-if00" })).toBe(false);
   });
 
   it("rejects a Debugprobe (PID 000c), other vendors and a missing product string", () => {
-    expect(matchesPochi({ ...base, productId: "000c", pnpId: "usb-Pochi" })).toBe(false);
-    expect(matchesPochi({ ...base, vendorId: "1234", pnpId: "usb-Pochi" })).toBe(false);
-    expect(matchesPochi(base)).toBe(false);
+    expect(matchesTcapi({ ...base, productId: "000c", pnpId: "usb-Tcapi" })).toBe(false);
+    expect(matchesTcapi({ ...base, vendorId: "1234", pnpId: "usb-Tcapi" })).toBe(false);
+    expect(matchesTcapi(base)).toBe(false);
   });
 });
 
@@ -93,19 +93,19 @@ describe("selection helpers", () => {
 
   it("findByUid is case-insensitive", () => {
     expect(findByUid([a, b], "aabbccdd11223344")).toBe(a);
-    expect(() => findByUid([a], "FF")).toThrow(/no Pochi-DIO device with UID/);
+    expect(() => findByUid([a], "FF")).toThrow(/no Tcapi-DIO device with UID/);
   });
 
   it("findByDeviceNumber reports duplicates as MultipleDevices", () => {
     expect(findByDeviceNumber([a, c], 1)).toBe(a);
     expect(() => findByDeviceNumber([a, b], 1)).toThrow(/multiple devices/);
-    expect(() => findByDeviceNumber([a], 9)).toThrow(/no Pochi-DIO device/);
+    expect(() => findByDeviceNumber([a], 9)).toThrow(/no Tcapi-DIO device/);
   });
 
   it("selectSoleDevice", () => {
     expect(selectSoleDevice([c])).toBe(c);
-    expect(() => selectSoleDevice([])).toThrow(/no Pochi-DIO device found/);
-    expect(() => selectSoleDevice([a, b])).toThrow(/2 Pochi-DIO devices/);
+    expect(() => selectSoleDevice([])).toThrow(/no Tcapi-DIO device found/);
+    expect(() => selectSoleDevice([a, b])).toThrow(/2 Tcapi-DIO devices/);
   });
 
   it("findDuplicateNumbers ignores unassigned devices", () => {

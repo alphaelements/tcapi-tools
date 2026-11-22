@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capability set for Pochi Tools",
+  "description": "Default capability set for Tcapi Tools",
   "windows": [
     "main"
   ],

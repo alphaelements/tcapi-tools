@@ -6,8 +6,8 @@ use crate::connection::Connection;
 use crate::error::{Result, SdkError};
 use crate::types::DeviceInfo;
 
-const POCHI_VID: u16 = 0x2E8A;
-const POCHI_PID: u16 = 0x1175;
+const TCAPI_VID: u16 = 0x2E8A;
+const TCAPI_PID: u16 = 0x1175;
 
 /// A port that matched the USB filter but could not be probed.
 #[derive(Debug)]
@@ -25,19 +25,19 @@ pub struct Discovery {
     pub failures: Vec<ProbeFailure>,
 }
 
-/// Return true if the USB descriptor identifies a Pochi-DIO (R-U1: the
-/// product string must start with "Pochi"; no other name is accepted).
-fn matches_pochi(info: &serialport::UsbPortInfo) -> bool {
-    info.vid == POCHI_VID
-        && info.pid == POCHI_PID
+/// Return true if the USB descriptor identifies a Tcapi-DIO (R-U1: the
+/// product string must start with "Tcapi"; no other name is accepted).
+fn matches_tcapi(info: &serialport::UsbPortInfo) -> bool {
+    info.vid == TCAPI_VID
+        && info.pid == TCAPI_PID
         && info
             .product
             .as_ref()
-            .is_some_and(|p| p.starts_with("Pochi"))
+            .is_some_and(|p| p.starts_with("Tcapi"))
 }
 
-/// List serial port paths whose USB descriptors match a Pochi-DIO
-/// (VID 0x2E8A / PID 0x1175 / product "Pochi*").
+/// List serial port paths whose USB descriptors match a Tcapi-DIO
+/// (VID 0x2E8A / PID 0x1175 / product "Tcapi*").
 /// No ports are opened. Results are sorted by port path: the OS
 /// enumeration order is unspecified, and callers rely on a deterministic
 /// device order.
@@ -46,7 +46,7 @@ pub fn enumerate_ports() -> Result<Vec<String>> {
     let mut matched: Vec<String> = ports
         .into_iter()
         .filter_map(|port| match &port.port_type {
-            SerialPortType::UsbPort(info) if matches_pochi(info) => Some(port.port_name),
+            SerialPortType::UsbPort(info) if matches_tcapi(info) => Some(port.port_name),
             _ => None,
         })
         .collect();
@@ -61,7 +61,7 @@ pub fn probe(port_path: &str) -> Result<DeviceInfo> {
     Connection::open(port_path)?.info()
 }
 
-/// Enumerate and probe all connected Pochi-DIO devices, reporting probe
+/// Enumerate and probe all connected Tcapi-DIO devices, reporting probe
 /// failures alongside successes.
 pub fn discover_detailed() -> Result<Discovery> {
     let mut result = Discovery::default();
@@ -74,7 +74,7 @@ pub fn discover_detailed() -> Result<Discovery> {
     Ok(result)
 }
 
-/// Enumerate and probe all connected Pochi-DIO devices.
+/// Enumerate and probe all connected Tcapi-DIO devices.
 ///
 /// Convenience wrapper over [`discover_detailed`] that returns devices
 /// only; use the detailed variant to inspect per-port probe failures.
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn usb_filter_accepts_pochi_only() {
+    fn usb_filter_accepts_tcapi_only() {
         let info = |vid, pid, product: Option<&str>| serialport::UsbPortInfo {
             vid,
             pid,
@@ -153,14 +153,14 @@ mod tests {
             manufacturer: None,
             product: product.map(str::to_string),
         };
-        assert!(matches_pochi(&info(0x2E8A, 0x1175, Some("Pochi-DIO"))));
+        assert!(matches_tcapi(&info(0x2E8A, 0x1175, Some("Tcapi-DIO"))));
         // The pre-rename product name is no longer accepted (R-U1).
-        assert!(!matches_pochi(&info(0x2E8A, 0x1175, Some("Tachyon-DIO"))));
+        assert!(!matches_tcapi(&info(0x2E8A, 0x1175, Some("Tachyon-DIO"))));
         // Debugprobe: same VID, different PID — must NOT match.
-        assert!(!matches_pochi(&info(0x2E8A, 0x000C, Some("Debugprobe"))));
-        assert!(!matches_pochi(&info(0x2E8A, 0x1175, Some("Other"))));
-        assert!(!matches_pochi(&info(0x2E8A, 0x1175, None)));
-        assert!(!matches_pochi(&info(0x1234, 0x1175, Some("Pochi-DIO"))));
+        assert!(!matches_tcapi(&info(0x2E8A, 0x000C, Some("Debugprobe"))));
+        assert!(!matches_tcapi(&info(0x2E8A, 0x1175, Some("Other"))));
+        assert!(!matches_tcapi(&info(0x2E8A, 0x1175, None)));
+        assert!(!matches_tcapi(&info(0x1234, 0x1175, Some("Tcapi-DIO"))));
     }
 
     #[test]

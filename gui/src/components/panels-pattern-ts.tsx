@@ -10,7 +10,7 @@ import { fmt } from "../lib/fmt";
 import { invoke, tauriAvailable } from "../lib/tauri";
 import { formatHold, parseHoldInput } from "../lib/pattern";
 import { pinLabel } from "../lib/pins";
-import { PatternStepUi, PochiStore, useStore } from "../store/store";
+import { PatternStepUi, TcapiStore, useStore } from "../store/store";
 
 /// Hold field text → ticks. Text that is not a valid hold becomes 0, which
 /// the field flags and the upload rejects with a clear error.
@@ -51,21 +51,21 @@ function PatternPreview({ steps, outs, curStep, playing }: { steps: PatternStepU
 
 export function PatternEditor() {
   useStore(["pattern", "map", "conn"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const p = S.pattern;
   const connected = S.connStatus === "connected";
-  const outs = PochiStore.outputChannels();
+  const outs = TcapiStore.outputChannels();
   const nOut = outs.length;
   const running = p.playState === "running";
-  const tickNs = PochiStore.tickNs();
+  const tickNs = TcapiStore.tickNs();
 
   async function loadFile() {
     if (!tauriAvailable) {
-      PochiStore.addLog("error", "pattern file: file dialog requires the Tauri runtime");
+      TcapiStore.addLog("error", "pattern file: file dialog requires the Tauri runtime");
       return;
     }
     const path = await open({ filters: [{ name: "TOML", extensions: ["toml"] }], multiple: false });
-    if (typeof path === "string") await PochiStore.loadPatternToml(path);
+    if (typeof path === "string") await TcapiStore.loadPatternToml(path);
   }
 
   return (
@@ -89,8 +89,8 @@ export function PatternEditor() {
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, padding: 7, borderTop: "1px solid var(--border-soft)" }}>
-          <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => PochiStore.addStep()}>+ Step</button>
-          <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => void PochiStore.loadPattern(p.steps)}>↑ Upload</button>
+          <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => TcapiStore.addStep()}>+ Step</button>
+          <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => void TcapiStore.loadPattern(p.steps)}>↑ Upload</button>
         </div>
       </div>
 
@@ -107,21 +107,21 @@ export function PatternEditor() {
       {/* mode + controls */}
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <div className="seg">
-          <button className={p.mode === "once" ? "active" : ""} onClick={() => PochiStore.setPatternMode("once")}>Once</button>
-          <button className={p.mode === "loop" ? "active" : ""} onClick={() => PochiStore.setPatternMode("loop")}>Loop</button>
+          <button className={p.mode === "once" ? "active" : ""} onClick={() => TcapiStore.setPatternMode("once")}>Once</button>
+          <button className={p.mode === "loop" ? "active" : ""} onClick={() => TcapiStore.setPatternMode("loop")}>Loop</button>
         </div>
         {p.mode === "loop" && (
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <span className="eyebrow">×</span>
-            <input className="field" style={{ width: 50 }} value={p.repeat || ""} placeholder="∞" onChange={(e) => PochiStore.setPatternRepeat(parseInt(e.target.value) || 0)} />
+            <input className="field" style={{ width: 50 }} value={p.repeat || ""} placeholder="∞" onChange={(e) => TcapiStore.setPatternRepeat(parseInt(e.target.value) || 0)} />
           </div>
         )}
       </div>
       <div style={{ display: "flex", gap: 6 }}>
         {!running ? (
-          <button className="btn primary" style={{ flex: 1, justifyContent: "center" }} disabled={!p.steps.length} onClick={() => void PochiStore.runPattern()}>▶ Run</button>
+          <button className="btn primary" style={{ flex: 1, justifyContent: "center" }} disabled={!p.steps.length} onClick={() => void TcapiStore.runPattern()}>▶ Run</button>
         ) : (
-          <button className="btn danger" style={{ flex: 1, justifyContent: "center" }} onClick={() => void PochiStore.stopPattern()}>■ Stop</button>
+          <button className="btn danger" style={{ flex: 1, justifyContent: "center" }} onClick={() => void TcapiStore.stopPattern()}>■ Stop</button>
         )}
         <button className="btn" onClick={() => void loadFile()}>Load File…</button>
       </div>
@@ -165,7 +165,7 @@ function StepRow({ step, idx, outs, tickNs, active }: { step: PatternStepUi; idx
     const b = outs[i];
     const on = (step.out >>> b) & 1;
     bits.push(
-      <button key={b} title={pinLabel(b)} onClick={() => PochiStore.updateStep(idx, { out: (step.out ^ (1 << b)) >>> 0 })}
+      <button key={b} title={pinLabel(b)} onClick={() => TcapiStore.updateStep(idx, { out: (step.out ^ (1 << b)) >>> 0 })}
         style={{ width: 15, height: 17, borderRadius: 2, border: "1px solid " + (on ? "var(--high)" : "var(--border)"), background: on ? "var(--high)" : "var(--scope-bg)", cursor: "pointer", padding: 0, color: on ? "#0d0d15" : "var(--text-dim)", fontSize: 8, fontWeight: 700, fontFamily: "var(--font-mono)" }}>
         {on ? "1" : "0"}
       </button>
@@ -175,8 +175,8 @@ function StepRow({ step, idx, outs, tickNs, active }: { step: PatternStepUi; idx
     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border-soft)", background: active ? "color-mix(in oklab, var(--accent) 14%, transparent)" : "transparent" }}>
       <span className="mono" style={{ width: 22, fontSize: 10.5, color: "var(--text-dim)" }}>{String(idx).padStart(2, "0")}</span>
       <div style={{ flex: 1, display: "flex", gap: 2, flexWrap: "wrap" }}>{bits}</div>
-      <HoldInput holdTicks={step.holdTicks} tickNs={tickNs} onChange={(holdTicks) => PochiStore.updateStep(idx, { holdTicks })} />
-      <button className="btn ghost icon sm" style={{ width: 20, height: 20 }} onClick={() => PochiStore.removeStep(idx)} title="remove">×</button>
+      <HoldInput holdTicks={step.holdTicks} tickNs={tickNs} onChange={(holdTicks) => TcapiStore.updateStep(idx, { holdTicks })} />
+      <button className="btn ghost icon sm" style={{ width: 20, height: 20 }} onClick={() => TcapiStore.removeStep(idx)} title="remove">×</button>
     </div>
   );
 }
@@ -184,7 +184,7 @@ function StepRow({ step, idx, outs, tickNs, active }: { step: PatternStepUi; idx
 // ---------------- TimestampViewer ----------------
 export function TimestampViewer() {
   useStore(["ts", "conn"]);
-  const S = PochiStore.get();
+  const S = TcapiStore.get();
   const connected = S.connStatus === "connected";
   const ts = S.ts;
   const [reconcile, setReconcile] = useState(true);
@@ -195,7 +195,7 @@ export function TimestampViewer() {
   // pins (R-PIN2); "all inputs" is exactly the complement of the direction
   // mask within the DIO pins.
   function allInputsMask() {
-    return PochiStore.inputMask();
+    return TcapiStore.inputMask();
   }
 
   const stats = useMemo(() => {
@@ -225,18 +225,18 @@ export function TimestampViewer() {
         <span className="eyebrow">edge</span>
         <div className="seg">
           {(["rising", "falling", "both"] as const).map((e) => (
-            <button key={e} className={ts.edge === e ? "active" : ""} onClick={() => void PochiStore.armTs(ts.armed ? ts.mask : allInputsMask(), e)}>{e}</button>
+            <button key={e} className={ts.edge === e ? "active" : ""} onClick={() => void TcapiStore.armTs(ts.armed ? ts.mask : allInputsMask(), e)}>{e}</button>
           ))}
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 6 }}>
         {!ts.armed ? (
-          <button className="btn primary sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => void PochiStore.armTs(allInputsMask(), ts.edge)}>Arm</button>
+          <button className="btn primary sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => void TcapiStore.armTs(allInputsMask(), ts.edge)}>Arm</button>
         ) : (
-          <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => void PochiStore.disarmTs()}>Disarm</button>
+          <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => void TcapiStore.disarmTs()}>Disarm</button>
         )}
-        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={!ts.armed} onClick={() => void PochiStore.captureTs(reconcile)}>Capture</button>
+        <button className="btn sm" style={{ flex: 1, justifyContent: "center" }} disabled={!ts.armed} onClick={() => void TcapiStore.captureTs(reconcile)}>Capture</button>
       </div>
       <label onClick={() => setReconcile(!reconcile)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--text-secondary)", cursor: "pointer" }}>
         <span className={"switch " + (reconcile ? "on" : "")} style={{ transform: "scale(.8)" }}></span>
@@ -287,7 +287,7 @@ export function TimestampViewer() {
   );
 }
 
-type TsResultUi = NonNullable<ReturnType<typeof PochiStore.get>["ts"]["result"]>;
+type TsResultUi = NonNullable<ReturnType<typeof TcapiStore.get>["ts"]["result"]>;
 
 async function exportData(kind: "csv" | "json", res: TsResultUi | null) {
   if (!res) return;
@@ -334,9 +334,9 @@ async function exportData(kind: "csv" | "json", res: TsResultUi | null) {
   if (path) {
     try {
       await invoke("write_text_file", { path, contents });
-      PochiStore.addLog("received", `export ${kind}: ${res.rows.length} rows → ${path}`);
+      TcapiStore.addLog("received", `export ${kind}: ${res.rows.length} rows → ${path}`);
     } catch (e) {
-      PochiStore.addLog("error", `export ${kind}: ${e instanceof Error ? e.message : String(e)}`);
+      TcapiStore.addLog("error", `export ${kind}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }

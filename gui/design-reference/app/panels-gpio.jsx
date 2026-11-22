@@ -28,8 +28,8 @@
   }
 
   function PinCell({ gp, layout, shape }) {
-    const S = PochiStore.get();
-    const dir = PochiStore.gpDir(gp);
+    const S = TcapiStore.get();
+    const dir = TcapiStore.gpDir(gp);
     const val = S.pinMeta[gp].value;
     const isInput = dir === 'input';
     const color = val ? 'var(--high)' : 'var(--low)';
@@ -61,7 +61,7 @@
 
   function GpioMonitor({ tweaks }) {
     useStore(['pins', 'map', 'conn']);
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const connected = S.connStatus === 'connected';
     const pins = [];
     for (let gp = 0; gp < window.SIM.NUM_PINS; gp++) pins.push(gp);
@@ -74,8 +74,8 @@
     else if (layout === 'rows2') gridStyle = { display: 'grid', gridTemplateColumns: 'repeat(12, minmax(0,1fr))', gap: 6 };
     else gridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(58px, 1fr))', gap: 6 };
 
-    const inHex = fmt.hex(connected ? PochiStore.inputsSnapshot(S.simT) : 0);
-    const outHex = fmt.hex(connected ? PochiStore.outputsSnapshot() : 0);
+    const inHex = fmt.hex(connected ? TcapiStore.inputsSnapshot(S.simT) : 0);
+    const outHex = fmt.hex(connected ? TcapiStore.outputsSnapshot() : 0);
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, flex: 1, minWidth: 0 }}>
@@ -86,10 +86,10 @@
           <Readout label="OUT" value={outHex} color="#c4b5fd" />
           <div style={{ flex: 1 }} />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer' }}>
-            <span className={'switch ' + (S.subscribed ? 'on' : '')} onClick={() => connected && PochiStore.setSubscribe(!S.subscribed)} style={{ transform: 'scale(.82)' }}></span>
+            <span className={'switch ' + (S.subscribed ? 'on' : '')} onClick={() => connected && TcapiStore.setSubscribe(!S.subscribed)} style={{ transform: 'scale(.82)' }}></span>
             Live
           </label>
-          <button className="btn sm" onClick={() => PochiStore.readState()} disabled={!connected}>Read</button>
+          <button className="btn sm" onClick={() => TcapiStore.readState()} disabled={!connected}>Read</button>
         </div>
         <div className="scroll-y" style={{ flex: 1, padding: 12, opacity: connected ? 1 : 0.45, pointerEvents: connected ? 'auto' : 'none' }}>
           <div style={gridStyle}>

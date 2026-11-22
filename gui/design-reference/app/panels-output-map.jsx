@@ -8,7 +8,7 @@
   // ---------------- OutputControl ----------------
   function OutputControl() {
     useStore(['pins', 'map', 'conn', 'pattern']);
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const connected = S.connStatus === 'connected';
     const locked = S.pattern.playState === 'running';
     const outs = [];
@@ -36,23 +36,23 @@
                 <span className={'dot-led ' + (on ? 'on' : 'low')}></span>
                 <span className="mono" style={{ fontSize: 10.5, color: on ? 'var(--high)' : 'var(--text-dim)', width: 34 }}>{on ? 'HIGH' : 'LOW'}</span>
                 <div style={{ flex: 1 }} />
-                <span className={'switch ' + (on ? 'on' : '')} onClick={() => !disabled && PochiStore.toggleOutput(gp)} style={{ opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? 'none' : 'auto' }}></span>
+                <span className={'switch ' + (on ? 'on' : '')} onClick={() => !disabled && TcapiStore.toggleOutput(gp)} style={{ opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? 'none' : 'auto' }}></span>
               </div>
             );
           })}
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn sm" style={{ flex: 1, justifyContent: 'center' }} disabled={disabled} onClick={() => PochiStore.setAllOutputs(true)}>All HIGH</button>
-          <button className="btn sm" style={{ flex: 1, justifyContent: 'center' }} disabled={disabled} onClick={() => PochiStore.setAllOutputs(false)}>All LOW</button>
-          <button className="btn sm" style={{ flex: 1, justifyContent: 'center' }} disabled={disabled} onClick={() => PochiStore.invertOutputs()}>Invert</button>
+          <button className="btn sm" style={{ flex: 1, justifyContent: 'center' }} disabled={disabled} onClick={() => TcapiStore.setAllOutputs(true)}>All HIGH</button>
+          <button className="btn sm" style={{ flex: 1, justifyContent: 'center' }} disabled={disabled} onClick={() => TcapiStore.setAllOutputs(false)}>All LOW</button>
+          <button className="btn sm" style={{ flex: 1, justifyContent: 'center' }} disabled={disabled} onClick={() => TcapiStore.invertOutputs()}>Invert</button>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <span className="eyebrow">write</span>
           <input className="field" placeholder="0x00" value={hex} disabled={disabled}
             onChange={(e) => setHex(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { const v = parseInt(hex, 16); if (!isNaN(v)) PochiStore.writeHex(v); } }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { const v = parseInt(hex, 16); if (!isNaN(v)) TcapiStore.writeHex(v); } }}
             style={{ flex: 1, minWidth: 0 }} />
-          <button className="btn sm primary" disabled={disabled} onClick={() => { const v = parseInt(hex, 16); if (!isNaN(v)) PochiStore.writeHex(v); }}>Set</button>
+          <button className="btn sm primary" disabled={disabled} onClick={() => { const v = parseInt(hex, 16); if (!isNaN(v)) TcapiStore.writeHex(v); }}>Set</button>
         </div>
       </div>
     );
@@ -61,7 +61,7 @@
   // ---------------- PinMapEditor ----------------
   function PinMapEditor() {
     useStore(['map', 'conn']);
-    const S = PochiStore.get();
+    const S = TcapiStore.get();
     const connected = S.connStatus === 'connected';
     const stripRef = useRef(null);
     const N = window.SIM.NUM_PINS;
@@ -73,7 +73,7 @@
         const rect = stripRef.current.getBoundingClientRect();
         const x = (ev.clientX ?? ev.touches?.[0]?.clientX) - rect.left;
         const idx = Math.round((x / rect.width) * N);
-        PochiStore.setSplit(idx);
+        TcapiStore.setSplit(idx);
         S._mapApplied = false;
       };
       const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
@@ -113,7 +113,7 @@
         <Field label="Pull mode">
           <div className="seg" style={{ width: '100%' }}>
             {['up', 'down', 'none'].map((m) => (
-              <button key={m} style={{ flex: 1 }} className={S.pullDefault === m ? 'active' : ''} onClick={() => { PochiStore.setPull(m); S._mapApplied = false; }}>{m}</button>
+              <button key={m} style={{ flex: 1 }} className={S.pullDefault === m ? 'active' : ''} onClick={() => { TcapiStore.setPull(m); S._mapApplied = false; }}>{m}</button>
             ))}
           </div>
         </Field>
@@ -125,10 +125,10 @@
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-          <button className="btn primary sm" style={{ justifyContent: 'center' }} onClick={() => PochiStore.applyMap()}>Apply</button>
-          <button className="btn sm" style={{ justifyContent: 'center' }} onClick={() => PochiStore.saveMap()}>Save to Flash</button>
-          <button className="btn sm" style={{ justifyContent: 'center' }} onClick={() => PochiStore.defaultMap()}>Reset Default</button>
-          <button className="btn sm" style={{ justifyContent: 'center' }} onClick={() => PochiStore.applyMap()}>Load TOML…</button>
+          <button className="btn primary sm" style={{ justifyContent: 'center' }} onClick={() => TcapiStore.applyMap()}>Apply</button>
+          <button className="btn sm" style={{ justifyContent: 'center' }} onClick={() => TcapiStore.saveMap()}>Save to Flash</button>
+          <button className="btn sm" style={{ justifyContent: 'center' }} onClick={() => TcapiStore.defaultMap()}>Reset Default</button>
+          <button className="btn sm" style={{ justifyContent: 'center' }} onClick={() => TcapiStore.applyMap()}>Load TOML…</button>
         </div>
       </div>
     );

@@ -10,15 +10,15 @@ import time
 
 import pytest
 
-import pochi
-from pochi import Connection
-from pochi.errors import (
+import tcapi
+from tcapi import Connection
+from tcapi.errors import (
     BusyError,
     InvalidArgumentError,
     SdkError,
     TimeoutError_,
 )
-from pochi.heartbeat import Heartbeat, heartbeat_period
+from tcapi.heartbeat import Heartbeat, heartbeat_period
 
 from .fake_port import FakePort
 from .golden import first_response
@@ -152,7 +152,7 @@ def test_a_wrong_pong_fails_the_heartbeat():
     with Connection.from_port(port) as conn:
         hb = conn.start_heartbeat(100)
         failure = hb.wait_failure(2.0)
-        assert isinstance(failure, pochi.ParseError)
+        assert isinstance(failure, tcapi.ParseError)
 
 
 def test_raise_if_failed_raises_the_failure_on_the_next_call():

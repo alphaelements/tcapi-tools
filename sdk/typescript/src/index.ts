@@ -1,5 +1,5 @@
 /**
- * TypeScript SDK for Pochi-DIO — RP2350-based high-speed digital I/O unit.
+ * TypeScript SDK for Tcapi-DIO — RP2350-based high-speed digital I/O unit.
  *
  * Talks the USB CDC text command mode of protocol v2 (`{cmd}\r\n` ->
  * `OK ...` / `ERR ...`, push lines `! ...`). Opening a connection asserts DTR
@@ -27,7 +27,7 @@ export {
   findByDeviceNumber,
   findByUid,
   findDuplicateNumbers,
-  matchesPochi,
+  matchesTcapi,
   probe,
   probeTransport,
   selectSoleDevice,

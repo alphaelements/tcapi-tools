@@ -1,3 +1,3 @@
 fn main() {
-    pochi_gui_lib::run()
+    tcapi_gui_lib::run()
 }

@@ -2328,33 +2328,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pochi-gui"
-version = "0.1.0"
-dependencies = [
- "pochi-sdk",
- "serde",
- "serde_json",
- "serialport",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-shell",
-]
-
-[[package]]
-name = "pochi-sdk"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "hex",
- "serde",
- "serde_json",
- "serialport",
- "thiserror 2.0.18",
- "toml 0.8.2",
-]
-
-[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3492,6 +3465,33 @@ dependencies = [
  "dunce",
  "embed-resource",
  "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "tcapi-gui"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serialport",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-shell",
+ "tcapi-sdk",
+]
+
+[[package]]
+name = "tcapi-sdk"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "hex",
+ "serde",
+ "serde_json",
+ "serialport",
+ "thiserror 2.0.18",
+ "toml 0.8.2",
 ]
 
 [[package]]

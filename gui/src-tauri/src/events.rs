@@ -5,10 +5,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use pochi_sdk::{Heartbeat, PushEvent, TrafficDirection, TrafficHook};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
+use tcapi_sdk::{Heartbeat, PushEvent, TrafficDirection, TrafficHook};
 
 /// One line of device traffic for the frontend command log.
 #[derive(Debug, Clone, Serialize)]
@@ -26,11 +26,11 @@ pub fn direction_label(dir: TrafficDirection) -> &'static str {
     }
 }
 
-/// Build the traffic hook that mirrors every wire line to `pochi://log`.
+/// Build the traffic hook that mirrors every wire line to `tcapi://log`.
 pub fn traffic_hook(app: AppHandle) -> TrafficHook {
     Arc::new(move |dir, line: &str| {
         let _ = app.emit(
-            "pochi://log",
+            "tcapi://log",
             LogPayload {
                 direction: direction_label(dir),
                 line: line.to_string(),
@@ -43,15 +43,15 @@ pub fn traffic_hook(app: AppHandle) -> TrafficHook {
 pub fn route(event: &PushEvent) -> (&'static str, Value) {
     match event {
         PushEvent::InputChange { inputs, t_us } => (
-            "pochi://input",
+            "tcapi://input",
             json!({ "inputs": inputs, "timestampUs": t_us }),
         ),
-        PushEvent::PatternDone { loops } => ("pochi://pattern-done", json!({ "loops": loops })),
+        PushEvent::PatternDone { loops } => ("tcapi://pattern-done", json!({ "loops": loops })),
         PushEvent::PatternTimeout { loops } => {
-            ("pochi://pattern-timeout", json!({ "loops": loops }))
+            ("tcapi://pattern-timeout", json!({ "loops": loops }))
         }
-        PushEvent::Failsafe { cause } => ("pochi://failsafe", json!({ "cause": cause.as_str() })),
-        PushEvent::Unknown { raw } => ("pochi://unknown-event", json!({ "raw": raw })),
+        PushEvent::Failsafe { cause } => ("tcapi://failsafe", json!({ "cause": cause.as_str() })),
+        PushEvent::Unknown { raw } => ("tcapi://unknown-event", json!({ "raw": raw })),
     }
 }
 
@@ -99,7 +99,7 @@ pub enum HeartbeatPoll {
 /// Event name and payload for a heartbeat that stopped on a failure. The
 /// device will trip its own watchdog; the UI should say so.
 pub fn heartbeat_failed(message: &str) -> (&'static str, Value) {
-    ("pochi://heartbeat-failed", json!({ "message": message }))
+    ("tcapi://heartbeat-failed", json!({ "message": message }))
 }
 
 /// Drive a heartbeat monitor: `poll` until `stop` is set, the heartbeat
@@ -128,7 +128,7 @@ pub fn watch_heartbeat(
 }
 
 /// Own `heartbeat` on a monitor thread: report its failure as
-/// `pochi://heartbeat-failed`, and stop it (dropping it sends nothing to the
+/// `tcapi://heartbeat-failed`, and stop it (dropping it sends nothing to the
 /// device and changes no output) when the returned flag is set.
 pub fn spawn_heartbeat_monitor(app: AppHandle, heartbeat: Heartbeat) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -166,7 +166,7 @@ mod tests {
             inputs: 0x1F00,
             t_us: 1_234_567,
         });
-        assert_eq!(name, "pochi://input");
+        assert_eq!(name, "tcapi://input");
         assert_eq!(payload["inputs"], 0x1F00);
         assert_eq!(payload["timestampUs"], 1_234_567);
     }
@@ -174,23 +174,23 @@ mod tests {
     #[test]
     fn pattern_done_routes_with_loops() {
         let (name, payload) = route(&PushEvent::PatternDone { loops: 3 });
-        assert_eq!(name, "pochi://pattern-done");
+        assert_eq!(name, "tcapi://pattern-done");
         assert_eq!(payload["loops"], 3);
     }
 
     #[test]
     fn failsafe_routes_with_its_cause() {
         let (name, payload) = route(&PushEvent::Failsafe {
-            cause: pochi_sdk::FailsafeCause::Wdog,
+            cause: tcapi_sdk::FailsafeCause::Wdog,
         });
-        assert_eq!(name, "pochi://failsafe");
+        assert_eq!(name, "tcapi://failsafe");
         assert_eq!(payload["cause"], "wdog");
     }
 
     #[test]
     fn pattern_timeout_routes_with_loops() {
         let (name, payload) = route(&PushEvent::PatternTimeout { loops: 7 });
-        assert_eq!(name, "pochi://pattern-timeout");
+        assert_eq!(name, "tcapi://pattern-timeout");
         assert_eq!(payload["loops"], 7);
     }
 
@@ -199,7 +199,7 @@ mod tests {
         let (name, payload) = route(&PushEvent::Unknown {
             raw: "WEIRD 1".to_string(),
         });
-        assert_eq!(name, "pochi://unknown-event");
+        assert_eq!(name, "tcapi://unknown-event");
         assert_eq!(payload["raw"], "WEIRD 1");
     }
 
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn heartbeat_failure_payload_carries_the_message() {
         let (name, payload) = heartbeat_failed("ping: timeout");
-        assert_eq!(name, "pochi://heartbeat-failed");
+        assert_eq!(name, "tcapi://heartbeat-failed");
         assert_eq!(payload["message"], "ping: timeout");
     }
 

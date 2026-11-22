@@ -4,8 +4,8 @@
 
 # Safety functions: watchdog and failsafe latch, exclusive output groups,
 # outputs reset, usbsafe, reset information, pad read-back.
-# Specification: docs/30-usb-protocol.md section 12 (pochi-dio) and
-# docs/protocol-reference.md section "Safety" (pochi-tools).
+# Specification: docs/30-usb-protocol.md section 12 (tcapi-dio) and
+# docs/protocol-reference.md section "Safety" (tcapi-tools).
 # Each case heading `# --- <name> ---` is the test name. The name is exactly
 # the heading text, unique in this file, and is the unit in which a replayer
 # reports a failure (golden::<name>). The line(s) after a heading describe the case.

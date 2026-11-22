@@ -55,7 +55,7 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Workspace-internal path dependencies (e.g. pochi-gui -> pochi-sdk) carry
+# Workspace-internal path dependencies (e.g. tcapi-gui -> tcapi-sdk) carry
 # no version; that is not the supply-chain wildcard this lint targets.
 allow-wildcard-paths = true
 

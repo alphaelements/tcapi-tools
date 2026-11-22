@@ -14,16 +14,16 @@ export interface MockState {
 export async function gotoMock(page: Page): Promise<void> {
   await page.goto("/?mock=1");
   // Auto-scan on launch lists all three mock devices.
-  await expect(page.getByText("Pochi-DIO #42")).toBeVisible();
+  await expect(page.getByText("Tcapi-DIO #42")).toBeVisible();
 }
 
 export async function connect(page: Page): Promise<void> {
   await gotoMock(page);
-  await page.getByText("Pochi-DIO #42").dblclick();
+  await page.getByText("Tcapi-DIO #42").dblclick();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
 }
 
-/** Double-click the device card whose label is `text` (e.g. "Pochi-DIO #43"). */
+/** Double-click the device card whose label is `text` (e.g. "Tcapi-DIO #43"). */
 export async function connectTo(page: Page, text: string): Promise<void> {
   await page.getByText(text, { exact: true }).dblclick();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
@@ -39,8 +39,8 @@ export async function sendRaw(page: Page, command: string): Promise<void> {
 /** External sync bus edge on the connected mock device (see mock-device.ts). */
 export async function syncEdge(page: Page): Promise<void> {
   await page.evaluate(() =>
-    (window as unknown as { __POCHI_MOCK__: { syncEdge: () => void } })
-      .__POCHI_MOCK__.syncEdge(),
+    (window as unknown as { __TCAPI_MOCK__: { syncEdge: () => void } })
+      .__TCAPI_MOCK__.syncEdge(),
   );
 }
 
@@ -67,8 +67,8 @@ export function outputSwitch(page: Page, gp: number) {
 export async function pulse(page: Page, values: number): Promise<void> {
   await page.evaluate(
     (v) =>
-      (window as unknown as { __POCHI_MOCK__: { pulse: (n: number) => void } })
-        .__POCHI_MOCK__.pulse(v),
+      (window as unknown as { __TCAPI_MOCK__: { pulse: (n: number) => void } })
+        .__TCAPI_MOCK__.pulse(v),
     values,
   );
 }
@@ -76,24 +76,24 @@ export async function pulse(page: Page, values: number): Promise<void> {
 export async function mockState(page: Page): Promise<MockState> {
   return page.evaluate(
     () =>
-      (window as unknown as { __POCHI_MOCK__: { state: MockState } })
-        .__POCHI_MOCK__.state,
+      (window as unknown as { __TCAPI_MOCK__: { state: MockState } })
+        .__TCAPI_MOCK__.state,
   );
 }
 
 export async function mockFiles(page: Page): Promise<Record<string, string>> {
   return page.evaluate(
     () =>
-      (window as unknown as { __POCHI_MOCK__: { files: Record<string, string> } })
-        .__POCHI_MOCK__.files,
+      (window as unknown as { __TCAPI_MOCK__: { files: Record<string, string> } })
+        .__TCAPI_MOCK__.files,
   );
 }
 
 export async function setForceOverflow(page: Page, on: boolean): Promise<void> {
   await page.evaluate(
     (v) =>
-      ((window as unknown as { __POCHI_MOCK__: { forceOverflow: boolean } })
-        .__POCHI_MOCK__.forceOverflow = v),
+      ((window as unknown as { __TCAPI_MOCK__: { forceOverflow: boolean } })
+        .__TCAPI_MOCK__.forceOverflow = v),
     on,
   );
 }

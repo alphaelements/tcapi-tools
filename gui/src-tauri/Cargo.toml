@@ -1,13 +1,13 @@
 [package]
-name = "pochi-gui"
+name = "tcapi-gui"
 version = "0.1.0"
 publish = false
 edition.workspace = true
 license.workspace = true
-description = "GUI application for Pochi-DIO (Tauri v2 + React)"
+description = "GUI application for Tcapi-DIO (Tauri v2 + React)"
 
 [dependencies]
-pochi-sdk = { path = "../../sdk/rust" }
+tcapi-sdk = { path = "../../sdk/rust" }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
@@ -23,5 +23,5 @@ serialport = "4"
 tauri-build = { version = "2", features = [] }
 
 [lib]
-name = "pochi_gui_lib"
+name = "tcapi_gui_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

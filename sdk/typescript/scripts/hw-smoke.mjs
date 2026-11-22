@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Hardware smoke test (protocol v2) — requires a connected Pochi-DIO device.
+ * Hardware smoke test (protocol v2) — requires a connected Tcapi-DIO device.
  * Run after `npm run build`:  node scripts/hw-smoke.mjs
  * Mirrors `sdk/rust/tests/hw_smoke.rs`; restores device state on exit.
  */
@@ -21,7 +21,7 @@ function assert(cond, msg) {
 const detailed = await discoverDetailed();
 assert(detailed.failures.length === 0, `probe failures: ${JSON.stringify(detailed.failures)}`);
 const devices = detailed.devices;
-assert(devices.length > 0, "no Pochi-DIO found");
+assert(devices.length > 0, "no Tcapi-DIO found");
 console.log("discovered:", devices);
 
 // A Debugprobe (2e8a:000c) on the same host must NOT be detected. Its tty
@@ -37,7 +37,7 @@ const debugprobePorts = (await SerialPort.list())
 console.log("debugprobe ports:", debugprobePorts);
 assert(
   devices.every((d) => !debugprobePorts.includes(d.port)),
-  "Debugprobe misdetected as Pochi-DIO",
+  "Debugprobe misdetected as Tcapi-DIO",
 );
 
 const device = devices[0];

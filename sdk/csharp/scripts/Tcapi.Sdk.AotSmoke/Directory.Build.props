@@ -1,0 +1,12 @@
+<Project>
+
+  <!-- aot-check.sh puts this project's build products outside the source tree
+       (-p:TcapiAotWork=<dir>). Here, and not on the command line, because a
+       command-line BaseIntermediateOutputPath would also reach the referenced
+       Tcapi.Sdk project. -->
+  <PropertyGroup Condition="'$(TcapiAotWork)' != ''">
+    <BaseIntermediateOutputPath>$(TcapiAotWork)/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(TcapiAotWork)/bin/</BaseOutputPath>
+  </PropertyGroup>
+
+</Project>

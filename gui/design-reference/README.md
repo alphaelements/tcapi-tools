@@ -1,7 +1,7 @@
 # GUI Design Reference
 
-Canonical UI reference for the Pochi Tools GUI — the original prototype
-sources, byte-identical to the designer's `pochi.zip` drop. The
+Canonical UI reference for the Tcapi Tools GUI — the original prototype
+sources, byte-identical to the designer's `tcapi.zip` drop. The
 production GUI must match this prototype exactly. Open `index.html` in
 a browser to run it (loads React 18 UMD / Babel / fonts from CDN; a
 fully self-contained 1.6 MB variant lives outside git in

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from pochi import protocol
-from pochi.errors import (
+from tcapi import protocol
+from tcapi.errors import (
     BadParamError,
     BusyError,
     ExclusiveError,
@@ -25,8 +25,8 @@ from pochi.errors import (
     UnknownDeviceError,
     from_error_code,
 )
-from pochi.safety import SafetyConfig
-from pochi.types import (
+from tcapi.safety import SafetyConfig
+from tcapi.types import (
     FEAT_EXCL,
     FEAT_OUTRESET,
     FEAT_PADS,
