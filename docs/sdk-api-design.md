@@ -414,7 +414,7 @@ discover() -> DeviceInfo[]
 ```
 
 Enumerates all connected Tcapi-DIO devices. A port matches when VID is
-`0x2E8A`, PID is `0x000A` and, if the operating system provides a product
+`0x2E8A`, PID is `0x1175` and, if the operating system provides a product
 string, it starts with `"Tcapi"`. Each matching port is then opened with DTR
 asserted and probed with `version`; a device that does not report `proto=2`
 is not returned as usable (it appears among the failures). `info` is sent to

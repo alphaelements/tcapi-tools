@@ -75,7 +75,7 @@ same layers to ensure consistent behavior and API surface.
 ### Layer 1 -- Discovery
 
 Enumerates USB serial ports and identifies Tcapi-DIO devices by filtering on
-USB VID (`0x2E8A`), PID (`0x000A`), and product string prefix (`"Tcapi"`),
+USB VID (`0x2E8A`), PID (`0x1175`), and product string prefix (`"Tcapi"`),
 then confirms `proto=2` with `version`. Returns a list of `DeviceInfo`
 objects containing UID, device number, port path, and firmware version.
 

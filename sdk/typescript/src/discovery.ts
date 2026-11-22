@@ -38,7 +38,7 @@ export interface UsbPortInfo {
 /**
  * True if the USB descriptor identifies a Tcapi-DIO. node-serialport
  * exposes no product string on Linux, so the product check uses pnpId
- * (e.g. `usb-Raspberry_Pi_Tcapi-DIO_<uid>-if00`).
+ * (e.g. `usb-Tcapi_Tcapi-DIO_<uid>-if00`).
  */
 export function matchesTcapi(info: UsbPortInfo): boolean {
   if (info.vendorId?.toLowerCase() !== TCAPI_VID) return false;

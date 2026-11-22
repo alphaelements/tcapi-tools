@@ -29,7 +29,7 @@ describe("matchesTcapi", () => {
   const base = { path: "/dev/ttyACM0", vendorId: "2E8A", productId: "1175" };
 
   it("accepts a Tcapi product on VID 2E8A / PID 1175 (case-insensitive ids)", () => {
-    expect(matchesTcapi({ ...base, pnpId: "usb-Raspberry_Pi_Tcapi-DIO_0123-if00" })).toBe(true);
+    expect(matchesTcapi({ ...base, pnpId: "usb-Tcapi_Tcapi-DIO_0123-if00" })).toBe(true);
     expect(matchesTcapi({ ...base, vendorId: "2e8a", productId: "1175", pnpId: "usb-Tcapi" })).toBe(true);
   });
 

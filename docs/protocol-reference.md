@@ -47,7 +47,7 @@ mixes text and binary within one connection.
 | Property | Value |
 |---|---|
 | VID | `0x2E8A` (Raspberry Pi) |
-| PID | `0x000A` |
+| PID | `0x1175` |
 | Product string | Starts with `"Tcapi"` (checked when the OS provides it) |
 | Serial number | 16-character hex string derived from the RP2350 chip UID |
 
@@ -1407,7 +1407,7 @@ skew between channels. When a capture straddles a microsecond boundary,
 1. List all serial ports on the system.
 2. Filter by USB properties:
    - VID = `0x2E8A`
-   - PID = `0x000A`
+   - PID = `0x1175`
    - Product string, when the OS provides one, starts with `"Tcapi"`
 3. For each matching port: open it, assert DTR, send `version` and require
    `proto=2`; a device reporting anything else is reported as unsupported,
